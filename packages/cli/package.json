@@ -1,0 +1,270 @@
+{
+  "name": "@mnemonik/cli",
+  "version": "0.1.2",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/JayDeeCo-Limited/mnemonik-cli.git"
+  },
+  "description": "Mnemonik installer and local project helper",
+  "type": "module",
+  "bin": {
+    "mnemonik": "dist/bin.js"
+  },
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "node ../../node_modules/@typescript/native/bin/tsc",
+    "typecheck": "node ../../node_modules/@typescript/native/bin/tsc --noEmit -p tsconfig.test.json",
+    "test": "vitest run --config vitest.config.ts",
+    "prepack": "node ../../scripts/host-closure.mjs"
+  },
+  "dependencies": {
+    "@mnemonik/credentials": "0.1.2",
+    "@mnemonik/local-setup": "0.1.2",
+    "@mnemonik/shared": "7.99.2"
+  },
+  "devDependencies": {
+    "@typescript/native": "npm:typescript@7.0.2"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "license": "SEE LICENSE IN LICENSE",
+  "mnemonik": {
+    "hosts": {
+      "claude-code": {
+        "package": "@mnemonik/claude-code-hooks",
+        "version": "0.9.180",
+        "closure": [
+          {
+            "name": "@mnemonik/claude-code-hooks",
+            "version": "0.9.180",
+            "integrity": "sha512-Y3QPGBZPXeB8os5WaWrvEvI0TNFEWZVtTZDqiUMhV/Hwo8if9ZU1tm95WZB25G0XF87sNdFIcWH0zCc3iWBY5g=="
+          },
+          {
+            "name": "@mnemonik/credentials",
+            "version": "0.1.2",
+            "integrity": "sha512-KCJC85yb2jMS6xXiGexvUOnzBI4jPqeBxggZofEjAstnufam/eVoea/eREnzvArldYEic8ymT1qKSxnBdmuMOg=="
+          },
+          {
+            "name": "@mnemonik/local-setup",
+            "version": "0.1.2",
+            "integrity": "sha512-iP4n2vVN9zSPdPNRlqg2oPc+BAcZH28tQnDFWbVbLAO/SacPShOAHErgyZAgggE6z7SjJlgStMG+ihGxOgZcfA=="
+          },
+          {
+            "name": "@mnemonik/shared",
+            "version": "7.99.2",
+            "integrity": "sha512-IIva1sFo8oQ1EuvbwZG7l70BMpMkqcVu4wDUACru5FNd3mlFkj2vSuYo/Dq6RCCRufu2WuWc/WSKs83CalSnfA=="
+          },
+          {
+            "name": "ignore",
+            "version": "7.0.6",
+            "integrity": "sha512-BAg6QkE8W+TuQLrrw0Ugr7HegXduRuuj8/ti2kSOc+jz1dmx8/WNcjr6XGnq5YpDWxFwwaavqD0+jIUOKelTsw=="
+          },
+          {
+            "name": "web-tree-sitter",
+            "version": "0.26.13",
+            "integrity": "sha512-5bUZ7vbQ1kcondet96wzP974+JfCZDeQ7bTpacICm2nnvHpa5cO0ByRsoMcAhUP+743vpkb4m0BFlVSm+Ye9VA=="
+          },
+          {
+            "name": "proper-lockfile",
+            "version": "4.1.2",
+            "integrity": "sha512-TjNPblN4BwAWMXU8s9AEz4JmQxnD1NNL7bNOY/AKUzyamc379FWASUhc/K1pL2noVb+XmZKLL68cjzLsiOAMaA=="
+          },
+          {
+            "name": "graceful-fs",
+            "version": "4.2.11",
+            "integrity": "sha512-RbJ5/jmFcNNCcDV5o9eTnBLJ/HszWV0P73bc+Ff4nS/rJj+YaS6IGyiOL0VoBYX+l1Wrl3k63h/KrH+nhJ0XvQ=="
+          },
+          {
+            "name": "retry",
+            "version": "0.12.0",
+            "integrity": "sha512-9LkiTwjUh6rT555DtE9rTX+BKByPfrMzEAtnlEtdEwr3Nkffwiihqe2bWADg+OQRjt9gl6ICdmB/ZFDCGAtSow=="
+          },
+          {
+            "name": "signal-exit",
+            "version": "3.0.7",
+            "integrity": "sha512-wnD2ZE+l+SPC/uoS0vXeE9L1+0wuaMqKlfz9AMUo38JsyLSBWSFcHR1Rri62LZc12vLr1gb3jl7iwQhgwpAbGQ=="
+          }
+        ]
+      },
+      "codex": {
+        "package": "@mnemonik/codex-hooks",
+        "version": "0.8.149",
+        "closure": [
+          {
+            "name": "@mnemonik/codex-hooks",
+            "version": "0.8.149",
+            "integrity": "sha512-wCYd0luXJVVBZHfFFQJmbc9VTSRoSbnJNNuPuy7zEA7LQi/Hj56d2fPVpsfFaG7BYRnaJ6jNMBLhxHiO6ITvEg=="
+          },
+          {
+            "name": "@mnemonik/credentials",
+            "version": "0.1.2",
+            "integrity": "sha512-KCJC85yb2jMS6xXiGexvUOnzBI4jPqeBxggZofEjAstnufam/eVoea/eREnzvArldYEic8ymT1qKSxnBdmuMOg=="
+          },
+          {
+            "name": "@mnemonik/local-setup",
+            "version": "0.1.2",
+            "integrity": "sha512-iP4n2vVN9zSPdPNRlqg2oPc+BAcZH28tQnDFWbVbLAO/SacPShOAHErgyZAgggE6z7SjJlgStMG+ihGxOgZcfA=="
+          },
+          {
+            "name": "@mnemonik/shared",
+            "version": "7.99.2",
+            "integrity": "sha512-IIva1sFo8oQ1EuvbwZG7l70BMpMkqcVu4wDUACru5FNd3mlFkj2vSuYo/Dq6RCCRufu2WuWc/WSKs83CalSnfA=="
+          },
+          {
+            "name": "ignore",
+            "version": "7.0.6",
+            "integrity": "sha512-BAg6QkE8W+TuQLrrw0Ugr7HegXduRuuj8/ti2kSOc+jz1dmx8/WNcjr6XGnq5YpDWxFwwaavqD0+jIUOKelTsw=="
+          },
+          {
+            "name": "web-tree-sitter",
+            "version": "0.26.13",
+            "integrity": "sha512-5bUZ7vbQ1kcondet96wzP974+JfCZDeQ7bTpacICm2nnvHpa5cO0ByRsoMcAhUP+743vpkb4m0BFlVSm+Ye9VA=="
+          },
+          {
+            "name": "proper-lockfile",
+            "version": "4.1.2",
+            "integrity": "sha512-TjNPblN4BwAWMXU8s9AEz4JmQxnD1NNL7bNOY/AKUzyamc379FWASUhc/K1pL2noVb+XmZKLL68cjzLsiOAMaA=="
+          },
+          {
+            "name": "graceful-fs",
+            "version": "4.2.11",
+            "integrity": "sha512-RbJ5/jmFcNNCcDV5o9eTnBLJ/HszWV0P73bc+Ff4nS/rJj+YaS6IGyiOL0VoBYX+l1Wrl3k63h/KrH+nhJ0XvQ=="
+          },
+          {
+            "name": "retry",
+            "version": "0.12.0",
+            "integrity": "sha512-9LkiTwjUh6rT555DtE9rTX+BKByPfrMzEAtnlEtdEwr3Nkffwiihqe2bWADg+OQRjt9gl6ICdmB/ZFDCGAtSow=="
+          },
+          {
+            "name": "signal-exit",
+            "version": "3.0.7",
+            "integrity": "sha512-wnD2ZE+l+SPC/uoS0vXeE9L1+0wuaMqKlfz9AMUo38JsyLSBWSFcHR1Rri62LZc12vLr1gb3jl7iwQhgwpAbGQ=="
+          }
+        ]
+      },
+      "cursor": {
+        "package": "@mnemonik/cursor-hooks",
+        "version": "0.7.137",
+        "closure": [
+          {
+            "name": "@mnemonik/cursor-hooks",
+            "version": "0.7.137",
+            "integrity": "sha512-wJ/o4b5w3BlePZ2kngXIzIEuaBDCX0s1daxLlfUoE0sw7sdzmcRwOnb2rWcheg6UTDOUVfIMuVIhQgDwdUAaaA=="
+          },
+          {
+            "name": "@mnemonik/credentials",
+            "version": "0.1.2",
+            "integrity": "sha512-KCJC85yb2jMS6xXiGexvUOnzBI4jPqeBxggZofEjAstnufam/eVoea/eREnzvArldYEic8ymT1qKSxnBdmuMOg=="
+          },
+          {
+            "name": "@mnemonik/local-setup",
+            "version": "0.1.2",
+            "integrity": "sha512-iP4n2vVN9zSPdPNRlqg2oPc+BAcZH28tQnDFWbVbLAO/SacPShOAHErgyZAgggE6z7SjJlgStMG+ihGxOgZcfA=="
+          },
+          {
+            "name": "@mnemonik/shared",
+            "version": "7.99.2",
+            "integrity": "sha512-IIva1sFo8oQ1EuvbwZG7l70BMpMkqcVu4wDUACru5FNd3mlFkj2vSuYo/Dq6RCCRufu2WuWc/WSKs83CalSnfA=="
+          },
+          {
+            "name": "ignore",
+            "version": "7.0.6",
+            "integrity": "sha512-BAg6QkE8W+TuQLrrw0Ugr7HegXduRuuj8/ti2kSOc+jz1dmx8/WNcjr6XGnq5YpDWxFwwaavqD0+jIUOKelTsw=="
+          },
+          {
+            "name": "web-tree-sitter",
+            "version": "0.26.13",
+            "integrity": "sha512-5bUZ7vbQ1kcondet96wzP974+JfCZDeQ7bTpacICm2nnvHpa5cO0ByRsoMcAhUP+743vpkb4m0BFlVSm+Ye9VA=="
+          },
+          {
+            "name": "proper-lockfile",
+            "version": "4.1.2",
+            "integrity": "sha512-TjNPblN4BwAWMXU8s9AEz4JmQxnD1NNL7bNOY/AKUzyamc379FWASUhc/K1pL2noVb+XmZKLL68cjzLsiOAMaA=="
+          },
+          {
+            "name": "graceful-fs",
+            "version": "4.2.11",
+            "integrity": "sha512-RbJ5/jmFcNNCcDV5o9eTnBLJ/HszWV0P73bc+Ff4nS/rJj+YaS6IGyiOL0VoBYX+l1Wrl3k63h/KrH+nhJ0XvQ=="
+          },
+          {
+            "name": "retry",
+            "version": "0.12.0",
+            "integrity": "sha512-9LkiTwjUh6rT555DtE9rTX+BKByPfrMzEAtnlEtdEwr3Nkffwiihqe2bWADg+OQRjt9gl6ICdmB/ZFDCGAtSow=="
+          },
+          {
+            "name": "signal-exit",
+            "version": "3.0.7",
+            "integrity": "sha512-wnD2ZE+l+SPC/uoS0vXeE9L1+0wuaMqKlfz9AMUo38JsyLSBWSFcHR1Rri62LZc12vLr1gb3jl7iwQhgwpAbGQ=="
+          }
+        ]
+      },
+      "grok": {
+        "package": "@mnemonik/grok-hooks",
+        "version": "0.1.22",
+        "closure": [
+          {
+            "name": "@mnemonik/grok-hooks",
+            "version": "0.1.22",
+            "integrity": "sha512-GhFxKEU9Col00KvtbX77kx/o/oLhZx+xelqYPe0lPGFQgLHLMBbP52iT2k2FFSFEo0lUm5LGJkuHPJbIMYCwIg=="
+          },
+          {
+            "name": "@mnemonik/credentials",
+            "version": "0.1.2",
+            "integrity": "sha512-KCJC85yb2jMS6xXiGexvUOnzBI4jPqeBxggZofEjAstnufam/eVoea/eREnzvArldYEic8ymT1qKSxnBdmuMOg=="
+          },
+          {
+            "name": "@mnemonik/local-setup",
+            "version": "0.1.2",
+            "integrity": "sha512-iP4n2vVN9zSPdPNRlqg2oPc+BAcZH28tQnDFWbVbLAO/SacPShOAHErgyZAgggE6z7SjJlgStMG+ihGxOgZcfA=="
+          },
+          {
+            "name": "@mnemonik/shared",
+            "version": "7.99.2",
+            "integrity": "sha512-IIva1sFo8oQ1EuvbwZG7l70BMpMkqcVu4wDUACru5FNd3mlFkj2vSuYo/Dq6RCCRufu2WuWc/WSKs83CalSnfA=="
+          },
+          {
+            "name": "ignore",
+            "version": "7.0.6",
+            "integrity": "sha512-BAg6QkE8W+TuQLrrw0Ugr7HegXduRuuj8/ti2kSOc+jz1dmx8/WNcjr6XGnq5YpDWxFwwaavqD0+jIUOKelTsw=="
+          },
+          {
+            "name": "web-tree-sitter",
+            "version": "0.26.13",
+            "integrity": "sha512-5bUZ7vbQ1kcondet96wzP974+JfCZDeQ7bTpacICm2nnvHpa5cO0ByRsoMcAhUP+743vpkb4m0BFlVSm+Ye9VA=="
+          },
+          {
+            "name": "proper-lockfile",
+            "version": "4.1.2",
+            "integrity": "sha512-TjNPblN4BwAWMXU8s9AEz4JmQxnD1NNL7bNOY/AKUzyamc379FWASUhc/K1pL2noVb+XmZKLL68cjzLsiOAMaA=="
+          },
+          {
+            "name": "graceful-fs",
+            "version": "4.2.11",
+            "integrity": "sha512-RbJ5/jmFcNNCcDV5o9eTnBLJ/HszWV0P73bc+Ff4nS/rJj+YaS6IGyiOL0VoBYX+l1Wrl3k63h/KrH+nhJ0XvQ=="
+          },
+          {
+            "name": "retry",
+            "version": "0.12.0",
+            "integrity": "sha512-9LkiTwjUh6rT555DtE9rTX+BKByPfrMzEAtnlEtdEwr3Nkffwiihqe2bWADg+OQRjt9gl6ICdmB/ZFDCGAtSow=="
+          },
+          {
+            "name": "signal-exit",
+            "version": "3.0.7",
+            "integrity": "sha512-wnD2ZE+l+SPC/uoS0vXeE9L1+0wuaMqKlfz9AMUo38JsyLSBWSFcHR1Rri62LZc12vLr1gb3jl7iwQhgwpAbGQ=="
+          }
+        ]
+      }
+    }
+  }
+}

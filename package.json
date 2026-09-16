@@ -1,0 +1,17 @@
+{
+  "name": "mnemonik-cli-source",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/shared",
+    "packages/local-setup",
+    "packages/credentials",
+    "packages/cli"
+  ],
+  "devDependencies": {
+    "esbuild": "0.28.1",
+    "typescript": "npm:@typescript/typescript6@6.0.2",
+    "@typescript/native": "npm:typescript@7.0.2",
+    "@types/node": "^20.19.43"
+  }
+}

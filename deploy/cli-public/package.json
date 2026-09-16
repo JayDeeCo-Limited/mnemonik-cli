@@ -1,0 +1,8 @@
+{
+  "name": "mnemonik-release-tools",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "postject": "1.0.0-alpha.6"
+  }
+}

@@ -1,0 +1,56 @@
+name: Publish public CLI
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        type: boolean
+        default: true
+        description: Build and pack without npm publish
+permissions:
+  contents: read
+  id-token: write
+concurrency:
+  group: npm-cli
+  cancel-in-progress: false
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24.21.0'
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+      - run: npm ci --ignore-scripts
+      - run: node deploy/cli-public/build.mjs
+      - name: Pack and refuse consumer lifecycle scripts
+        run: |
+          set -euo pipefail
+          npm pack ./dist-package --json > pack.json
+          tgz=$(node -p "require('./pack.json')[0].filename")
+          tar -xOf "$tgz" package/package.json | node deploy/cli-public/lifecycle-gate.mjs
+          sha256sum "$tgz" > cli-digests.txt
+          MNEMONIK_STATE_DIR="$RUNNER_TEMP/cli-state" npm exec --yes --cache "$RUNNER_TEMP/cli-cache" --package "./$tgz" -- mnemonik --help
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cli-release-evidence
+          path: |
+            *.tgz
+            pack.json
+            cli-digests.txt
+            dist-package/dist/sbom.json
+      - name: Publish from public source with npm provenance
+        if: inputs.dry_run != true && github.ref == 'refs/heads/main'
+        run: |
+          set -euo pipefail
+          tgz=$(node -p "require('./pack.json')[0].filename")
+          version=$(node -p "require('./dist-package/package.json').version")
+          # The private workflow pushes this source, then attaches immutable scanner assets.
+          curl --fail --location --retry 12 --retry-delay 5 --retry-all-errors \
+            "https://github.com/JayDeeCo-Limited/mnemonik-cli/releases/download/scanner-v$version/digests.json" -o scanner-digests.json
+          node -e "const fs=require('fs'),c=require('crypto'); if(c.createHash('sha256').update(fs.readFileSync('scanner-digests.json')).digest('hex')!==require('./scanner-release.json').digestsSha256) process.exit(1)"
+          npm publish "$tgz" --access public --provenance
+          test "$(npm view "@mnemonik/cli@$version" dist.integrity)" = "$(node -p "require('./pack.json')[0].integrity")"

@@ -1,0 +1,673 @@
+import { execFile } from 'node:child_process';
+import { createHash, generateKeyPairSync, randomBytes, sign } from 'node:crypto';
+import { promisify } from 'node:util';
+import { setImmediate as immediate } from 'node:timers/promises';
+import { createProjectSetupExecutor, withLock } from '@mnemonik/local-setup';
+import { resolveProjectIdentity } from '@mnemonik/shared';
+import { bytesAt, withInstall } from '../src/install/journal.js';
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { mkdtemp, mkdir, readFile, writeFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { Readable } from 'node:stream';
+import { createCredentialAdapter } from '@mnemonik/credentials';
+import { RuntimeReader } from '@mnemonik/shared/hook-runtime';
+import { enableScanner, prepareScanner, type EnableOptions } from '../src/scanner/enable.js';
+import { scannerService } from '../src/scanner/service.js';
+import { controlScanner, scannerReceipt } from '../src/scanner/control.js';
+import { updateScanner } from '../src/scanner/update.js';
+import { deleteScannerIndex } from '../src/scanner/data.js';
+import { hash, RuntimeStore } from '../src/runtime/store.js';
+import { scannerReleaseSource } from '../src/runtime/releaseSource.js';
+import { Output } from '../src/output.js';
+import { collectStatusDocument } from '../src/status.js';
+import { runCli } from '../src/router.js';
+let home: string, state: string, releases: string, options: EnableOptions, store: RuntimeStore;
+let allowInstalledCredential: boolean;
+let events: string[],
+  consent: { userId: string; roots: string[]; exclusions: string[]; disclosureVersion: string };
+const binary = Buffer.from(`#!/usr/bin/env node
+const fs=require('node:fs'),path=require('node:path'),cp=require('node:child_process');
+const dir=process.env.MNEMONIK_STATE_DIR, p=path.join(dir,'scanner'), op=process.argv[3];
+const read=(name,fallback)=>{try{return JSON.parse(fs.readFileSync(path.join(p,name)))}catch{return fallback}};
+const write=(name,data)=>{const target=path.join(p,name),stage=target+'.'+process.pid+'.tmp';fs.writeFileSync(stage,JSON.stringify(data),{mode:0o600});fs.renameSync(stage,target)};
+const alive=()=>{let pid=read('supervisor.json',{}).pid;try{process.kill(pid,0);return pid}catch{return null}};
+if(process.argv[2]==='run') {
+ const snapshot={version:'fixture',roots:[],exclusions:[],lifecycle:{state:'running',pid:process.pid,pauseIntervals:[]},heartbeat:{lastSuccess:Date.now()},transfers:{sinceStart:{files:0,bytes:0},sinceInstall:{files:0,bytes:0}}};
+ const state=read('state.json',{});state.config=Object.fromEntries(Object.entries(state.config||{}).sort());write('state.json',state);
+ const tick=()=>write('status.json',{recordedAt:Date.now(),snapshot});
+ if(!fs.readFileSync(__filename,'utf8').endsWith('// MISS_HEARTBEAT')) tick();
+ const timer=setInterval(()=>{const c=read('control.json',{});if(c.id && c.id!==snapshot.lifecycle.controlId){snapshot.lifecycle.controlId=c.id;snapshot.lifecycle.state=c.action==='pause'?'paused':'running';state.paused=c.action==='pause';write('state.json',state);tick()}},20);
+ process.on('SIGTERM',()=>{clearInterval(timer);process.exit(0)});
+} else if(op==='describe') console.log(JSON.stringify({binaryPath:__filename,arguments:['start'],workingDirectory:__dirname,environment:{MNEMONIK_STATE_DIR:dir},runAtLogin:true,restart:{policy:'on-failure',delayMs:1},logDestination:path.join(p,'log')}));
+else {
+ let s=read('supervisor.json',{installed:false,pid:null});
+ if(op==='install')s.installed=true;
+ if(op==='start'&&!alive()) {const child=cp.spawn(process.execPath,[__filename,'run'],{detached:true,stdio:'ignore',env:process.env});s.pid=child.pid;child.unref();}
+ if(op==='stop'||op==='uninstall'){try{process.kill(s.pid,'SIGTERM')}catch{}s.pid=null;if(op==='uninstall')s.installed=false;}
+ write('supervisor.json',s);console.log(JSON.stringify({status:'ok',supervisor:{kind:'systemd',installed:s.installed,running:!!s.pid,pid:s.pid}}));
+}
+`);
+async function source(version = '1.0.0', tamper = false, missed = false) {
+  const bytes = missed ? Buffer.concat([binary, Buffer.from('\n// MISS_HEARTBEAT')]) : binary;
+  const name = `scanner-${version}.cjs`;
+  const files = { [name]: { sha256: hash(bytes), size: bytes.length, executable: true } };
+  const digests = Buffer.from(JSON.stringify({ files }));
+  await writeFile(
+    join(releases, name),
+    tamper ? Buffer.concat([bytes, Buffer.from('\n// tampered')]) : bytes
+  );
+  await writeFile(join(releases, 'digests.json'), digests);
+  return scannerReleaseSource({
+    version,
+    digestsSha256: hash(digests),
+    platforms: {
+      [`${process.platform}-${process.arch}`]: {
+        schemaVersion: 1,
+        artifact: 'scanner',
+        version,
+        entry: name,
+        totalSize: bytes.length,
+        files,
+        signingStatus: 'unsigned',
+        source: {
+          kind: 'release',
+          url: `https://github.com/JayDeeCo-Limited/mnemonik-cli/releases/download/scanner-v${version}/`,
+        },
+      },
+    },
+  });
+}
+beforeEach(async () => {
+  home = await mkdtemp(join(tmpdir(), 'scanner-enable-'));
+  state = join(home, 'state');
+  releases = join(home, 'releases');
+  await mkdir(releases);
+  vi.stubEnv('HOME', home);
+  vi.stubEnv('MNEMONIK_DEV_RELEASE_DIR', releases);
+  store = new RuntimeStore(state, undefined, { allowUnsigned: true });
+  allowInstalledCredential = false;
+  events = [];
+  consent = {
+    userId: 'user-one',
+    roots: [join(home, 'repo')],
+    exclusions: [],
+    disclosureVersion: '2026.09.1',
+  };
+  await mkdir(consent.roots[0]!);
+  await mkdir(join(home, 'different'));
+  options = {
+    stateDir: state,
+    cwd: home,
+    input: Readable.from([]),
+    output: new Output({ write() {} }),
+    store,
+    roots: consent.roots,
+    nonInteractive: true,
+    source: async () => {
+      events.push('runtime');
+      return source();
+    },
+    credentials: createCredentialAdapter({
+      stateDir: state,
+      secretStore: { isAvailable: async () => false } as never,
+    }),
+    authorize: async () => {
+      events.push('auth');
+      return 'cli-token';
+    },
+    fetch: vi.fn(async (url, init) => {
+      const path = new URL(String(url)).pathname;
+      events.push(path);
+      if (path === '/api/v1/auth/grants')
+        return Response.json({
+          account: 'user-one',
+          email: 'user@example.test',
+          deviceInstallationId: '11111111-1111-4111-8111-111111111111',
+          grants: [],
+        });
+      if (path.endsWith('/current') && path.includes('install-sessions'))
+        return Response.json({
+          id: 'session',
+          device_installation_id: '11111111-1111-4111-8111-111111111111',
+        });
+      if (path.includes('scanner-consent'))
+        return Response.json({ consent, disclosure: { version: '2026.09.1', statements: [] } });
+      if (path.endsWith('/cancel')) return Response.json({ status: 'cancelled' });
+      if (path.endsWith('component-credentials')) {
+        expect(await readFile(join(state, 'scanner/state.json'), 'utf8')).toContain('user-one');
+        expect((await store.verifyRuntime('scanner')).manifest.version).toBe('1.0.0');
+        const supervisor = JSON.parse(
+          await readFile(join(state, 'scanner/supervisor.json'), 'utf8').catch(() => 'null')
+        );
+        if (!allowInstalledCredential) expect(supervisor?.installed ?? false).toBe(false);
+        return Response.json({
+          id: 'family-one',
+          access_token: 'scanner-secret',
+          refresh_token: 'refresh-secret',
+          scope: 'scanner:upload',
+          expires_in: 3600,
+          refresh_expires_in: 86400,
+          token_type: 'Bearer',
+        });
+      }
+      throw new Error(`Unexpected ${init?.method} ${path}`);
+    }) as typeof fetch,
+  };
+});
+afterEach(async () => {
+  await scannerService({ stateDir: state, store })
+    .stop()
+    .catch(() => {});
+  vi.unstubAllEnvs();
+  await rm(home, { recursive: true, force: true });
+});
+it('fresh enable verifies runtime, stores browser consent and credential, starts one supervised pid and sees heartbeat', async () => {
+  const result = await enableScanner(options);
+  expect(result.installation).toMatchObject({ state: 'LIMITED', reasons: ['dev_release_source'] });
+  expect(result.scanner?.heartbeatAt).toBeTruthy();
+  expect(events.indexOf('runtime')).toBeGreaterThan(
+    events.indexOf('/api/v1/scanner-consent/current')
+  );
+  expect(events.indexOf('/api/v1/component-credentials')).toBeGreaterThan(
+    events.indexOf('runtime')
+  );
+  expect(await options.credentials!.readFamily('family-one')).toMatchObject({
+    accessToken: 'scanner-secret',
+  });
+  const bytes = await readFile(join(state, 'scanner/state.json'), 'utf8');
+  expect(bytes).toContain('family-one');
+  expect(bytes).not.toContain('scanner-secret');
+  const pid = (await scannerReceipt(state))!.snapshot.lifecycle.pid;
+  let output = '';
+  expect(
+    await runCli(['scanner', 'start', '--json'], {
+      installStateDir: state,
+      scannerService: { stateDir: state, store },
+      stdout: {
+        write: (s) => {
+          output += s;
+        },
+      },
+    })
+  ).toBe(3);
+  expect(JSON.parse(output)).toMatchObject({ reason: 'instance_running', pid });
+  expect((await scannerService({ stateDir: state, store }).status()).pid).toBe(pid);
+  output = '';
+  expect(
+    await runCli(['scanner', 'start'], {
+      installStateDir: state,
+      scannerService: { stateDir: state, store },
+      stdout: { write: (s) => void (output += s) },
+    })
+  ).toBe(3);
+  expect(output).toBe(`Scanner is already running (PID ${pid}).\n`);
+  expect(output).not.toContain('{');
+  await controlScanner('pause', { stateDir: state, store });
+  expect((await scannerReceipt(state))!.snapshot.lifecycle.state).toBe('paused');
+  await controlScanner('resume', { stateDir: state, store });
+  await expect(new RuntimeReader(state).verifyRuntime('scanner')).rejects.toMatchObject({
+    reason: 'unsigned',
+  });
+});
+it.each(['ownership', 'cli-grant', 'missing'])(
+  'retries failed consent using %s installation evidence',
+  async (evidence) => {
+    const installation = '11111111-1111-4111-8111-111111111111';
+    let active = true;
+    const fetcher = options.fetch!;
+    options.fetch = async (url, init) => {
+      const path = new URL(String(url)).pathname;
+      if (path.endsWith('/cancel')) active = false;
+      if (path === '/api/v1/install-sessions/current' && !active)
+        return new Response(null, { status: 404 });
+      if (path === '/api/v1/auth/grants')
+        return Response.json({
+          account: 'owner',
+          grants: [],
+          deviceInstallationId: evidence === 'cli-grant' ? installation : null,
+        });
+      return fetcher(url, init);
+    };
+    options.roots = [join(home, 'different')];
+    const authorize = vi.fn(async (selection, _installation) => {
+      if (selection) throw new Error('consent_failed');
+      return 'cli-token';
+    });
+    options.authorize = authorize;
+    await expect(enableScanner(options)).rejects.toThrow('consent_failed');
+    await expect(readFile(join(state, 'scanner/state.json'))).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
+    if (evidence === 'ownership')
+      await writeFile(
+        join(state, 'host-ownership.json'),
+        JSON.stringify({
+          schemaVersion: 1,
+          generation: 1,
+          targets: [
+            {
+              id: 'grok',
+              profilePath: home,
+              component: 'mcp',
+              files: [],
+              grant: { account: 'owner', installationId: installation },
+            },
+          ],
+        })
+      );
+    // Explicitly expire the session: a consent failure now correctly keeps it active.
+    active = false;
+    authorize.mockClear();
+    await expect(enableScanner(options)).rejects.toThrow(
+      evidence === 'missing' ? 'scanner_installation_missing' : 'consent_failed'
+    );
+    if (evidence === 'missing') expect(authorize).toHaveBeenCalledTimes(1);
+    else
+      expect(authorize).toHaveBeenLastCalledWith(
+        { roots: options.roots, exclusions: [] },
+        installation
+      );
+  }
+);
+it('good update swaps; tamper never becomes current; missed heartbeat restores verified previous', async () => {
+  await enableScanner(options);
+  await updateScanner({ stateDir: state, store }, () => source('2.0.0'));
+  expect((await store.verifyRuntime('scanner')).manifest.version).toBe('2.0.0');
+  await expect(
+    updateScanner({ stateDir: state, store }, () => source('3.0.0', true))
+  ).rejects.toMatchObject({ reason: 'digest_mismatch' });
+  expect((await store.verifyRuntime('scanner')).manifest.version).toBe('2.0.0');
+  let time = Date.now();
+  await expect(
+    updateScanner(
+      {
+        stateDir: state,
+        store,
+        now: () => time,
+        sleep: async () => {
+          time += 10000;
+          await new Promise((r) => setTimeout(r, 30));
+        },
+      },
+      () => source('3.0.0', false, true)
+    )
+  ).rejects.toThrow('heartbeat');
+  expect((await store.verifyRuntime('scanner')).manifest.version).toBe('2.0.0');
+}, 20000);
+it('serializes consent updates with enable and preserves the enable state shape', async () => {
+  await enableScanner(options);
+  await scannerService({ stateDir: state, store }).stop();
+  const changed = async () => {
+    const candidate = await source('2.0.0');
+    return {
+      ...candidate,
+      manifest: { ...candidate.manifest, disclosureVersion: '2026.10.1' },
+    };
+  };
+  const sourceCall = vi.fn(changed);
+  let update!: ReturnType<typeof updateScanner>;
+  await withLock(join(state, 'scanner/enable'), 5000, async () => {
+    update = updateScanner({ stateDir: state, store }, sourceCall);
+    await immediate();
+    expect(sourceCall).not.toHaveBeenCalled();
+  });
+  await expect(update).rejects.toThrow('release_consent_required');
+  const afterUpdate = await readFile(join(state, 'scanner/state.json'), 'utf8');
+  expect(afterUpdate).toContain('\n  "schemaVersion": 1,');
+  expect(afterUpdate.endsWith('\n')).toBe(true);
+  expect(JSON.parse(afterUpdate)).toMatchObject({
+    schemaVersion: 1,
+    paused: true,
+    config: { roots: consent.roots, exclusions: [] },
+    consent,
+    pauseIntervals: [],
+  });
+  allowInstalledCredential = true;
+  await enableScanner(options);
+  expect(JSON.parse(await readFile(join(state, 'scanner/state.json'), 'utf8'))).toMatchObject({
+    schemaVersion: 1,
+    paused: false,
+    consent,
+  });
+});
+it('retains consent across refusal and uninstall, then reinstalls from retained state without a runtime pointer', async () => {
+  await enableScanner(options);
+  const path = join(state, 'scanner/state.json');
+  const before = JSON.parse(await readFile(path, 'utf8')).consent;
+  await expect(
+    enableScanner({
+      ...options,
+      roots: [join(home, 'different')],
+      authorize: async (selection) => {
+        if (selection) throw new Error('declined');
+        return 'token';
+      },
+    })
+  ).rejects.toThrow('declined');
+  expect(JSON.parse(await readFile(path, 'utf8')).consent).toEqual(before);
+  let report = '';
+  expect(
+    await runCli(['uninstall', '--component', 'scanner', '--json'], {
+      installStateDir: state,
+      scannerService: { stateDir: state, store },
+      stdout: {
+        write: (text) => {
+          report += text;
+        },
+      },
+    })
+  ).toBe(0);
+  expect(JSON.parse(report)).toMatchObject({
+    verbs: ['stop collection', 'remove local software'],
+    retained: ['credentials', 'cloud data', 'consent'],
+  });
+  await expect(readFile(store.pointerPath('scanner'))).rejects.toMatchObject({ code: 'ENOENT' });
+  expect(JSON.parse(await readFile(path, 'utf8')).consent).toEqual(before);
+  expect(await options.credentials!.readFamily('family-one')).not.toBeNull();
+  const result = await enableScanner(options);
+  expect(result.scanner?.heartbeatAt).toBeTruthy();
+  expect((await store.verifyRuntime('scanner')).manifest.version).toBe('1.0.0');
+  expect(JSON.parse(await readFile(path, 'utf8')).consent).toEqual(before);
+});
+it('cloud deletion waits for confirmation and independently verifies zero', async () => {
+  const fetcher = vi
+    .fn()
+    .mockResolvedValueOnce(
+      Response.json({
+        projectId: '11111111-1111-4111-8111-111111111111',
+        status: 'deleted',
+        deletedChunks: 2,
+      })
+    )
+    .mockResolvedValueOnce(
+      Response.json({ projectId: '11111111-1111-4111-8111-111111111111', chunkCount: 0 })
+    );
+  await expect(
+    deleteScannerIndex('11111111-1111-4111-8111-111111111111', 'token', fetcher)
+  ).resolves.toMatchObject({ chunkCount: 0 });
+  expect(fetcher.mock.calls.map((c) => c[1].method)).toEqual(['DELETE', 'GET']);
+});
+
+it('a signed production fixture completes only after the real health receipt and clears scanner_not_verified', async () => {
+  const candidate = await source();
+  // A real minisign signature over the entry bytes, from a disposable key: the
+  // CLI verifies it in process, so a placeholder would be refused as unsigned.
+  const entryBytes = candidate.files[candidate.manifest.entry]!;
+  const { privateKey, publicKey } = generateKeyPairSync('ed25519');
+  const keyId = randomBytes(8);
+  const identity = Buffer.concat([
+    Buffer.from('Ed'),
+    keyId,
+    publicKey.export({ format: 'der', type: 'spki' }).subarray(-32),
+  ]).toString('base64');
+  const fileSignature = sign(
+    null,
+    createHash('blake2b512').update(entryBytes).digest(),
+    privateKey
+  );
+  const trustedComment = 'timestamp:1\tfile:scanner\thashed';
+  const globalSignature = sign(
+    null,
+    Buffer.concat([fileSignature, Buffer.from(trustedComment)]),
+    privateKey
+  );
+  const signature = Buffer.from(
+    `untrusted comment: signature\n${Buffer.concat([Buffer.from('ED'), keyId, fileSignature]).toString('base64')}\ntrusted comment: ${trustedComment}\n${globalSignature.toString('base64')}\n`
+  );
+  candidate.files['scanner.sig'] = signature;
+  candidate.manifest.files['scanner.sig'] = {
+    sha256: hash(signature),
+    size: signature.length,
+    executable: false,
+  };
+  candidate.manifest.totalSize += signature.length;
+  candidate.manifest.signer = {
+    platform: 'linux',
+    identity,
+    signature: 'scanner.sig',
+  };
+  candidate.manifest.signingStatus = 'signed';
+  vi.stubEnv('MNEMONIK_DEV_RELEASE_DIR', '');
+  store = new RuntimeStore(state, async () => {}); // Signature command boundary; digests and execution remain real.
+  await mkdir(state, { recursive: true, mode: 0o700 });
+  await writeFile(
+    join(state, 'host-ownership.json'),
+    JSON.stringify({
+      schemaVersion: 1,
+      generation: 1,
+      targets: [
+        {
+          id: 'hooks',
+          host: 'claude-code',
+          component: 'hooks',
+          profilePath: '/fixture',
+          files: [],
+          version: '0.10.0',
+          editorVersion: '2.1.0',
+        },
+      ],
+    })
+  );
+  let completions = 0;
+  const fetcher = options.fetch!;
+  options.fetch = async (url, init) => {
+    if (String(url).endsWith('/complete')) {
+      completions++;
+      const readiness = JSON.parse(String(init?.body)).readiness;
+      expect(readiness.installation.state).toBe('READY');
+      expect(readiness.platform).toBe(process.platform);
+      expect(readiness.versions).toEqual({
+        cli: JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'))
+          .version,
+        scanner: candidate.manifest.version,
+        hosts: [{ host: 'claude-code', editor: '2.1.0', hooks: '0.10.0' }],
+      });
+      expect((await scannerReceipt(state))!.snapshot.lifecycle.pid).toBeTruthy();
+      return Response.json({ status: 'completed' });
+    }
+    return fetcher(url, init);
+  };
+  const result = await enableScanner({ ...options, store, source: async () => candidate });
+  expect(completions).toBe(1);
+  expect(result.installation).toMatchObject({ state: 'READY', reasons: [] });
+  expect(result.scanner?.heartbeatAt).toBeTruthy();
+  const status = await collectStatusDocument({
+    cwd: home,
+    input: Readable.from([]),
+    stateDir: state,
+    configuredHosts: [],
+    projectHookConditions: [],
+    preflight: { status: 'ready', project: {} } as never,
+  });
+  expect(status.installation.state).toBe('READY');
+  expect(status.scanner?.heartbeatAt).toBeTruthy();
+});
+
+it.each(['success', 'failure', 'existing-identity', 'skip'])(
+  'joined scanner install: %s',
+  async (ending) => {
+    const root = consent.roots[0]!;
+    await promisify(execFile)('git', ['init', root]);
+    const executor = createProjectSetupExecutor({
+      stateDir: state,
+      scopeKey: 'owner:installation',
+      resolver: { resolveProjectIdentity },
+      bindContext: async () => ({
+        deviceRootContext: { algorithmVersion: 1, hash: 'a'.repeat(64) },
+        repositoryFingerprint: { algorithmVersion: 1, hash: 'b'.repeat(64) },
+      }),
+      transport: {
+        issueSetupRequest: async (input) =>
+          input.projectId
+            ? { status: 'complete', projectId: input.projectId, displayName: 'repo' }
+            : {
+                status: 'project_setup_required',
+                state: 'missing',
+                requestId: 'request',
+                allowedActions: ['create'],
+              },
+        consumeSetupRequest: async () => ({
+          status: 'complete',
+          projectId: '12345678-1234-4234-8234-123456789012',
+          displayName: 'repo',
+        }),
+      },
+    });
+    const identity = join(root, '.mnemonik.json');
+    if (ending === 'existing-identity')
+      await executor.ensureProject({ cwd: root, allowCreate: true, allowNestedInherit: false });
+    const before = await bytesAt(identity);
+    if (ending === 'failure' || ending === 'existing-identity')
+      options.source = async () => {
+        throw new Error('scanner_step_failed');
+      };
+    if (ending === 'skip')
+      options.command = async (operation) =>
+        operation === 'install'
+          ? {
+              status: 'LIMITED',
+              reason: 'windows_task_creation_failed',
+              detail: 'Access is denied.',
+              action: 'mnemonik scanner enable',
+            }
+          : ({
+              status: 'ok',
+              supervisor: { kind: 'windows-task', installed: false, running: false, pid: null },
+            } as never);
+    const fetcher = options.fetch!;
+    options.fetch = async (url, init) =>
+      String(url).endsWith('/revoke') ? Response.json({ status: 'revoked' }) : fetcher(url, init);
+    let text = '';
+    const code = await runCli(
+      [
+        'install',
+        '--components=scanner',
+        '--accept-scanner',
+        '--apply',
+        '--non-interactive',
+        '--json',
+        `--scan-roots=${root}`,
+      ],
+      {
+        cwd: root,
+        home,
+        installStateDir: state,
+        stdout: {
+          write: (chunk) => {
+            text += chunk;
+          },
+        },
+        stderr: { write() {} },
+        preflight: {
+          nodeVersion: '24.21.0',
+          fetch: async () => Response.json({}),
+          pathExists: async () => false,
+          resolveIdentity: resolveProjectIdentity,
+        },
+        cliAuth: {
+          signIn: async () => {},
+          getCliBearer: async () => 'cli-token',
+          logout: async () => {},
+        },
+        hostManagement: {
+          stateDir: state,
+          account: 'owner',
+          getCliBearer: async () => 'cli-token',
+        },
+        projectExecutor: { ...executor, resolveProjectIdentity },
+        projectTransport: {
+          getDefaultOwner: async () => 'personal',
+          readProjectState: async () => ({ state: 'access' }),
+        },
+        scannerEnable: options,
+      }
+    );
+    const report = JSON.parse(text);
+    expect(report).toMatchObject({
+      targets: [],
+      reports: expect.any(Array),
+      runId: expect.any(String),
+    });
+    if (ending === 'failure' || ending === 'existing-identity') {
+      // A scanner failure or an unresolvable identity file never fails the
+      // joined install: the editors stay, the scanner alone is rolled back,
+      // and the run ends with a limitation or an action.
+      expect(code).toBe(3);
+      expect(report.status).not.toBe('FAILED');
+      expect(['LIMITED', 'ACTION_REQUIRED']).toContain(report.installation.state);
+      if (ending === 'existing-identity') expect(await bytesAt(identity)).toEqual(before);
+      expect(await bytesAt(join(state, 'scanner/state.json'))).toBeNull();
+    } else {
+      expect(code).toBe(3);
+      expect(report.installation.state).toBe('LIMITED');
+      expect(await bytesAt(identity)).not.toBeNull();
+      if (ending === 'skip') {
+        expect(report.reports.join(' ')).toContain('Scanner was skipped');
+        expect(await bytesAt(join(state, 'scanner/state.json'))).toBeNull();
+      } else
+        expect(report.projects[0].summary).toEqual({
+          state: 'LIMITED',
+          reasons: ['dev_release_source'],
+          actions: [],
+        });
+    }
+  },
+  30000
+);
+
+it.each([false, true])(
+  'scanner compensation preserves original state after daemon writes (existing: %s)',
+  async (existing) => {
+    if (existing) await enableScanner(options);
+    const path = join(state, 'scanner/state.json');
+    const before = await bytesAt(path);
+    const pointer = await bytesAt(store.pointerPath('scanner'));
+    await withInstall(
+      state,
+      {
+        account: 'owner',
+        hosts: [],
+        components: ['scanner'],
+        scopes: {},
+        roots: consent.roots,
+        credentials: [],
+        joined: true,
+      },
+      undefined,
+      async (journal) => {
+        const fetcher = options.fetch!;
+        await expect(
+          prepareScanner(
+            {
+              ...options,
+              journal,
+              fetch: async (url, init) =>
+                String(url).endsWith('/revoke')
+                  ? Response.json({ status: 'revoked' })
+                  : fetcher(url, init),
+              ...(existing
+                ? {
+                    source: async () => {
+                      throw new Error('scanner_step_failed');
+                    },
+                  }
+                : {}),
+            },
+            async (prepared) => {
+              try {
+                await prepared.apply(journal);
+                throw new Error('report_failed_after_heartbeat');
+              } finally {
+                await prepared.rollback(journal);
+              }
+            }
+          )
+        ).rejects.toThrow(existing ? 'scanner_step_failed' : 'report_failed_after_heartbeat');
+        expect(await bytesAt(path)).toEqual(before);
+        expect(await bytesAt(store.pointerPath('scanner'))).toEqual(pointer);
+        if (existing) expect(JSON.parse((await bytesAt(path))!.toString()).paused).toBe(false);
+      }
+    );
+  }
+);

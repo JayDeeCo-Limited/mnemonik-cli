@@ -1,0 +1,3 @@
+  Approve this CLI in the browser.
+  Compare the code and confirm the account and computer shown there.
+

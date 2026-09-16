@@ -1,0 +1,39 @@
+{
+  "name": "@mnemonik/local-setup",
+  "version": "0.1.2",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/JayDeeCo-Limited/mnemonik.git",
+    "directory": "packages/local-setup"
+  },
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "node ../../node_modules/@typescript/native/bin/tsc",
+    "typecheck": "node ../../node_modules/@typescript/native/bin/tsc --noEmit -p tsconfig.test.json",
+    "test": "vitest run --config vitest.config.ts tests/executor.test.ts",
+    "prepublishOnly": "npm run build"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "license": "SEE LICENSE IN LICENSE",
+  "dependencies": {
+    "@mnemonik/shared": "7.99.2",
+    "proper-lockfile": "4.1.2"
+  },
+  "devDependencies": {
+    "@types/proper-lockfile": "4.1.4",
+    "@typescript/native": "npm:typescript@7.0.2"
+  }
+}

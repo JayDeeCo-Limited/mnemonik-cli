@@ -1,0 +1,15 @@
+  Ready to install
+
+  Claude Code    ~/.claude/settings.json
+  Cursor         ~/.cursor/mcp.json
+  Codex          ~/.codex/config.toml
+  Scanner        background service, starts at login
+  This project   "acme-api" set up, saves .mnemonik.json
+
+  Existing files are backed up and restored if anything fails.
+  Your selected editors are connected.
+
+  > Install and upload
+    Back
+    Cancel
+

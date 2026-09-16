@@ -1,0 +1,3 @@
+  Opening your browser to sign in.
+  Waiting for you to sign in and approve, up to 10 minutes.
+

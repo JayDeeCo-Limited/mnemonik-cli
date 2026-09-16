@@ -1,0 +1,167 @@
+import { devReadiness } from './runtime/releaseSource.js';
+import {
+  apiOrigin,
+  reduceReadiness,
+  serializeReadiness as baseReadiness,
+  type ReadinessDocument,
+  type ReadinessDocumentInput,
+} from '@mnemonik/shared';
+import type { Output } from './output.js';
+import { renderStatusSummaries } from './status.js';
+
+export type InstallSummary = ReadinessDocumentInput & {
+  steps: Array<{
+    name: string;
+    status: 'READY' | 'LIMITED' | 'ACTION_REQUIRED' | 'FAILED' | 'not_implemented';
+    action?: string;
+    owner?: string;
+  }>;
+};
+
+export interface InstallSessionTransport {
+  getCurrent(): Promise<{ id: string }>;
+  complete(id: string, readiness: ReadinessDocument): Promise<void>;
+}
+
+export type InstallSessionReport =
+  | { status: 'not_signed_in' }
+  | { status: 'not_ready'; id: string }
+  | { status: 'completed'; id: string }
+  | { status: 'report_failed'; reason: string };
+
+export const serializeInstallReadiness = (
+  input: Omit<InstallSummary, 'steps'>
+): ReadinessDocument => serializeReadiness(input);
+
+export function createHttpInstallSessionTransport(
+  accessToken: string,
+  fetcher: typeof globalThis.fetch = globalThis.fetch,
+  apiUrl = 'https://api.mnemonik.dev'
+): InstallSessionTransport {
+  const request = async (path: string, method: 'GET' | 'POST', body?: unknown) => {
+    const response = await fetcher(new URL(path, apiUrl), {
+      method,
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        ...(body ? { 'Content-Type': 'application/json' } : {}),
+      },
+      ...(body ? { body: JSON.stringify(body) } : {}),
+    });
+    if (!response.ok) throw new Error(`Install-session ${method} failed: HTTP ${response.status}`);
+    return response;
+  };
+  return {
+    getCurrent: async () =>
+      (await (await request('/api/v1/install-sessions/current', 'GET')).json()) as { id: string },
+    complete: async (id, readiness) => {
+      await request(`/api/v1/install-sessions/${encodeURIComponent(id)}/complete`, 'POST', {
+        readiness,
+      });
+    },
+  };
+}
+
+export async function postCurrentReadiness(
+  accessToken: string,
+  readiness: ReadinessDocument,
+  fetcher: typeof globalThis.fetch = globalThis.fetch,
+  apiUrl = apiOrigin()
+): Promise<void> {
+  const response = await fetcher(new URL('/api/v1/installations/current/readiness', apiUrl), {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ readiness }),
+  });
+  if (!response.ok) throw new Error(`Install-session POST failed: HTTP ${response.status}`);
+}
+
+export async function reportInstall(
+  input: InstallSummary,
+  output: Output,
+  transport?: InstallSessionTransport,
+  json = false
+): Promise<InstallSessionReport> {
+  const { steps, ...readinessInput } = input;
+  const generatedAt = readinessInput.generatedAt ?? new Date().toISOString();
+  const initial = serializeInstallReadiness({ ...readinessInput, generatedAt });
+  let installSession: InstallSessionReport = transport
+    ? { status: 'report_failed', reason: 'Install session was not read' }
+    : { status: 'not_signed_in' };
+  let document = serializeReadiness({
+    ...readinessInput,
+    generatedAt,
+    installSession: {
+      id: null,
+      status: 'not_signed_in',
+      kind: null,
+      startedAt: null,
+      completedAt: null,
+    },
+  });
+  if (transport) {
+    try {
+      const current = await transport.getCurrent();
+      installSession =
+        initial.installation.state === 'READY'
+          ? { status: 'completed', id: current.id }
+          : { status: 'not_ready', id: current.id };
+      document = serializeReadiness({
+        ...readinessInput,
+        generatedAt,
+        installSession: {
+          id: current.id,
+          status: installSession.status,
+          kind: null,
+          startedAt: null,
+          completedAt: null,
+        },
+      });
+      if (installSession.status === 'completed') await transport.complete(current.id, document);
+    } catch (error) {
+      installSession = {
+        status: 'report_failed',
+        reason: error instanceof Error ? error.message : String(error),
+      };
+      const uploadFailure = reduceReadiness([
+        {
+          kind: 'post_commit_upload_failed',
+          reason: 'The final installation status could not be uploaded.',
+          action: 'Run mnemonik doctor and retry the report.',
+        },
+      ]);
+      document = serializeReadiness({
+        ...readinessInput,
+        installation: {
+          state: uploadFailure.state,
+          reasons: [...initial.installation.reasons, ...uploadFailure.reasons],
+          actions: [...initial.installation.actions, ...uploadFailure.actions],
+        },
+        generatedAt,
+        installSession: {
+          id: null,
+          status: 'report_failed',
+          kind: null,
+          startedAt: null,
+          completedAt: null,
+        },
+      });
+    }
+  }
+  if (json) output.json(document);
+  else {
+    renderStatusSummaries(document, output);
+    for (const step of steps) {
+      const owner = step.owner ? ` (${step.owner})` : '';
+      output.line(
+        `  ${step.name}: ${step.status}${owner}${step.action ? ` - ${step.action}` : ''}`
+      );
+    }
+    output.line(`  Install session: ${installSession.status}`);
+    output.line();
+    output.line('  Status and devices: https://app.mnemonik.ai/install');
+    output.line('  On this machine: mnemonik status');
+  }
+  return installSession;
+}
+
+const serializeReadiness: typeof baseReadiness = (input) => devReadiness(baseReadiness(input));

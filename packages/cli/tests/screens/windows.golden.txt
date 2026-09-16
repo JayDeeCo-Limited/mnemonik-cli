@@ -1,0 +1,4 @@
+  Your editors are connected. The scanner could not be installed.
+  Windows could not create the logon task: Access is denied.
+  Run mnemonik scanner enable to try again.
+

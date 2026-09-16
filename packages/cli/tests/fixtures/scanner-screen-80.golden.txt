@@ -1,0 +1,19 @@
+  What should Mnemonik watch?
+
+    1. This project
+  > 2. This folder and everything under it     <folder>
+    3. Another path
+
+  3 repositories under <folder> will be indexed
+    p/acme-api     Existing project
+    p/acme-web     Set up from its Git remote
+    ...            1 more repository
+
+  Repositories up to 3 folders deep are included.
+  Review the list and choose the ones you want.
+
+  Repositories (all selected)
+    1. [x] p/acme-api - Existing project
+    2. [x] p/acme-web - Set up from its Git remote
+    3. [x] p/third - Not set up yet
+  Enter repository numbers to exclude, separated by commas.

@@ -1,0 +1,68 @@
+{
+  "name": "@mnemonik/shared",
+  "version": "7.99.2",
+  "description": "Shared constants and utilities for Mnemonik packages",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/JayDeeCo-Limited/mnemonik.git",
+    "directory": "packages/shared"
+  },
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    },
+    "./testing/host-adapter-conformance": {
+      "import": "./dist/testing/hostAdapterConformance.js",
+      "types": "./dist/testing/hostAdapterConformance.d.ts"
+    },
+    "./hook-timeouts": {
+      "import": "./dist/hookTimeouts.js",
+      "types": "./dist/hookTimeouts.d.ts"
+    },
+    "./hook-runtime": {
+      "import": "./dist/hookRuntime.js",
+      "types": "./dist/hookRuntime.d.ts"
+    },
+    "./ambient-pointer": {
+      "import": "./dist/ambientPointer.js",
+      "types": "./dist/ambientPointer.d.ts"
+    },
+    "./context-budget": {
+      "import": "./dist/contextBudget.js",
+      "types": "./dist/contextBudget.d.ts"
+    },
+    "./git-edit-detector": {
+      "import": "./dist/gitEditDetector.js",
+      "types": "./dist/gitEditDetector.d.ts"
+    },
+    "./jit-delivery-ack": {
+      "import": "./dist/jitDeliveryAck.js",
+      "types": "./dist/jitDeliveryAck.d.ts"
+    }
+  },
+  "scripts": {
+    "test": "tsx --test --test-concurrency=2 tests/repositoryFingerprint.test.ts tests/projectIdentity.test.ts tests/readiness.test.ts",
+    "build": "node ../../node_modules/@typescript/native/bin/tsc",
+    "typecheck": "node ../../node_modules/@typescript/native/bin/tsc --noEmit -p tsconfig.test.json",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "mnemonik",
+    "shared",
+    "constants"
+  ],
+  "author": "Anthony",
+  "license": "SEE LICENSE IN LICENSE",
+  "dependencies": {
+    "ignore": "^7.0.6",
+    "web-tree-sitter": "0.26.13"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.43",
+    "@typescript/native": "npm:typescript@7.0.2"
+  }
+}

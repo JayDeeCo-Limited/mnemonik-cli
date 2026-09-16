@@ -1,0 +1,13 @@
+Mnemonik
+
+  Found      Claude Code, Cursor, Codex
+  Project    ~/code/acme-api
+  Node 24.21.0, macOS 15.3
+
+  Recommended setup
+    Memory tools and hooks in all three editors
+    Background scanner watching this project
+
+  > Recommended
+    Customize
+

@@ -1,0 +1,834 @@
+{
+  "algorithmVersion": 1,
+  "remotes": [
+    {
+      "group": "table",
+      "name": "https",
+      "url": "https://github.com/Acme/Repo.git",
+      "expected": {
+        "canonical": "repo-v1:github:github.com/Acme/Repo",
+        "hash": "e6937c5b7cf5d0fef21e6f082dedb28b658252de020238fec4d57e0810124057",
+        "algorithmVersion": 1
+      }
+    },
+    {
+      "group": "table",
+      "name": "scp",
+      "url": "git@github.com:Acme/Repo.git",
+      "expected": {
+        "canonical": "repo-v1:github:github.com/Acme/Repo",
+        "hash": "e6937c5b7cf5d0fef21e6f082dedb28b658252de020238fec4d57e0810124057",
+        "algorithmVersion": 1
+      }
+    },
+    {
+      "group": "table",
+      "name": "ssh",
+      "url": "ssh://git@github.com/Acme/Repo",
+      "expected": {
+        "canonical": "repo-v1:github:github.com/Acme/Repo",
+        "hash": "e6937c5b7cf5d0fef21e6f082dedb28b658252de020238fec4d57e0810124057",
+        "algorithmVersion": 1
+      }
+    },
+    {
+      "group": "table",
+      "name": "idna",
+      "url": "https://bücher.example/Org/Repo",
+      "expected": {
+        "canonical": "repo-v1:https:xn--bcher-kva.example/Org/Repo",
+        "hash": "63656842ab72aac80ac0fb788c3e72969c10d15621456ab5c357e7f4062e48cb",
+        "algorithmVersion": 1
+      }
+    },
+    {
+      "group": "table",
+      "name": "ipv6",
+      "url": "ssh://git@[2001:db8::1]:2222/Org/Repo.git",
+      "expected": {
+        "canonical": "repo-v1:ssh:git@[2001:db8::1]:2222/Org/Repo.git",
+        "hash": "a9370aafff669006b626795f6c10be7d19319ddfe04a91a9c42aacef1ee9c403",
+        "algorithmVersion": 1
+      }
+    },
+    {
+      "group": "table",
+      "name": "alice",
+      "url": "ssh://alice@example.com/Org/Repo.git",
+      "expected": {
+        "canonical": "repo-v1:ssh:alice@example.com/Org/Repo.git",
+        "hash": "85b72ad4bcb9ee0dca0d16b385d0715b8b59821e8fbb86663e581c879acb010f",
+        "algorithmVersion": 1
+      }
+    },
+    {
+      "group": "table",
+      "name": "bob",
+      "url": "ssh://bob@example.com/Org/Repo.git",
+      "expected": {
+        "canonical": "repo-v1:ssh:bob@example.com/Org/Repo.git",
+        "hash": "541f8474942160068dd89b20f84e752d41f4f6a9de38c95aea61e3f9d7a0a35f",
+        "algorithmVersion": 1
+      }
+    },
+    {
+      "group": "table",
+      "name": "unknown-https",
+      "url": "https://example.com/Org/Repo.git",
+      "expected": {
+        "canonical": "repo-v1:https:example.com/Org/Repo.git",
+        "hash": "7654c22aebe5b844e04d744ac961f0654a9e731eac8db8787390bcf197417148",
+        "algorithmVersion": 1
+      }
+    },
+    {
+      "group": "table",
+      "name": "https-userinfo",
+      "url": "https://token@github.com/Acme/Repo",
+      "expected": {
+        "status": "rejected",
+        "reason": "https_userinfo"
+      }
+    },
+    {
+      "group": "table",
+      "name": "ssh-password",
+      "url": "ssh://git:secret@github.com/Acme/Repo",
+      "expected": {
+        "status": "rejected",
+        "reason": "ssh_password"
+      }
+    },
+    {
+      "group": "table",
+      "name": "escaped-slash",
+      "url": "https://github.com/Acme/%2FRepo",
+      "expected": {
+        "status": "rejected",
+        "reason": "escaped_separator"
+      }
+    },
+    {
+      "group": "table",
+      "name": "file",
+      "url": "file:///srv/repos/Acme/Repo",
+      "expected": {
+        "status": "rejected",
+        "reason": "local_remote"
+      }
+    },
+    {
+      "group": "github",
+      "name": "default-https",
+      "url": "https://GITHUB.COM:443/Acme/Repo.git/",
+      "expected": {
+        "canonical": "repo-v1:github:github.com/Acme/Repo",
+        "hash": "e6937c5b7cf5d0fef21e6f082dedb28b658252de020238fec4d57e0810124057",
+        "algorithmVersion": 1
+      }
+    },
+    {
+      "group": "github",
+      "name": "default-ssh",
+      "url": "ssh://git@github.com:22/Acme/Repo.git",
+      "expected": {
+        "canonical": "repo-v1:github:github.com/Acme/Repo",
+        "hash": "e6937c5b7cf5d0fef21e6f082dedb28b658252de020238fec4d57e0810124057",
+        "algorithmVersion": 1
+      }
+    },
+    {
+      "group": "github",
+      "name": "one-suffix",
+      "url": "https://github.com/Acme/Repo.git.git",
+      "expected": {
+        "canonical": "repo-v1:github:github.com/Acme/Repo.git",
+        "hash": "b4880086db53cf7f8fb3f89f4ba76bab278840ba773346a3a05f7244f9f857e5",
+        "algorithmVersion": 1
+      }
+    },
+    {
+      "group": "github",
+      "name": "suffix-case",
+      "url": "https://github.com/Acme/Repo.GIT",
+      "expected": {
+        "canonical": "repo-v1:github:github.com/Acme/Repo.GIT",
+        "hash": "76d7ef1ecae812f668d37840d7279d4523e88c5a27c947149ff527a934ba40ba",
+        "algorithmVersion": 1
+      }
+    },
+    {
+      "group": "github",
+      "name": "other-user",
+      "url": "ssh://alice@github.com/Acme/Repo.git",
+      "expected": {
+        "canonical": "repo-v1:ssh:alice@github.com/Acme/Repo.git",
+        "hash": "cb495aa0146bce16345c82dae5d2a45668e2e98cf8ecb659dc22eccf7b4895f0",
+        "algorithmVersion": 1
+      }
+    },
+    {
+      "group": "github",
+      "name": "nondefault-https",
+      "url": "https://github.com:8443/Acme/Repo.git",
+      "expected": {
+        "canonical": "repo-v1:https:github.com:8443/Acme/Repo.git",
+        "hash": "fc503cd7101dbb30927d2f0cb637df8825c04365bef178e2b0671cf803cfcd85",
+        "algorithmVersion": 1
+      }
+    },
+    {
+      "group": "github",
+      "name": "nondefault-ssh",
+      "url": "ssh://git@github.com:2222/Acme/Repo.git",
+      "expected": {
+        "canonical": "repo-v1:ssh:git@github.com:2222/Acme/Repo.git",
+        "hash": "0b76161c92d2c43475c044ab906c635a4626d152fd33ea69345fb265f791dcdf",
+        "algorithmVersion": 1
+      }
+    },
+    {
+      "group": "unknown-host",
+      "name": "no-suffix",
+      "url": "https://example.com/Org/Repo",
+      "expected": {
+        "canonical": "repo-v1:https:example.com/Org/Repo",
+        "hash": "a83be6c6a5c64670847c3e17b848fb41953670b075e5c7787b870fc1edda6189",
+        "algorithmVersion": 1
+      }
+    },
+    {
+      "group": "unknown-host",
+      "name": "scp-user",
+      "url": "alice@example.com:Org/Repo.git",
+      "expected": {
+        "status": "rejected",
+        "reason": "scp_unreviewed_remote"
+      }
+    },
+    {
+      "group": "unknown-host",
+      "name": "default-https",
+      "url": "https://EXAMPLE.COM:0443/Org/Repo.git",
+      "expected": {
+        "canonical": "repo-v1:https:example.com/Org/Repo.git",
+        "hash": "7654c22aebe5b844e04d744ac961f0654a9e731eac8db8787390bcf197417148",
+        "algorithmVersion": 1
+      }
+    },
+    {
+      "group": "unknown-host",
+      "name": "default-ssh",
+      "url": "ssh://alice@example.com:22/Org/Repo.git",
+      "expected": {
+        "canonical": "repo-v1:ssh:alice@example.com/Org/Repo.git",
+        "hash": "85b72ad4bcb9ee0dca0d16b385d0715b8b59821e8fbb86663e581c879acb010f",
+        "algorithmVersion": 1
+      }
+    },
+    {
+      "group": "unknown-host",
+      "name": "nondefault",
+      "url": "https://example.com:8443/Org/Repo.git",
+      "expected": {
+        "canonical": "repo-v1:https:example.com:8443/Org/Repo.git",
+        "hash": "71cec51bba914c4670732ffac05b2bec606483d86b4b10b520f2e4f42ae677d6",
+        "algorithmVersion": 1
+      }
+    },
+    {
+      "group": "unknown-host",
+      "name": "other-host",
+      "url": "https://other.example/Org/Repo.git",
+      "expected": {
+        "canonical": "repo-v1:https:other.example/Org/Repo.git",
+        "hash": "da458cfd0e2165b1f5ce14b490c9197c5eb8009d53282d0d647735d892c0e2ac",
+        "algorithmVersion": 1
+      }
+    },
+    {
+      "group": "normalization",
+      "name": "idna-ssh",
+      "url": "ssh://git@BÜCHER.example/Org/Repo",
+      "expected": {
+        "canonical": "repo-v1:ssh:git@xn--bcher-kva.example/Org/Repo",
+        "hash": "1ebaed772307830c1b2d10ed1b33bd97f3c7b4e1c64ba71a6b898d77d1f169ca",
+        "algorithmVersion": 1
+      }
+    },
+    {
+      "group": "normalization",
+      "name": "ipv6-compress",
+      "url": "ssh://git@[2001:0DB8:0000:0000:0000:0000:0000:0001]:22/Org/Repo",
+      "expected": {
+        "canonical": "repo-v1:ssh:git@[2001:db8::1]/Org/Repo",
+        "hash": "35982e2e09c1494d48dc10021af23d98f1243b0356c52a02820831d38b0c72e5",
+        "algorithmVersion": 1
+      }
+    },
+    {
+      "group": "normalization",
+      "name": "ipv6-tie",
+      "url": "https://[2001:0:0:1:0:0:1:1]/Repo",
+      "expected": {
+        "canonical": "repo-v1:https:[2001::1:0:0:1:1]/Repo",
+        "hash": "cbbd145c52da053659853bb2e02a2472a2fcd69c62eedabb51ed13ccf655af63",
+        "algorithmVersion": 1
+      }
+    },
+    {
+      "group": "normalization",
+      "name": "ipv6-single-zero",
+      "url": "https://[2001:db8:0:1:1:1:1:1]/Repo",
+      "expected": {
+        "canonical": "repo-v1:https:[2001:db8:0:1:1:1:1:1]/Repo",
+        "hash": "afdf490f569367927f4321600e6317ae4bf4c33380f3d05a1f16ad4a099dcbdf",
+        "algorithmVersion": 1
+      }
+    },
+    {
+      "group": "normalization",
+      "name": "nfc",
+      "url": "https://example.com/Café/R%65po",
+      "expected": {
+        "canonical": "repo-v1:https:example.com/Caf%C3%A9/Repo",
+        "hash": "9dd50443ac58036d76add92d127dee20dfd610dc82645456d77fe0d8478ff0b2",
+        "algorithmVersion": 1
+      }
+    },
+    {
+      "group": "normalization",
+      "name": "utf8-escapes",
+      "url": "https://example.com/Caf%c3%a9/Repo",
+      "expected": {
+        "canonical": "repo-v1:https:example.com/Caf%C3%A9/Repo",
+        "hash": "9dd50443ac58036d76add92d127dee20dfd610dc82645456d77fe0d8478ff0b2",
+        "algorithmVersion": 1
+      }
+    },
+    {
+      "group": "normalization",
+      "name": "decode-once",
+      "url": "https://example.com/Org/%252FRepo",
+      "expected": {
+        "canonical": "repo-v1:https:example.com/Org/%252FRepo",
+        "hash": "ee0d065b06624701bf4f2ed0d36da27b49aacecf75c015e3cdb694f8549de042",
+        "algorithmVersion": 1
+      }
+    },
+    {
+      "group": "normalization",
+      "name": "encode-reserved",
+      "url": "https://example.com/Org/a b!'()*",
+      "expected": {
+        "canonical": "repo-v1:https:example.com/Org/a%20b%21%27%28%29%2A",
+        "hash": "88bc6f6fc3831cd81802bd3b6bf87f70b37565fd635464610038370ed461d9de",
+        "algorithmVersion": 1
+      }
+    },
+    {
+      "group": "normalization",
+      "name": "ignored-query",
+      "url": "https://github.com/Acme/Repo.git?q=hello#branch",
+      "expected": {
+        "canonical": "repo-v1:github:github.com/Acme/Repo",
+        "hash": "e6937c5b7cf5d0fef21e6f082dedb28b658252de020238fec4d57e0810124057",
+        "algorithmVersion": 1
+      }
+    },
+    {
+      "group": "normalization",
+      "name": "path-case",
+      "url": "https://github.com/acme/repo.git",
+      "expected": {
+        "canonical": "repo-v1:github:github.com/acme/repo",
+        "hash": "ddbbc950d7a634f89bfc615a12897f853eff84d129c5ee3b02ba7876a97a711e",
+        "algorithmVersion": 1
+      }
+    },
+    {
+      "group": "normalization",
+      "name": "changed-origin",
+      "url": "https://github.com/Acme/Other.git",
+      "expected": {
+        "canonical": "repo-v1:github:github.com/Acme/Other",
+        "hash": "37730d1f0fdfebda80b4d8d40963de6451b9974cae684ffbb17bf3eed74ee6a9",
+        "algorithmVersion": 1
+      }
+    },
+    {
+      "group": "normalization",
+      "name": "fork",
+      "url": "https://github.com/Fork/Repo.git",
+      "expected": {
+        "canonical": "repo-v1:github:github.com/Fork/Repo",
+        "hash": "d0772bb5f97fd7e87a1070558614c2af3f9ad3d7eb0dcf55d0aeb6079ffddc33",
+        "algorithmVersion": 1
+      }
+    },
+    {
+      "group": "normalization",
+      "name": "subpath",
+      "url": "https://example.com/Org/Repo/sub",
+      "expected": {
+        "canonical": "repo-v1:https:example.com/Org/Repo/sub",
+        "hash": "2948e9ac73035143c4b2b6dcda3ce52c79b4a13c8139080c70eb133d024489e1",
+        "algorithmVersion": 1
+      }
+    },
+    {
+      "group": "rejections",
+      "name": "https-password",
+      "url": "https://user:ghp_example@github.com/Acme/Repo",
+      "expected": {
+        "status": "rejected",
+        "reason": "https_userinfo"
+      }
+    },
+    {
+      "group": "rejections",
+      "name": "empty-userinfo",
+      "url": "https://@github.com/Acme/Repo",
+      "expected": {
+        "status": "rejected",
+        "reason": "https_userinfo"
+      }
+    },
+    {
+      "group": "rejections",
+      "name": "empty-password",
+      "url": "ssh://git:@github.com/Acme/Repo",
+      "expected": {
+        "status": "rejected",
+        "reason": "ssh_password"
+      }
+    },
+    {
+      "group": "rejections",
+      "name": "no-ssh-user",
+      "url": "ssh://example.com/Org/Repo",
+      "expected": {
+        "status": "rejected",
+        "reason": "ssh_user_required"
+      }
+    },
+    {
+      "group": "rejections",
+      "name": "escaped-user",
+      "url": "ssh://g%69t@github.com/Acme/Repo",
+      "expected": {
+        "status": "rejected",
+        "reason": "invalid_ssh_user"
+      }
+    },
+    {
+      "group": "rejections",
+      "name": "unicode-user",
+      "url": "ssh://álîce@example.com/Org/Repo",
+      "expected": {
+        "status": "rejected",
+        "reason": "invalid_ssh_user"
+      }
+    },
+    {
+      "group": "rejections",
+      "name": "control",
+      "url": "https://example.com/Org/Re\npo",
+      "expected": {
+        "status": "rejected",
+        "reason": "control_character"
+      }
+    },
+    {
+      "group": "rejections",
+      "name": "encoded-control",
+      "url": "https://example.com/Org/%00Repo",
+      "expected": {
+        "status": "rejected",
+        "reason": "control_character"
+      }
+    },
+    {
+      "group": "rejections",
+      "name": "c1-control",
+      "url": "https://example.com/Org/%C2%85Repo",
+      "expected": {
+        "status": "rejected",
+        "reason": "control_character"
+      }
+    },
+    {
+      "group": "rejections",
+      "name": "backslash",
+      "url": "https://example.com/Org\\Repo",
+      "expected": {
+        "status": "rejected",
+        "reason": "backslash"
+      }
+    },
+    {
+      "group": "rejections",
+      "name": "escaped-backslash",
+      "url": "https://example.com/Org/%5cRepo",
+      "expected": {
+        "status": "rejected",
+        "reason": "escaped_separator"
+      }
+    },
+    {
+      "group": "rejections",
+      "name": "dotdot",
+      "url": "https://example.com/Org/../Repo",
+      "expected": {
+        "status": "rejected",
+        "reason": "dot_segment"
+      }
+    },
+    {
+      "group": "rejections",
+      "name": "encoded-dotdot",
+      "url": "https://example.com/Org/%2e%2E/Repo",
+      "expected": {
+        "status": "rejected",
+        "reason": "dot_segment"
+      }
+    },
+    {
+      "group": "rejections",
+      "name": "dot",
+      "url": "https://example.com/Org/./Repo",
+      "expected": {
+        "status": "rejected",
+        "reason": "dot_segment"
+      }
+    },
+    {
+      "group": "rejections",
+      "name": "empty-segment",
+      "url": "https://example.com/Org//Repo",
+      "expected": {
+        "status": "rejected",
+        "reason": "empty_segment"
+      }
+    },
+    {
+      "group": "rejections",
+      "name": "double-trailing",
+      "url": "https://example.com/Org/Repo//",
+      "expected": {
+        "status": "rejected",
+        "reason": "empty_segment"
+      }
+    },
+    {
+      "group": "rejections",
+      "name": "no-path",
+      "url": "https://example.com/",
+      "expected": {
+        "status": "rejected",
+        "reason": "empty_segment"
+      }
+    },
+    {
+      "group": "rejections",
+      "name": "empty-provider-path",
+      "url": "https://github.com/.git",
+      "expected": {
+        "status": "rejected",
+        "reason": "empty_segment"
+      }
+    },
+    {
+      "group": "rejections",
+      "name": "invalid-utf8",
+      "url": "https://example.com/Org/%FF",
+      "expected": {
+        "status": "rejected",
+        "reason": "invalid_encoding"
+      }
+    },
+    {
+      "group": "rejections",
+      "name": "invalid-escape",
+      "url": "https://example.com/Org/%xy",
+      "expected": {
+        "status": "rejected",
+        "reason": "invalid_encoding"
+      }
+    },
+    {
+      "group": "rejections",
+      "name": "bad-port",
+      "url": "https://example.com:65536/Org/Repo",
+      "expected": {
+        "status": "rejected",
+        "reason": "invalid_port"
+      }
+    },
+    {
+      "group": "rejections",
+      "name": "bad-ipv6",
+      "url": "https://[bad::ip]/Org/Repo",
+      "expected": {
+        "status": "rejected",
+        "reason": "invalid_host"
+      }
+    },
+    {
+      "group": "rejections",
+      "name": "local-path",
+      "url": "/srv/repos/Repo",
+      "expected": {
+        "status": "rejected",
+        "reason": "invalid_remote"
+      }
+    },
+    {
+      "group": "rejections",
+      "name": "http",
+      "url": "http://example.com/Org/Repo",
+      "expected": {
+        "status": "rejected",
+        "reason": "unsupported_transport"
+      }
+    },
+    {
+      "group": "unknown-host",
+      "name": "scp-relative-path",
+      "url": "git@example.com:repos/app.git",
+      "expected": {
+        "status": "rejected",
+        "reason": "scp_unreviewed_remote"
+      }
+    },
+    {
+      "group": "rejections",
+      "name": "scp-absolute-path",
+      "url": "git@example.com:/repos/app.git",
+      "expected": {
+        "status": "rejected",
+        "reason": "scp_unreviewed_remote"
+      }
+    },
+    {
+      "group": "github",
+      "name": "scp-absolute-path",
+      "url": "git@github.com:/Acme/Repo.git",
+      "expected": {
+        "canonical": "repo-v1:github:github.com/Acme/Repo",
+        "hash": "e6937c5b7cf5d0fef21e6f082dedb28b658252de020238fec4d57e0810124057",
+        "algorithmVersion": 1
+      }
+    },
+    {
+      "group": "rejections",
+      "name": "scp-absolute-unreviewed-user",
+      "url": "alice@github.com:/Acme/Repo.git",
+      "expected": {
+        "status": "rejected",
+        "reason": "scp_unreviewed_remote"
+      }
+    }
+  ],
+  "selections": [
+    {
+      "group": "selection",
+      "name": "no-remote",
+      "remotes": [],
+      "expected": {
+        "status": "none",
+        "reason": "no_remote"
+      }
+    },
+    {
+      "group": "selection",
+      "name": "origin-preferred",
+      "remotes": [
+        {
+          "name": "upstream",
+          "fetchUrls": ["https://github.com/Fork/Repo.git"]
+        },
+        {
+          "name": "origin",
+          "fetchUrls": ["https://github.com/Acme/Repo.git"]
+        }
+      ],
+      "expected": {
+        "status": "fingerprint",
+        "remote": "origin",
+        "fingerprint": {
+          "canonical": "repo-v1:github:github.com/Acme/Repo",
+          "hash": "e6937c5b7cf5d0fef21e6f082dedb28b658252de020238fec4d57e0810124057",
+          "algorithmVersion": 1
+        }
+      }
+    },
+    {
+      "group": "selection",
+      "name": "several-without-origin",
+      "remotes": [
+        {
+          "name": "upstream",
+          "fetchUrls": ["https://github.com/Acme/Repo.git"]
+        },
+        {
+          "name": "fork",
+          "fetchUrls": ["https://github.com/Fork/Repo.git"]
+        }
+      ],
+      "expected": {
+        "status": "choice_required",
+        "reason": "multiple_remotes",
+        "remotes": ["upstream", "fork"]
+      }
+    },
+    {
+      "group": "selection",
+      "name": "equivalent-fetch-urls",
+      "remotes": [
+        {
+          "name": "origin",
+          "fetchUrls": ["https://github.com/Acme/Repo.git", "git@github.com:Acme/Repo.git"]
+        }
+      ],
+      "expected": {
+        "status": "fingerprint",
+        "remote": "origin",
+        "fingerprint": {
+          "canonical": "repo-v1:github:github.com/Acme/Repo",
+          "hash": "e6937c5b7cf5d0fef21e6f082dedb28b658252de020238fec4d57e0810124057",
+          "algorithmVersion": 1
+        }
+      }
+    },
+    {
+      "group": "selection",
+      "name": "different-fetch-urls",
+      "remotes": [
+        {
+          "name": "origin",
+          "fetchUrls": ["https://github.com/Acme/Repo.git", "https://github.com/Fork/Repo.git"]
+        }
+      ],
+      "expected": {
+        "status": "choice_required",
+        "reason": "different_urls",
+        "remotes": ["origin"]
+      }
+    },
+    {
+      "group": "selection",
+      "name": "equivalent-pushurl",
+      "remotes": [
+        {
+          "name": "origin",
+          "fetchUrls": ["https://github.com/Acme/Repo.git"],
+          "pushUrls": ["git@github.com:Acme/Repo.git"]
+        }
+      ],
+      "expected": {
+        "status": "fingerprint",
+        "remote": "origin",
+        "fingerprint": {
+          "canonical": "repo-v1:github:github.com/Acme/Repo",
+          "hash": "e6937c5b7cf5d0fef21e6f082dedb28b658252de020238fec4d57e0810124057",
+          "algorithmVersion": 1
+        }
+      }
+    },
+    {
+      "group": "selection",
+      "name": "different-pushurl",
+      "remotes": [
+        {
+          "name": "origin",
+          "fetchUrls": ["https://github.com/Acme/Repo.git"],
+          "pushUrls": ["https://github.com/Fork/Repo.git"]
+        }
+      ],
+      "expected": {
+        "status": "choice_required",
+        "reason": "different_urls",
+        "remotes": ["origin"]
+      }
+    },
+    {
+      "group": "selection",
+      "name": "unusable-url-among-many",
+      "remotes": [
+        {
+          "name": "origin",
+          "fetchUrls": ["https://github.com/Acme/Repo.git", "file:///repo"]
+        }
+      ],
+      "expected": {
+        "status": "choice_required",
+        "reason": "different_urls",
+        "remotes": ["origin"]
+      }
+    },
+    {
+      "group": "selection",
+      "name": "no-fetch-url",
+      "remotes": [
+        {
+          "name": "origin",
+          "fetchUrls": []
+        }
+      ],
+      "expected": {
+        "status": "none",
+        "reason": "no_fetch_url"
+      }
+    },
+    {
+      "group": "selection",
+      "name": "rejected-url",
+      "remotes": [
+        {
+          "name": "origin",
+          "fetchUrls": ["file:///repo"]
+        }
+      ],
+      "expected": {
+        "status": "rejected",
+        "remote": "origin",
+        "reason": "local_remote"
+      }
+    },
+    {
+      "group": "selection",
+      "name": "single-non-origin",
+      "remotes": [
+        {
+          "name": "upstream",
+          "fetchUrls": ["https://github.com/Acme/Repo.git"]
+        }
+      ],
+      "expected": {
+        "status": "fingerprint",
+        "remote": "upstream",
+        "fingerprint": {
+          "canonical": "repo-v1:github:github.com/Acme/Repo",
+          "hash": "e6937c5b7cf5d0fef21e6f082dedb28b658252de020238fec4d57e0810124057",
+          "algorithmVersion": 1
+        }
+      }
+    },
+    {
+      "name": "absolute-ssh-and-home-relative-scp-are-not-equivalent",
+      "remotes": [
+        {
+          "name": "origin",
+          "fetchUrls": ["ssh://alice@example.com/repos/app"],
+          "pushUrls": ["alice@example.com:repos/app"]
+        }
+      ],
+      "expected": {
+        "status": "choice_required",
+        "reason": "different_urls",
+        "remotes": ["origin"]
+      }
+    }
+  ]
+}
