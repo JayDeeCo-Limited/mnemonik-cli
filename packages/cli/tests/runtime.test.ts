@@ -359,7 +359,7 @@ describe('npm launch guard', () => {
 });
 
 describe('platform signer contracts', () => {
-  it('uses codesign with expected Team ID and spctl assessment', async () => {
+  it('uses codesign alone with an inline Team ID requirement', async () => {
     const run = vi.fn();
     await verifySigner('/runtime/scanner', { platform: 'darwin', identity: 'ABCDE12345' }, run);
     expect(run.mock.calls).toEqual([
@@ -369,11 +369,10 @@ describe('platform signer contracts', () => {
           '--verify',
           '--strict',
           '-R',
-          'anchor apple generic and certificate leaf[subject.OU] = "ABCDE12345"',
+          '=anchor apple generic and certificate leaf[subject.OU] = "ABCDE12345"',
           '/runtime/scanner',
         ],
       ],
-      ['/usr/sbin/spctl', ['--assess', '--type', 'execute', '--verbose=2', '/runtime/scanner']],
     ]);
   });
   it('uses Authenticode Valid status and exact thumbprint with an escaped literal path', async () => {

@@ -238,6 +238,68 @@ it('distinguishes an unbound host from a bound host that has not connected', asy
   }
 });
 
+it('reports a host skipped at install as still connecting, not unbound', async () => {
+  const { mkdtemp, writeFile, rm } = await import('node:fs/promises');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { Readable } = await import('node:stream');
+  const { collectStatusDocument } = await import('../src/status.js');
+  const { grantTransport } = await import('../src/auth/status.js');
+  const stateDir = await mkdtemp(join(tmpdir(), 'skipped-host-status-'));
+  try {
+    // Skip keeps the URL-only MCP declaration and records no grant for the target.
+    await writeFile(
+      join(stateDir, 'host-ownership.json'),
+      JSON.stringify({
+        schemaVersion: 1,
+        generation: 0,
+        targets: [
+          {
+            id: 'target',
+            host: 'cursor',
+            component: 'mcp',
+            profilePath: '/unused',
+            files: [],
+          },
+        ],
+      })
+    );
+    const grants = grantTransport(
+      async () => 'token',
+      async () => Response.json({ account: 'owner', deviceInstallationId: 'machine-a', grants: [] })
+    );
+    const document = await collectStatusDocument({
+      stateDir,
+      grants,
+      cwd: stateDir,
+      input: Readable.from(''),
+      preflight: {
+        status: 'ready',
+        node: { supported: true, version: '24' },
+        os: 'Linux',
+        hosts: [],
+        project: { resolution: 'absent' },
+        network: { reachable: true, discoveryUrl: '' },
+      },
+      scannerStatus: async () => ({ roots: [], exclusions: [], repositories: [] }),
+      projectHookConditions: [],
+    });
+    expect(document.installation).toEqual({
+      state: 'ACTION_REQUIRED',
+      reasons: [
+        'Cursor is still connecting. Finish the sign-in in the app, then run mnemonik status.',
+      ],
+      actions: ['mnemonik status'],
+    });
+    const lines: string[] = [];
+    renderStatusSummaries(document, { line: (line = '') => lines.push(line) });
+    expect(lines.join('\n')).not.toContain('host_grant_unbound');
+    expect(lines.join('\n')).not.toContain('mnemonik connect cursor');
+  } finally {
+    await rm(stateDir, { recursive: true, force: true });
+  }
+});
+
 it('checks only installed hook targets when other editors are present', async () => {
   const { mkdtemp, writeFile, rm } = await import('node:fs/promises');
   const { tmpdir } = await import('node:os');

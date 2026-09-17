@@ -1,7 +1,9 @@
 import { afterAll, afterEach, beforeAll, expect, it, vi } from 'vitest';
 import { readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { Readable } from 'node:stream';
 import { runCli } from '../src/router.js';
+import { collectStatusDocument } from '../src/status.js';
 import { connectHost, runHosts } from '../src/install/hosts.js';
 import { readOwnership } from '../src/install/ownership.js';
 import { grantTransport, matchHostGrant, type AccountGrant } from '../src/auth/status.js';
@@ -88,6 +90,23 @@ const cliAuth = {
   logout: async () => {},
 };
 const quiet = { write() {} };
+const statusFor = (f: Awaited<ReturnType<typeof fixture>>) =>
+  collectStatusDocument({
+    stateDir: f.deps.stateDir,
+    grants: f.deps.grants,
+    cwd: f.projectRoot,
+    input: Readable.from(''),
+    preflight: {
+      status: 'ready',
+      node: { supported: true, version: '24' },
+      os: 'Linux',
+      hosts: [],
+      project: { resolution: 'absent' },
+      network: { reachable: true, discoveryUrl: '' },
+    },
+    scannerStatus: async () => ({ roots: [], exclusions: [], repositories: [] }),
+    projectHookConditions: [],
+  });
 
 it('installs eight component targets; Codex MCP-only uninstall keeps seven and their declarations', async () => {
   const f = await fixture();
@@ -189,12 +208,36 @@ it('connected listing binds only an authenticated account grant; mismatch leaves
       )
     ).grant?.id
   ).toBe(target.grant?.id);
+  const bound = target.grant;
   f.setAccount('different-account');
   const mismatch = await connectHost(target, f.deps);
   expect(mismatch).toMatchObject({ status: 'ACTION_REQUIRED', reason: 'host_account_mismatch' });
   target = (await readOwnership(f.deps.stateDir)).targets[0]!;
-  expect(target.grant).toBeUndefined();
+  // The failed attempt keeps the recorded grant, so status still reads the target as a binding to
+  // restore rather than a sign-in that never happened.
+  expect(target.grant).toEqual(bound);
   expect(await readFile(target.profilePath, 'utf8')).toContain('https://api.mnemonik.dev/mcp');
+  const document = await statusFor(f);
+  expect(document.installation.reasons).toContain('claude-code: host_grant_unbound');
+  expect(document.installation.actions).toContain('mnemonik connect claude-code');
+}, 60_000);
+
+it('a repair that cannot verify the recorded grant leaves it recorded for status', async () => {
+  const f = await fixture();
+  await runHosts('install', [{ ...f.selections[0]!, component: 'mcp' as const }], f.deps);
+  const owned = (await readOwnership(f.deps.stateDir)).targets[0]!;
+  expect(owned.grant?.id).toBe('grant-claude-code');
+  // Revoked from another machine: the binding is gone from the account, the record of it is not.
+  f.grants.splice(
+    f.grants.findIndex((g) => g.id === 'grant-claude-code'),
+    1
+  );
+  const repair = await runHosts('repair', [owned], { ...f.deps, apply: true });
+  expect(repair.results[0]).toMatchObject({ reason: 'host_grant_unverified' });
+  expect((await readOwnership(f.deps.stateDir)).targets[0]!.grant).toEqual(owned.grant);
+  const document = await statusFor(f);
+  expect(document.installation.reasons).toContain('claude-code: host_grant_unbound');
+  expect(document.installation.actions).toContain('mnemonik connect claude-code');
 }, 60_000);
 
 it('auth logout revokes only the chosen host through the grant-id route and auth status shows raw unknown names', async () => {

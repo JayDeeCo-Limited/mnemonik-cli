@@ -13,7 +13,7 @@ import { describeReadiness, reduceReadiness, serializeReadiness as baseReadiness
 import { Output } from './output.js';
 import { runProjectCommand, } from './project.js';
 import { hostOrder } from './install/adapters.js';
-import { hookStatusConditions, hostNotConnectedCondition } from './install/hosts.js';
+import { hookStatusConditions, hostNotConnectedCondition, hostStillConnectingCondition, } from './install/hosts.js';
 import { launcherStatus } from './launcher.js';
 const contains = (parent, child) => {
     const path = relative(resolve(parent), resolve(child));
@@ -316,14 +316,18 @@ export async function collectStatusDocument(input) {
                 if (!listing.deviceInstallationId ||
                     !live?.deviceInstallationId ||
                     live.deviceInstallationId !== listing.deviceInstallationId)
-                    installationConditions.push({
-                        kind: 'host_grant_unbound',
-                        component: target.host,
-                        reason: `${target.host}: host_grant_unbound`,
-                        action: !listing.deviceInstallationId
-                            ? 'mnemonik install'
-                            : `mnemonik connect ${target.host}`,
-                    });
+                    // No recorded grant means install never bound one: the host was skipped or its sign-in
+                    // never finished. A recorded grant that no longer resolves was revoked elsewhere.
+                    installationConditions.push(listing.deviceInstallationId && !target.grant
+                        ? hostStillConnectingCondition(target.host)
+                        : {
+                            kind: 'host_grant_unbound',
+                            component: target.host,
+                            reason: `${target.host}: host_grant_unbound`,
+                            action: !listing.deviceInstallationId
+                                ? 'mnemonik install'
+                                : `mnemonik connect ${target.host}`,
+                        });
             }
         }
         catch {

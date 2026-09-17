@@ -57,14 +57,19 @@ async function verifyMinisign(path, signaturePath, identity) {
 /** Release tooling supplies the real identity and artifacts. These checks do not sign anything. */
 export async function verifySigner(path, signer, run = execute) {
     if (signer.platform === 'darwin' && /^[A-Z0-9]{10}$/.test(signer.identity)) {
+        // codesign is the whole darwin check. spctl --assess --type execute only
+        // assesses app bundles and rejects every bare Mach-O executable, Apple's
+        // own shipped ones included, so running it would refuse every signed
+        // scanner. -R reads its argument as a requirement file path unless it
+        // starts with "=", which makes the rest of that argument the requirement
+        // text itself.
         await run('/usr/bin/codesign', [
             '--verify',
             '--strict',
             '-R',
-            `anchor apple generic and certificate leaf[subject.OU] = "${signer.identity}"`,
+            `=anchor apple generic and certificate leaf[subject.OU] = "${signer.identity}"`,
             path,
         ]);
-        await run('/usr/sbin/spctl', ['--assess', '--type', 'execute', '--verbose=2', path]);
     }
     else if (signer.platform === 'win32' && /^[A-Fa-f0-9]{40}$/.test(signer.identity)) {
         await run('powershell.exe', [

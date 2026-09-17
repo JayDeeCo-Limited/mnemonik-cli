@@ -55,6 +55,11 @@ export interface HostResult {
 export declare function codexTrustAction(resolvedPath?: string): string;
 export declare const CODEX_TRUST_ACTION: string;
 export declare const hostNotConnectedCondition: (host: HostArtifact) => ReadinessCondition;
+/**
+ * A host skipped at install keeps its hooks and its URL-only MCP declaration and is recorded as
+ * still connecting; the sign-in happens in the app and the next status run binds the grant.
+ */
+export declare const hostStillConnectingCondition: (host: HostArtifact) => ReadinessCondition;
 export declare function hostSource(host: HostArtifact, packagePath?: string | URL): Promise<RuntimeSource>;
 /** All selected targets share the ownership lease; a failed target restores only its group. */
 export declare function runHosts(command: HostCommand, selections: HostSelection[], deps: HostDependencies, allowMigration?: boolean): Promise<{

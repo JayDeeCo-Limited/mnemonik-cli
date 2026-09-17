@@ -105,6 +105,16 @@ export const hostNotConnectedCondition = (host: HostArtifact): ReadinessConditio
   reason: `${host}: signed in, not connected yet`,
   action: `open ${hostLabels[host]} and start a session, then run mnemonik status`,
 });
+/**
+ * A host skipped at install keeps its hooks and its URL-only MCP declaration and is recorded as
+ * still connecting; the sign-in happens in the app and the next status run binds the grant.
+ */
+export const hostStillConnectingCondition = (host: HostArtifact): ReadinessCondition => ({
+  kind: 'login_pending',
+  component: host,
+  reason: `${hostLabels[host]} is still connecting. Finish the sign-in in the app, then run mnemonik status.`,
+  action: 'mnemonik status',
+});
 const identity = (t: HostSelection) =>
   `${t.host}:${t.component ?? 'hooks'}:${t.scope}:${t.profilePath ?? (t.scope === 'user' ? t.home : t.projectRoot)}`;
 export async function hostSource(
@@ -715,12 +725,17 @@ export async function runHosts(
           if (command !== 'uninstall') {
             const profilePath = old?.profilePath ?? ownedChanges.at(-1)?.path;
             if (!profilePath) throw new Error('adapter_empty_plan');
+            // An attempt that binds nothing keeps the grant already on record: status reads a
+            // missing grant as a sign-in that never happened, so dropping it here would turn a
+            // revoked binding into a host that looks like it is still connecting. Only a new
+            // binding replaces it; uninstall and auth logout are what remove it.
+            const grant = inspection?.grant ?? old?.grant;
             const candidate: OwnedTarget = {
               ...selection,
               id: run.id,
               component: target.component,
               credentialFamily: target.credentialFamily,
-              ...(inspection?.grant ? { grant: inspection.grant } : {}),
+              ...(grant ? { grant } : {}),
               profilePath,
               version: runtime.manifest.version,
               ...(detected.version ? { editorVersion: detected.version } : {}),
@@ -754,7 +769,7 @@ export async function runHosts(
                   }
                 : {}),
             };
-            if (!inspection?.grant) delete candidate.grant;
+            if (!grant) delete candidate.grant;
             run.candidate = candidate;
           }
           run.reason ??= 'uninstalled';
@@ -1328,7 +1343,9 @@ export async function connectHost(
       ).createHostAdapter({ target, env: environment(current, deps.env) });
       let reason = 'hooks_not_verified';
       let status: HostResult['status'] = 'LIMITED';
-      const { grant: _previous, ...candidate } = current;
+      // The recorded grant survives an attempt that binds nothing: status reads a missing grant as
+      // a sign-in that never happened, not as a binding to reconnect.
+      const candidate: OwnedTarget = { ...current };
       const run: HostRun = { id: current.id, host: current.host, status: 'verified', candidate };
       try {
         const inspection = await waitForHost(adapter, target, current.host, deps, current.grant);
@@ -1337,7 +1354,7 @@ export async function connectHost(
           if (listing.account !== deps.account) throw new Error('host_account_mismatch');
           await bindInstalledHostGrants(listing, [current.host], deps.grants);
         }
-        run.candidate = { ...candidate, grant: inspection.grant };
+        if (inspection.grant) run.candidate = { ...candidate, grant: inspection.grant };
         if (inspection.grant?.installationId) {
           status = 'READY';
           reason = 'connected to this machine';

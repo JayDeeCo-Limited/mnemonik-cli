@@ -53,4 +53,26 @@ jobs:
             "https://github.com/JayDeeCo-Limited/mnemonik-cli/releases/download/scanner-v$version/digests.json" -o scanner-digests.json
           node -e "const fs=require('fs'),c=require('crypto'); if(c.createHash('sha256').update(fs.readFileSync('scanner-digests.json')).digest('hex')!==require('./scanner-release.json').digestsSha256) process.exit(1)"
           npm publish "$tgz" --access public --provenance
-          test "$(npm view "@mnemonik/cli@$version" dist.integrity)" = "$(node -p "require('./pack.json')[0].integrity")"
+          # npm accepts a publish before its read path serves the version, and
+          # it does not bound how long that takes ("may take a few minutes").
+          # Public run 35103666890 published 7.99.2 and then failed the job on
+          # an E404 readback of the version it had just published. Poll for
+          # fifteen minutes, then fail. The comparison stays fatal because it
+          # is the only check that what users install is what was packed here.
+          packed_integrity=$(node -p "require('./pack.json')[0].integrity")
+          for attempt in {1..180}; do
+            live_integrity=$(npm view "@mnemonik/cli@$version" dist.integrity 2>/dev/null || true)
+            if [ -n "$live_integrity" ]; then
+              if [ "$live_integrity" != "$packed_integrity" ]; then
+                echo "::error::@mnemonik/cli@$version serves integrity $live_integrity, packed $packed_integrity"
+                exit 1
+              fi
+              echo "OK    @mnemonik/cli@$version is live on the registry with matching integrity"
+              break
+            fi
+            if [ "$attempt" -eq 180 ]; then
+              echo "::error::@mnemonik/cli@$version did not appear on the registry after publish."
+              exit 1
+            fi
+            sleep 5
+          done
