@@ -979,6 +979,9 @@ export async function waitForHost(adapter, target, host, deps, recorded, command
         const attemptStartedAt = now();
         let signedIn = false;
         let waitingForActivation = false;
+        // A recorded grant the server no longer lists is dead (revoked, expired, or refused with
+        // invalid_grant). Waiting for it to reappear can only time out; the host must sign in again.
+        let staleRecord = false;
         const match = async (status, approvalMode = 'all') => {
             const grants = deps.grants;
             if (!grants)
@@ -989,7 +992,12 @@ export async function waitForHost(adapter, target, host, deps, recorded, command
             catch (error) {
                 if (!(error instanceof Error) || error.message !== 'host_connection_pending')
                     throw error;
-                if (!waitingForActivation)
+                if (approvalMode === 'recovered' && recorded) {
+                    staleRecord = true;
+                    deps.instruction?.(`${hostLabels[host]} is no longer signed in to Mnemonik; starting a new sign-in.`);
+                    return undefined;
+                }
+                if (!waitingForActivation && !staleRecord)
                     deps.instruction?.(`${host === 'codex' ? 'Codex' : host} is still finishing its connection.`);
                 waitingForActivation = true;
                 return undefined;
@@ -1001,13 +1009,14 @@ export async function waitForHost(adapter, target, host, deps, recorded, command
                 const matched = await match(status, 'recovered');
                 if (matched?.grant?.installationId)
                     return matched;
-                signedIn = waitingForActivation || !!matched?.grant;
+                signedIn = !staleRecord && (waitingForActivation || !!matched?.grant);
             }
         }
         if (target.component === 'mcp' &&
             adapter.capabilities().nativeConnect &&
             deps.grants &&
-            !signedIn) {
+            !signedIn &&
+            !staleRecord) {
             const status = await deps.grants.list();
             if (!deps.account || status.account !== deps.account)
                 throw new Error('host_account_mismatch');
@@ -1016,7 +1025,9 @@ export async function waitForHost(adapter, target, host, deps, recorded, command
                 !!grant.activatedAt &&
                 grant.scopes.includes('mcp:use'));
         }
-        const instruction = target.component === 'mcp' && !waitingForActivation ? await adapter.launch({ signedIn }) : '';
+        const instruction = target.component === 'mcp' && !waitingForActivation
+            ? await adapter.launch({ signedIn: signedIn && !staleRecord })
+            : '';
         if (instruction)
             deps.instruction?.(instruction);
         const deadline = now() + 120_000;

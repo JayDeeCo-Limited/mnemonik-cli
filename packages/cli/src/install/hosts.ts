@@ -1193,6 +1193,9 @@ export async function waitForHost(
     const attemptStartedAt = now();
     let signedIn = false;
     let waitingForActivation = false;
+    // A recorded grant the server no longer lists is dead (revoked, expired, or refused with
+    // invalid_grant). Waiting for it to reappear can only time out; the host must sign in again.
+    let staleRecord = false;
     const match = async (status: Inspection, approvalMode: 'all' | 'recovered' = 'all') => {
       const grants = deps.grants;
       if (!grants) return status;
@@ -1209,7 +1212,14 @@ export async function waitForHost(
         );
       } catch (error) {
         if (!(error instanceof Error) || error.message !== 'host_connection_pending') throw error;
-        if (!waitingForActivation)
+        if (approvalMode === 'recovered' && recorded) {
+          staleRecord = true;
+          deps.instruction?.(
+            `${hostLabels[host]} is no longer signed in to Mnemonik; starting a new sign-in.`
+          );
+          return undefined;
+        }
+        if (!waitingForActivation && !staleRecord)
           deps.instruction?.(
             `${host === 'codex' ? 'Codex' : host} is still finishing its connection.`
           );
@@ -1222,14 +1232,15 @@ export async function waitForHost(
       if (status.declarationPresent && status.authenticatedTools) {
         const matched = await match(status, 'recovered');
         if (matched?.grant?.installationId) return matched;
-        signedIn = waitingForActivation || !!matched?.grant;
+        signedIn = !staleRecord && (waitingForActivation || !!matched?.grant);
       }
     }
     if (
       target.component === 'mcp' &&
       adapter.capabilities().nativeConnect &&
       deps.grants &&
-      !signedIn
+      !signedIn &&
+      !staleRecord
     ) {
       const status = await deps.grants.list();
       if (!deps.account || status.account !== deps.account)
@@ -1243,7 +1254,9 @@ export async function waitForHost(
       );
     }
     const instruction =
-      target.component === 'mcp' && !waitingForActivation ? await adapter.launch({ signedIn }) : '';
+      target.component === 'mcp' && !waitingForActivation
+        ? await adapter.launch({ signedIn: signedIn && !staleRecord })
+        : '';
     if (instruction) deps.instruction?.(instruction);
     const deadline = now() + 120_000;
     while (now() < deadline) {

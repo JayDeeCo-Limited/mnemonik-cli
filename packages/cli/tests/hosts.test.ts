@@ -207,6 +207,66 @@ it.each(['claude-code', 'cursor'] as const)(
   }
 );
 
+it('connect with a dead recorded codex grant launches the native login on the first listing', async () => {
+  const adapter = new SimulatedHostAdapter('codex', {
+    path: '/unused',
+    content: Buffer.from('{}'),
+    staging: 'inactive',
+    requestedScope: 'user',
+    effectiveScope: 'user',
+    version: '1',
+    artifactDigest: 'a',
+  });
+  adapter.verify = vi.fn(async () => ({ declarationPresent: true, authenticatedTools: true }));
+  adapter.launch = vi.fn(async () => 'native sign-in');
+  const instruction = vi.fn();
+  let clock = 0;
+  const sleep = vi.fn(async (ms: number) => {
+    clock += ms;
+  });
+  const fresh: AccountGrant = {
+    ...grant,
+    id: 'fresh',
+    clientId: 'https://chatgpt.com/oauth/codex/client.json',
+    createdAt: new Date(1).toISOString(),
+  };
+  const cli: AccountGrant = {
+    ...grant,
+    id: 'cli',
+    resource: 'https://api.mnemonik.dev/',
+    scopes: ['install:manage', 'components:manage'],
+    deviceInstallationId: 'machine-a',
+    createdAt: new Date(0).toISOString(),
+  };
+  const list = vi.fn(async () => ({
+    account: 'owner',
+    deviceInstallationId: 'machine-a',
+    grants: list.mock.calls.length > 1 ? [cli, fresh] : [cli],
+  }));
+  const approveHost = vi.fn(async () => 'machine-a');
+  const matched = await waitForHost(
+    adapter,
+    { component: 'mcp', scope: 'user', runtimeEntry: '', runtimeRoot: '', credentialFamily: '' },
+    'codex',
+    {
+      stateDir: '/unused',
+      account: 'owner',
+      now: () => clock,
+      sleep,
+      instruction,
+      approveHost: async () => true,
+      timeout: async () => 'skip',
+      grants: { list, approveHost, revoke: vi.fn() },
+    },
+    { id: grant.id, account: 'owner', scopes: ['mcp:use'], installationId: 'machine-a' }
+  );
+  expect(adapter.launch).toHaveBeenCalledWith({ signedIn: false });
+  expect(matched.grant?.id).toBe('fresh');
+  expect(matched.grant?.installationId).toBe('machine-a');
+  expect(sleep.mock.calls.length).toBeLessThanOrEqual(1);
+  expect(instruction).not.toHaveBeenCalledWith('Codex is still finishing its connection.');
+});
+
 it.each([false, true])(
   'maintenance enables Cursor once and checks the result (still disabled: %s)',
   async (disabled) => {
