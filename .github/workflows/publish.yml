@@ -48,9 +48,25 @@ jobs:
           set -euo pipefail
           tgz=$(node -p "require('./pack.json')[0].filename")
           version=$(node -p "require('./dist-package/package.json').version")
-          # The private workflow pushes this source, then attaches immutable scanner assets.
-          curl --fail --location --retry 12 --retry-delay 5 --retry-all-errors \
-            "https://github.com/JayDeeCo-Limited/mnemonik-cli/releases/download/scanner-v$version/digests.json" -o scanner-digests.json
+          # The private workflow pushes this source, then attaches immutable scanner
+          # assets and publishes the release. This run starts on the push, so the
+          # release can still be a draft, and GitHub keeps answering 404 for a
+          # short while after it is published (public run 35294870622: the assets
+          # were attached at 01:19:48Z, the release published at 01:20:08Z, and a
+          # one-minute retry ending at 01:21:06Z saw nothing but 404). Poll for
+          # up to ten minutes, then fail.
+          asset="https://github.com/JayDeeCo-Limited/mnemonik-cli/releases/download/scanner-v$version/digests.json"
+          for attempt in {1..120}; do
+            if curl --fail --silent --show-error --location "$asset" -o scanner-digests.json; then
+              echo "scanner release assets served on attempt $attempt"
+              break
+            fi
+            if [ "$attempt" -eq 120 ]; then
+              echo "scanner-v$version digests.json was not served within ten minutes" >&2
+              exit 1
+            fi
+            sleep 5
+          done
           node -e "const fs=require('fs'),c=require('crypto'); if(c.createHash('sha256').update(fs.readFileSync('scanner-digests.json')).digest('hex')!==require('./scanner-release.json').digestsSha256) process.exit(1)"
           npm publish "$tgz" --access public --provenance
           # npm accepts a publish before its read path serves the version, and
