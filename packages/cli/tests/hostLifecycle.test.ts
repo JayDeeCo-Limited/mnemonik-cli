@@ -121,7 +121,7 @@ it('CLI runtime verification refuses missing, symlinked, and wrong-mode runtime 
   }
 }, 60_000);
 
-it('CLI installs four packaged adapters with planned bytes, verified entries and before hashes', async () => {
+it('CLI installs the three launch-host adapters with planned bytes, verified entries and before hashes', async () => {
   const f = await fixture();
   const originalPath = join(f.home, '.cursor', 'hooks.json');
   const original = Buffer.from('{"version":1,"hooks":{}}\n');
@@ -136,7 +136,7 @@ it('CLI installs four packaged adapters with planned bytes, verified entries and
     [
       'install',
       '--hosts',
-      'claude-code,codex,cursor,grok',
+      'claude-code,codex,cursor',
       '--components',
       'hooks',
       '--integration-scope',
@@ -163,7 +163,7 @@ it('CLI installs four packaged adapters with planned bytes, verified entries and
   );
   expect(exit).toBe(3);
   const owned = await readOwnership(f.deps.stateDir);
-  expect(owned.targets).toHaveLength(4);
+  expect(owned.targets).toHaveLength(3);
   expect(journal!.data.targets.find((t) => t.path === originalPath)!.beforeHash).toBe(
     digest(original)
   );

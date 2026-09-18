@@ -18,6 +18,7 @@ export default defineConfig({
       {
         test: {
           name: 'parallel',
+          setupFiles: ['tests/setup/isolatedHome.ts', 'tests/setup/hostDiscovery.ts'],
           include: ['tests/**/*.test.ts'],
           exclude: [...configDefaults.exclude, ...artifactTests],
           sequence: { groupOrder: 0 },
@@ -26,6 +27,7 @@ export default defineConfig({
       {
         test: {
           name: 'artifacts',
+          setupFiles: ['tests/setup/isolatedHome.ts', 'tests/setup/hostDiscovery.ts'],
           include: artifactTests,
           fileParallelism: false,
           sequence: { groupOrder: 1 },

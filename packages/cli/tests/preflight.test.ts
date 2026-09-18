@@ -12,6 +12,7 @@ import {
 } from '@mnemonik/shared';
 import { runIdentityFixtureSuite } from '../../shared/test-fixtures/identity/runner.mjs';
 import { renderPreflight, runPreflight } from '../src/preflight.js';
+import { enableHostDiscovery } from './setup/hostDiscovery.js';
 import { Output } from '../src/output.js';
 
 const exec = promisify(execFile);
@@ -79,6 +80,9 @@ describe('preflight', () => {
   });
 
   it('detects launch host config paths and names Copilot as not offered without detecting it', async () => {
+    // This test exercises the real file lookup against a home it owns; every
+    // other test runs with discovery blinded by tests/setup/hostDiscovery.ts.
+    await enableHostDiscovery();
     const base = await mkdtemp(
       join(process.platform === 'win32' ? tmpdir() : '/var/tmp', 'mnemonik-cli-preflight-')
     );

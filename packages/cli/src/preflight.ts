@@ -1,6 +1,5 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { access } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -11,6 +10,7 @@ import {
   resolveProjectIdentity,
   type ProjectIdentityResolution,
 } from '@mnemonik/shared';
+import { hostDiscovery } from './hostDiscovery.js';
 import type { Output } from './output.js';
 
 export type HostName = 'Claude Code' | 'Codex' | 'Cursor' | 'Grok' | 'VS Code Copilot';
@@ -71,16 +71,9 @@ const hostPaths = (
   { name: 'Grok', supported: true, paths: [join(home, '.grok', 'config.toml')] },
 ];
 
-async function exists(path: string): Promise<boolean> {
-  return access(path).then(
-    () => true,
-    () => false
-  );
-}
-
 export async function runPreflight(deps: PreflightDependencies = {}): Promise<PreflightResult> {
   const home = deps.home ?? homedir();
-  const pathExists = deps.pathExists ?? exists;
+  const pathExists = deps.pathExists ?? hostDiscovery.pathExists;
   const hosts: DetectedHost[] = [];
   for (const candidate of hostPaths(home)) {
     for (const path of candidate.paths) {
@@ -92,6 +85,7 @@ export async function runPreflight(deps: PreflightDependencies = {}): Promise<Pr
   }
 
   const env = { ...(deps.env ?? process.env), HOME: home, USERPROFILE: home };
+  const binaryExists = deps.binaryExists ?? hostDiscovery.binaryExists;
   await Promise.all(
     (
       [
@@ -103,7 +97,7 @@ export async function runPreflight(deps: PreflightDependencies = {}): Promise<Pr
       if (hosts.some((found) => found.name === name)) return;
       const descriptor = hostBinaryDescriptor(host, { ...deps, env });
       const binary = createHostBinary(
-        { ...deps, env },
+        { ...deps, env, binaryExists },
         descriptor.binary,
         descriptor.windowsBinary,
         deps.execFile ?? promisify(execFile),

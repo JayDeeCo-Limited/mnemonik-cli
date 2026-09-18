@@ -4,6 +4,7 @@ import { mkdir, mkdtemp, readFile, readdir, rm, stat, utimes, writeFile } from '
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, afterEach, beforeAll, beforeEach, expect, it, vi } from 'vitest';
+import packageJson from '../package.json' with { type: 'json' };
 import { ensureLauncher } from '../src/launcher.js';
 import { runCli } from '../src/router.js';
 import { cliUpdateHint } from '../src/runtime/selfUpdate.js';
@@ -14,6 +15,9 @@ import * as hosts from '../src/install/hosts.js';
 import * as scanner from '../src/scanner/update.js';
 
 let fixture: string, state: string, store: RuntimeStore;
+// `status` prints the version of the CLI that is running, which in this suite is
+// the workspace package; the release bot bumps that on every release.
+const running = packageJson.version;
 const tarballs = new Map<string, Buffer>();
 const dist = (version: string) => ({
   integrity: 'sha512-' + createHash('sha512').update(tarballs.get(version)!).digest('base64'),
@@ -192,7 +196,7 @@ async function status() {
   return { code, text };
 }
 it('status shows one newer-version hint and caches metadata for an hour', async () => {
-  expect((await status()).text).toContain('CLI 0.1.0.\n');
+  expect((await status()).text).toContain(`CLI ${running}.\n`);
   expect((await status()).text).toContain('CLI 1.1.0 is available; run mnemonik update.');
   expect(registry).toHaveBeenCalledTimes(1);
   await writeFile(
@@ -214,7 +218,7 @@ it('status bounds a stalled registry to 2.5 seconds and caches the failure quiet
   const started = performance.now();
   const result = await status();
   expect(performance.now() - started).toBeLessThan(3000);
-  expect(result.text).toContain('CLI 0.1.0.');
+  expect(result.text).toContain(`CLI ${running}.`);
   expect(result.text).not.toContain('is available');
   expect((await status()).code).toBe(result.code);
   expect(registry).toHaveBeenCalledTimes(1);

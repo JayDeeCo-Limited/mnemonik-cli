@@ -9,6 +9,9 @@ import { readOwnership } from '../src/install/ownership.js';
 import { grantTransport, matchHostGrant, type AccountGrant } from '../src/auth/status.js';
 import { hostFixture, packedHosts } from './fixtures/hostRuntime.js';
 import { hostOrder } from '../src/install/adapters.js';
+// The install journey offers only these hosts; grok stays in hostOrder (and in the grants fixture)
+// for tests that install runtimes directly through runHosts.
+const launchHosts = hostOrder.filter((host) => host !== 'grok');
 
 let packed: Awaited<ReturnType<typeof packedHosts>>;
 const homes: string[] = [];
@@ -108,7 +111,7 @@ const statusFor = (f: Awaited<ReturnType<typeof fixture>>) =>
     projectHookConditions: [],
   });
 
-it('installs eight component targets; Codex MCP-only uninstall keeps seven and their declarations', async () => {
+it('installs six component targets; Codex MCP-only uninstall keeps five and their declarations', async () => {
   const f = await fixture();
   const output: string[] = [];
   expect(
@@ -118,7 +121,7 @@ it('installs eight component targets; Codex MCP-only uninstall keeps seven and t
         '--components',
         'hooks,mcp',
         '--hosts',
-        hostOrder.join(','),
+        launchHosts.join(','),
         '--integration-scope',
         'user',
         '--non-interactive',
@@ -141,13 +144,13 @@ it('installs eight component targets; Codex MCP-only uninstall keeps seven and t
     )
   ).toMatchObject({ status: 'READY' });
   const before = (await readOwnership(f.deps.stateDir)).targets;
-  expect(before).toHaveLength(8);
+  expect(before).toHaveLength(6);
   expect(
     before
       .filter((t) => t.component === 'mcp')
       .map((t) => t.grant?.id)
       .sort()
-  ).toEqual(f.grants.map((g) => g.id).sort());
+  ).toEqual(launchHosts.map((host) => `grant-${host}`).sort());
   const codex = before.find((t) => t.host === 'codex' && t.component === 'mcp')!;
   const otherFiles = await Promise.all(
     before
@@ -161,11 +164,11 @@ it('installs eight component targets; Codex MCP-only uninstall keeps seven and t
       stdout: quiet,
     }
   );
-  expect((await readOwnership(f.deps.stateDir)).targets).toHaveLength(7);
+  expect((await readOwnership(f.deps.stateDir)).targets).toHaveLength(5);
   expect(await readFile(codex.profilePath, 'utf8')).not.toContain('mcp_servers.mnemonik');
   expect(await readFile(codex.profilePath, 'utf8')).toContain('hooks = true');
   for (const file of otherFiles) expect(await readFile(file.path)).toEqual(file.bytes);
-  // Eight real runtime installs from packed tarballs plus the hook credential
+  // Six real runtime installs from packed tarballs plus the hook credential
   // issuance take about two minutes alone and longer beside other workers.
 }, 300_000);
 

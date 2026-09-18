@@ -1,0 +1,1 @@
+{"version":3,"file":"hostDiscovery.d.ts","sourceRoot":"","sources":["../src/hostDiscovery.ts"],"names":[],"mappings":"AAEA;;;+BAG+B;AAC/B,MAAM,WAAW,aAAa;IAC5B,UAAU,CAAC,IAAI,EAAE,MAAM,GAAG,OAAO,CAAC,OAAO,CAAC,CAAC;IAC3C,YAAY,CAAC,IAAI,EAAE,MAAM,GAAG,OAAO,CAAC,OAAO,CAAC,CAAC;CAC9C;AAED,eAAO,MAAM,aAAa,EAAE,aAO3B,CAAC"}

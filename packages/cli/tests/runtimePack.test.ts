@@ -7,6 +7,11 @@ import { pathToFileURL } from 'node:url';
 import { afterAll, beforeAll, expect, it } from 'vitest';
 import { guardNpmLaunch, installBootstrap, npmSource, unpack } from '../src/runtime/bootstrap.js';
 import { RuntimeStore, hash } from '../src/runtime/store.js';
+import packageJson from '../package.json' with { type: 'json' };
+
+// The packed CLI is this workspace package, whose version the release bot bumps
+// on every release; the tests below pin what `--version` prints to that file.
+const running: string = packageJson.version;
 
 const exec = promisify(execFile);
 const repo = resolve(import.meta.dirname, '../../..');
@@ -92,11 +97,11 @@ it('executes the packed CLI from an npm prefix, hands off, and runs after the pr
     [join(prefix, 'node_modules/@mnemonik/cli/dist/bin.js'), '--version'],
     { env, timeout: 90_000 }
   );
-  expect(stdout.trim()).toBe('0.1.0');
+  expect(stdout.trim()).toBe(running);
   const store = new RuntimeStore(state);
   const runtime = await store.verifyRuntime('cli');
   const bin = join(runtime.directory, 'node_modules/@mnemonik/cli/dist/bin.js');
-  expect((await exec(process.execPath, [bin, '--version'], { env })).stdout.trim()).toBe('0.1.0');
+  expect((await exec(process.execPath, [bin, '--version'], { env })).stdout.trim()).toBe(running);
   const bootstrapRoot = join(state, 'runtimes/bootstrap');
   const digests = JSON.parse(await readFile(join(bootstrapRoot, 'bootstrap-digests.json'), 'utf8'));
   const allFiles = await readdir(bootstrapRoot, { recursive: true, withFileTypes: true });
@@ -201,7 +206,7 @@ it('executes the packed CLI from an npm prefix, hands off, and runs after the pr
   await rm(cache, { recursive: true, force: true });
   const launcher = join(state, 'runtimes/bootstrap/dist/bin.js');
   expect((await exec(process.execPath, [launcher, '--version'], { env })).stdout.trim()).toBe(
-    '0.1.0'
+    running
   );
   const dependency = Object.keys(runtime.manifest.files).find((name) =>
     name.endsWith('node_modules/proper-lockfile/index.js')
@@ -260,8 +265,8 @@ it('an old npm entry preserves multiple self-updates; newer npm and explicit ins
   expect((await run('--version')).stdout.trim()).toBe('2.0.0');
   expect((await store.verifyRuntime('cli')).reference.version).toBe('2.0.0');
   await run('install', '--help');
-  expect((await store.verifyRuntime('cli')).reference.version).toBe('0.1.0');
+  expect((await store.verifyRuntime('cli')).reference.version).toBe(running);
   await installVersion('0.0.1');
-  expect((await run('--version')).stdout.trim()).toBe('0.1.0');
-  expect((await store.verifyRuntime('cli')).reference.version).toBe('0.1.0');
+  expect((await run('--version')).stdout.trim()).toBe(running);
+  expect((await store.verifyRuntime('cli')).reference.version).toBe(running);
 }, 120_000);

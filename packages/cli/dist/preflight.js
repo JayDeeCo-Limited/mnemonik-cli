@@ -1,9 +1,9 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { access } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { apiOrigin, createHostBinary, hostBinaryDescriptor, resolveProjectIdentity, } from '@mnemonik/shared';
+import { hostDiscovery } from './hostDiscovery.js';
 const osName = (platform) => platform === 'darwin'
     ? 'macOS'
     : platform === 'win32'
@@ -25,12 +25,9 @@ const hostPaths = (home) => [
     },
     { name: 'Grok', supported: true, paths: [join(home, '.grok', 'config.toml')] },
 ];
-async function exists(path) {
-    return access(path).then(() => true, () => false);
-}
 export async function runPreflight(deps = {}) {
     const home = deps.home ?? homedir();
-    const pathExists = deps.pathExists ?? exists;
+    const pathExists = deps.pathExists ?? hostDiscovery.pathExists;
     const hosts = [];
     for (const candidate of hostPaths(home)) {
         for (const path of candidate.paths) {
@@ -41,6 +38,7 @@ export async function runPreflight(deps = {}) {
         }
     }
     const env = { ...(deps.env ?? process.env), HOME: home, USERPROFILE: home };
+    const binaryExists = deps.binaryExists ?? hostDiscovery.binaryExists;
     await Promise.all([
         ['claude-code', 'Claude Code'],
         ['codex', 'Codex'],
@@ -49,7 +47,7 @@ export async function runPreflight(deps = {}) {
         if (hosts.some((found) => found.name === name))
             return;
         const descriptor = hostBinaryDescriptor(host, { ...deps, env });
-        const binary = createHostBinary({ ...deps, env }, descriptor.binary, descriptor.windowsBinary, deps.execFile ?? promisify(execFile), descriptor.desktopPaths);
+        const binary = createHostBinary({ ...deps, env, binaryExists }, descriptor.binary, descriptor.windowsBinary, deps.execFile ?? promisify(execFile), descriptor.desktopPaths);
         try {
             const path = await binary.findOnDisk();
             if (path)
