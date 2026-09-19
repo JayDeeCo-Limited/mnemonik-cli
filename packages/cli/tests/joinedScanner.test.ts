@@ -129,7 +129,6 @@ it.each([
         installStateDir: stateDir,
         preflight: {
           nodeVersion: '24.21.0',
-          pathExists: async () => false,
           fetch: async () => new Response('{}'),
           resolveIdentity: async () => ({
             kind: 'absent',
@@ -233,7 +232,6 @@ it.each([true, false])('reports fresh launcher status (json=%s)', async (json) =
       installStateDir: stateDir,
       preflight: {
         nodeVersion: '24.21.0',
-        pathExists: async () => false,
         fetch: async () => new Response('{}'),
       },
       grantFetch: async () => Response.json({ status: 'completed' }),

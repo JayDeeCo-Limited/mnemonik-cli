@@ -51,10 +51,18 @@ describe('release-pinned host closures', () => {
           recursive: true,
           filter: (path) => basename(path) !== 'node_modules',
         });
-      execFileSync(process.execPath, ['scripts/host-closure.mjs', '--check'], {
-        cwd: scratch,
-        stdio: 'pipe',
-      });
+      try {
+        execFileSync(process.execPath, ['scripts/host-closure.mjs', '--check'], {
+          cwd: scratch,
+          stdio: 'pipe',
+          encoding: 'utf8',
+        });
+      } catch (error) {
+        // The script's stderr names the failing build or pack; without it the
+        // failure is one opaque line (CI run 35407482477).
+        const { stderr, stdout } = error as { stderr?: string; stdout?: string };
+        throw new Error(`host-closure --check failed\n${stdout ?? ''}${stderr ?? ''}`);
+      }
       expect((await stat(liveArtifact)).mtimeMs).toBe(before.mtimeMs);
     } finally {
       await rm(scratch, { recursive: true, force: true });

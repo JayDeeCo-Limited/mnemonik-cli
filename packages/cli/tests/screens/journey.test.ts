@@ -98,7 +98,6 @@ it('the real flagless router starts with Recommended before authorization', asyn
     preflight: {
       nodeVersion: '24.21.0',
       platform: 'linux',
-      pathExists: async () => false,
       fetch: async () => Response.json({}),
       resolveIdentity: async () => ({
         kind: 'absent',
@@ -136,7 +135,6 @@ it('prints the failed discovery URL and network detail before stopping setup', a
     stderr: output,
     preflight: {
       nodeVersion: '24.21.0',
-      pathExists: async () => false,
       discoveryUrl: 'https://staging.example/.well-known/oauth-protected-resource',
       fetch: async () => new Response('', { status: 503 }),
       resolveIdentity: async () => ({
@@ -200,8 +198,6 @@ it('names the found and minimum Node versions before stopping setup', async () =
       stderr: output,
       preflight: {
         nodeVersion: '23.1.0',
-        pathExists: async () => false,
-        binaryExists: async () => false,
         fetch: async () => Response.json({}),
         resolveIdentity: async () => ({
           kind: 'absent',
@@ -404,7 +400,6 @@ it('interrupted joined files can be rolled back without account authorization', 
       preflight: {
         nodeVersion: '24.21.0',
         fetch: async () => Response.json({}),
-        pathExists: async () => false,
         resolveIdentity: async () => ({
           kind: 'absent',
           root: stateDir,

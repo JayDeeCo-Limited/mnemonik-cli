@@ -1,4 +1,4 @@
-import { access, chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, expect, it } from 'vitest';
@@ -22,11 +22,6 @@ const offline = (root: string): PreflightDependencies => ({
     throw new Error('discovery must not spawn');
   },
 });
-const present = (path: string) =>
-  access(path).then(
-    () => true,
-    () => false
-  );
 const scratch: string[] = [];
 afterAll(async () => {
   for (const dir of scratch) await rm(dir, { recursive: true, force: true });
@@ -52,29 +47,4 @@ it('enableHostDiscovery restores the real lookups for a home and PATH the test o
     ['Codex', join(home, '.codex', 'config.toml')],
     ['Cursor', join(bin, 'cursor')],
   ]);
-});
-
-it('with discovery enabled the real PATH is visible again, so the first case was the mock', async () => {
-  const onPath = async (name: string) => {
-    for (const dir of (process.env.PATH ?? '').split(':'))
-      if (dir && (await present(join(dir, name)))) return true;
-    return false;
-  };
-  const expected = (
-    await Promise.all(
-      (
-        [
-          ['claude', 'Claude Code'],
-          ['codex', 'Codex'],
-          ['cursor', 'Cursor'],
-        ] as const
-      ).map(async ([binary, name]) => ((await onPath(binary)) ? [name] : []))
-    )
-  ).flat();
-  const result = await runPreflight({
-    ...offline(homedir()),
-    home: homedir(),
-    env: { PATH: process.env.PATH ?? '' },
-  });
-  expect(result.hosts.map((host) => host.name)).toEqual(expected);
 });
