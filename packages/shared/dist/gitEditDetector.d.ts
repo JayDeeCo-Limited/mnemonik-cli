@@ -35,6 +35,18 @@
  *   work" that is the right signal.
  * - Only the repo containing cwd is observed. Not a git repo -> report nothing
  *   rather than guess.
+ *
+ * Two additions (2026-09-19), both found by a session that made eleven
+ * commits in a worktree and was never asked to checkpoint:
+ * - The snapshot holds one dirty set PER repository root. A session that
+ *   moves between the main checkout and a worktree used to reset the snapshot
+ *   on every move, absorbing whatever was dirty at that moment as pre-existing
+ *   and never crediting it.
+ * - A shell call whose command contains `git commit` is credited with the
+ *   files that commit changed. An edit-and-commit in one command leaves the
+ *   tree clean by the time it is observed, so the dirty diff sees nothing.
+ *   HEAD is recorded per root at every observation; only commits made since
+ *   the last observation count, and never a merge.
  */
 /**
  * The current dirty set as absolute paths, or null when cwd is not inside a
@@ -48,16 +60,18 @@ export declare function listGitDirtyPaths(cwd: string): {
 /** Session start: baseline the dirty set so pre-existing dirt is never reported. */
 export declare function captureGitDirtyBaseline(snapshotFile: string, cwd: string): void;
 /**
- * After a shell call: paths newly dirty since the last observation, capped.
- * Leaves additions pending until the caller confirms them with
- * addPathsToGitDirtySnapshot. Without a usable baseline it establishes one and
+ * After a shell call: paths newly dirty since the last observation of this
+ * repo, plus, when `command` contains `git commit`, the paths that commit
+ * changed. Capped. Leaves additions pending until the caller confirms them
+ * with addPathsToGitDirtySnapshot. A repo with no baseline yet gets one and
  * reports nothing - degrading toward silence, never toward a false edit.
  */
-export declare function diffGitDirtySnapshot(snapshotFile: string, cwd: string): string[];
+export declare function diffGitDirtySnapshot(snapshotFile: string, cwd: string, command?: string): string[];
 /**
  * After an edit tool: fold tool-reported edits into the snapshot so the next
- * shell diff does not re-credit them. Only when a baseline exists - seeding a
- * partial snapshot would make later diffs report pre-existing dirt.
+ * shell diff does not re-credit them. Only when a baseline exists for the
+ * repo that holds the path - seeding a partial snapshot would make later diffs
+ * report pre-existing dirt.
  */
 export declare function addPathsToGitDirtySnapshot(snapshotFile: string, paths: string[]): void;
 //# sourceMappingURL=gitEditDetector.d.ts.map

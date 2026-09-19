@@ -35,6 +35,18 @@
  *   work" that is the right signal.
  * - Only the repo containing cwd is observed. Not a git repo -> report nothing
  *   rather than guess.
+ *
+ * Two additions (2026-09-19), both found by a session that made eleven
+ * commits in a worktree and was never asked to checkpoint:
+ * - The snapshot holds one dirty set PER repository root. A session that
+ *   moves between the main checkout and a worktree used to reset the snapshot
+ *   on every move, absorbing whatever was dirty at that moment as pre-existing
+ *   and never crediting it.
+ * - A shell call whose command contains `git commit` is credited with the
+ *   files that commit changed. An edit-and-commit in one command leaves the
+ *   tree clean by the time it is observed, so the dirty diff sees nothing.
+ *   HEAD is recorded per root at every observation; only commits made since
+ *   the last observation count, and never a merge.
  */
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -94,29 +106,76 @@ export function listGitDirtyPaths(cwd) {
     }
     return { root, paths };
 }
+/** HEAD of the repo at cwd, or undefined before the first commit. */
+function currentHead(cwd) {
+    return (runGit(cwd, ['rev-parse', '--verify', '-q', 'HEAD'], GIT_REV_PARSE_TIMEOUT_MS)?.trim() ||
+        undefined);
+}
+/**
+ * Files changed by the commits made between two heads, or by HEAD alone when
+ * there is no earlier head. Empty when any of those commits is a merge: a
+ * merge brings in other people's files and none of them is this session's
+ * edit. `git commit --amend` orphans the old head, so the range is still the
+ * one new commit and the diff is the amended change.
+ */
+function committedPaths(cwd, root, from, to) {
+    const range = from && from !== to ? `${from}..${to}` : to;
+    const parents = runGit(cwd, from ? ['log', '--format=%P', range] : ['log', '--format=%P', '-1', to], GIT_STATUS_TIMEOUT_MS);
+    if (parents === null)
+        return [];
+    const lines = parents.split('\n').filter(Boolean);
+    if (lines.length === 0 || lines.some((line) => line.includes(' ')))
+        return [];
+    const names = from
+        ? runGit(cwd, ['diff', '--name-only', '-z', from, to], GIT_STATUS_TIMEOUT_MS)
+        : runGit(cwd, ['show', '--name-only', '-z', '--format=', to], GIT_STATUS_TIMEOUT_MS);
+    if (names === null)
+        return [];
+    return names
+        .split('\0')
+        .filter(Boolean)
+        .map((name) => join(root, name));
+}
 function readSnapshot(snapshotFile) {
     try {
         const parsed = JSON.parse(readFileSync(snapshotFile, 'utf8'));
-        if (parsed?.v !== 1 || typeof parsed.root !== 'string' || !Array.isArray(parsed.paths)) {
-            return null;
+        if (parsed?.v === 1 && typeof parsed.root === 'string' && Array.isArray(parsed.paths)) {
+            return { v: 2, roots: { [parsed.root]: { paths: parsed.paths } } };
         }
+        if (parsed?.v !== 2 || typeof parsed.roots !== 'object' || parsed.roots === null)
+            return null;
         return parsed;
     }
     catch {
         return null;
     }
 }
-function writeSnapshot(snapshotFile, root, paths) {
+/**
+ * Persist one root's list into the snapshot, keeping every other root. The
+ * whole file stays under MAX_SNAPSHOT_PATHS: when the total would exceed it,
+ * only the root being written survives.
+ */
+function writeRoot(snapshotFile, root, entry) {
     try {
+        const roots = { ...(readSnapshot(snapshotFile)?.roots ?? {}), [root]: entry };
+        const total = Object.values(roots).reduce((sum, r) => sum + r.paths.length, 0);
+        const snapshot = {
+            v: 2,
+            roots: total > MAX_SNAPSHOT_PATHS ? { [root]: entry } : roots,
+        };
         mkdirSync(dirname(snapshotFile), { recursive: true, mode: 0o700 });
-        writeFileSync(snapshotFile, JSON.stringify({ v: 1, root, paths }), {
-            mode: 0o600,
-        });
+        writeFileSync(snapshotFile, JSON.stringify(snapshot), { mode: 0o600 });
     }
     catch {
         // Best-effort: a missing snapshot degrades to "report nothing", never to a
         // wrong report.
     }
+}
+/** The recorded root whose directory contains this absolute path, if any. */
+function rootFor(snapshot, path) {
+    return Object.keys(snapshot.roots)
+        .filter((root) => path === root || path.startsWith(root.endsWith('/') ? root : `${root}/`))
+        .sort((x, y) => y.length - x.length)[0];
 }
 /** Session start: baseline the dirty set so pre-existing dirt is never reported. */
 export function captureGitDirtyBaseline(snapshotFile, cwd) {
@@ -125,34 +184,45 @@ export function captureGitDirtyBaseline(snapshotFile, cwd) {
     const current = listGitDirtyPaths(cwd);
     if (!current)
         return;
-    writeSnapshot(snapshotFile, current.root, current.paths);
+    writeRoot(snapshotFile, current.root, { paths: current.paths, head: currentHead(cwd) });
 }
 /**
- * After a shell call: paths newly dirty since the last observation, capped.
- * Leaves additions pending until the caller confirms them with
- * addPathsToGitDirtySnapshot. Without a usable baseline it establishes one and
+ * After a shell call: paths newly dirty since the last observation of this
+ * repo, plus, when `command` contains `git commit`, the paths that commit
+ * changed. Capped. Leaves additions pending until the caller confirms them
+ * with addPathsToGitDirtySnapshot. A repo with no baseline yet gets one and
  * reports nothing - degrading toward silence, never toward a false edit.
  */
-export function diffGitDirtySnapshot(snapshotFile, cwd) {
+export function diffGitDirtySnapshot(snapshotFile, cwd, command = '') {
     if (!snapshotFile)
         return [];
     const current = listGitDirtyPaths(cwd);
     if (!current)
         return [];
-    const baseline = readSnapshot(snapshotFile);
-    if (!baseline || baseline.root !== current.root) {
-        writeSnapshot(snapshotFile, current.root, current.paths);
+    const head = currentHead(cwd);
+    const baseline = readSnapshot(snapshotFile)?.roots[current.root];
+    if (!baseline) {
+        writeRoot(snapshotFile, current.root, { paths: current.paths, head });
         return [];
     }
     const known = new Set(baseline.paths);
     const additions = current.paths.filter((path) => !known.has(path));
-    writeSnapshot(snapshotFile, current.root, current.paths.filter((path) => known.has(path)));
+    if (head && head !== baseline.head && /\bgit\s+commit\b/.test(command)) {
+        for (const path of committedPaths(cwd, current.root, baseline.head, head))
+            if (!known.has(path) && !additions.includes(path))
+                additions.push(path);
+    }
+    writeRoot(snapshotFile, current.root, {
+        paths: current.paths.filter((path) => known.has(path)),
+        head,
+    });
     return additions.slice(0, MAX_REPORTED_PATHS_PER_CALL);
 }
 /**
  * After an edit tool: fold tool-reported edits into the snapshot so the next
- * shell diff does not re-credit them. Only when a baseline exists - seeding a
- * partial snapshot would make later diffs report pre-existing dirt.
+ * shell diff does not re-credit them. Only when a baseline exists for the
+ * repo that holds the path - seeding a partial snapshot would make later diffs
+ * report pre-existing dirt.
  */
 export function addPathsToGitDirtySnapshot(snapshotFile, paths) {
     if (!snapshotFile || paths.length === 0)
@@ -160,10 +230,13 @@ export function addPathsToGitDirtySnapshot(snapshotFile, paths) {
     const snapshot = readSnapshot(snapshotFile);
     if (!snapshot)
         return;
-    const known = new Set(snapshot.paths);
-    const additions = paths.filter((p) => !known.has(p));
-    if (additions.length === 0)
-        return;
-    writeSnapshot(snapshotFile, snapshot.root, [...snapshot.paths, ...additions]);
+    for (const path of paths) {
+        const root = rootFor(snapshot, path);
+        const entry = root ? snapshot.roots[root] : undefined;
+        if (!root || !entry || entry.paths.includes(path))
+            continue;
+        entry.paths = [...entry.paths, path];
+        writeRoot(snapshotFile, root, entry);
+    }
 }
 //# sourceMappingURL=gitEditDetector.js.map
