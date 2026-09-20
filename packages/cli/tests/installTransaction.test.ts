@@ -6,7 +6,7 @@ import { Readable } from 'node:stream';
 import { createProjectSetupExecutor } from '@mnemonik/local-setup';
 import { resolveProjectIdentity } from '@mnemonik/shared';
 import { hostOrder, SimulatedHostAdapter } from '../src/install/adapters.js';
-import { bytesAt, digest, interrupted, withInstall, type Journal } from '../src/install/journal.js';
+import { bytesAt, digest, interrupted, withInstall } from '../src/install/journal.js';
 import {
   compensate,
   consentMatches,
@@ -41,7 +41,6 @@ async function fixture() {
         version: 'test-1',
         artifactDigest: 'test-digest',
       });
-      adapter.grant = { id: name, account: 'owner', scopes: ['mcp'] };
       return adapter;
     })
   );
@@ -87,7 +86,6 @@ async function fixture() {
     adapters,
     executor,
     ui: {
-      batch: vi.fn(async () => 'connect' as const),
       waiting: vi.fn(),
       timeout: vi.fn(async () => 'skip' as const),
       roots: vi.fn(async () => ({
@@ -130,24 +128,12 @@ async function fixture() {
 
 it('orders Recommended install and keeps every host hash unchanged until Apply', async () => {
   const f = await fixture();
-  let journal: Journal | undefined;
   f.deps.fault = async (event, current) => {
-    journal = current;
     if (!current.data.mutations.some((m) => m.event === 'apply'))
       for (const adapter of f.adapters)
         expect(digest(await bytesAt(adapter.declaration.path))).toBe(digest(f.original));
     if (event === 'final_review') expect(await bytesAt(join(f.root, '.mnemonik.json'))).toBeNull();
   };
-  for (const adapter of f.adapters) {
-    const launch = adapter.launch.bind(adapter);
-    adapter.launch = async () => {
-      expect(journal!.data.approvals[adapter.name]?.intent.attempt).toBe(1);
-      expect(
-        journal!.data.targets.filter((t) => t.kind === 'host').every((t) => t.status === 'staged')
-      ).toBe(true);
-      return launch();
-    };
-  }
   const result = await runInstall(f.deps);
   expect(result.state).toBe('LIMITED');
   expect(result.reports).toEqual(expect.arrayContaining(['hook_not_verified']));
@@ -155,9 +141,6 @@ it('orders Recommended install and keeps every host hash unchanged until Apply',
   const ordered = [
     'journal_created',
     'staged',
-    'host_intent',
-    'host_launched',
-    'host_observed',
     'roots_confirmed',
     'consent_recorded',
     'projects_staged',
@@ -169,43 +152,14 @@ it('orders Recommended install and keeps every host hash unchanged until Apply',
   ];
   for (let i = 1; i < ordered.length; i++)
     expect(events.indexOf(ordered[i]!)).toBeGreaterThan(events.indexOf(ordered[i - 1]!));
-  expect(result.mutations.filter((m) => m.event === 'host_launched').map((m) => m.target)).toEqual(
-    hostOrder
-  );
+  expect(f.adapters.map((adapter) => adapter.launches)).toEqual([0, 0, 0, 0]);
   expect(JSON.parse(await readFile(join(f.root, '.mnemonik.json'), 'utf8')).projectId).toBe(uuid);
   for (const adapter of f.adapters)
     expect((await stat(adapter.declaration.path)).mode & 0o777).toBe(0o640);
 });
 
-it('retries only one host timer and Skip restores its bytes before remaining commits', async () => {
-  const f = await fixture();
-  const host = f.adapters[1]!;
-  host.grant = undefined;
-  host.authenticatedTools = false;
-  let time = 0;
-  const ticks: number[] = [];
-  f.deps.now = () => time;
-  f.deps.sleep = async (ms) => {
-    ticks.push(ms);
-    time += ms;
-  };
-  f.deps.ui.timeout = vi.fn().mockResolvedValueOnce('retry').mockResolvedValueOnce('skip');
-  f.deps.ui.review = async (journal) => {
-    expect(journal.data.hosts).not.toContain('codex');
-    expect(await readFile(host.declaration.path)).toEqual(f.original);
-    return 'apply';
-  };
-  const result = await runInstall(f.deps);
-  expect(time).toBe(240000);
-  expect(new Set(ticks)).toEqual(new Set([2000]));
-  expect(f.adapters.map((a) => a.launches)).toEqual([1, 2, 1, 1]);
-  expect(result.state).toBe('LIMITED');
-  expect(result.reports.join(' ')).toContain('mnemonik connect codex');
-  expect(await readFile(host.declaration.path)).toEqual(f.original);
-});
-
 it.each([false, true])(
-  'cancel restores files and revokes staged families (keep CLI=%s)',
+  'cancel restores files and revokes staged component credentials (keep CLI=%s)',
   async (keep) => {
     const f = await fixture();
     f.deps.ui.review = async () => 'cancel';
@@ -217,45 +171,12 @@ it.each([false, true])(
     expect(f.deps.revokeComponent).toHaveBeenCalledWith('scanner-created');
     for (const adapter of f.adapters) {
       expect(await readFile(adapter.declaration.path)).toEqual(f.original);
-      expect(adapter.revoked).toEqual([adapter.name]);
+      expect(adapter.revoked).toEqual([]);
     }
     expect(result.projects[0]).toMatchObject({ uuid, effect: 'created', empty: true });
     expect(result.reports.join(' ')).toContain('explicitly archive');
     expect(await bytesAt(join(f.root, '.mnemonik.json'))).toBeNull();
     expect(f.deps.upload!.start).not.toHaveBeenCalled();
-  }
-);
-
-it.each(['inactive', 'additive'] as const)(
-  'reconciles intent without observed (%s), attributing declarations from BEFORE hashes',
-  async (staging) => {
-    const f = await fixture();
-    const adapter = f.adapters[0]!;
-    adapter.declaration.staging = staging;
-    if (staging === 'inactive') adapter.declaration.content = f.original;
-    f.deps.fault = (event) => {
-      if (event === 'host_intent') throw new Error('crash');
-    };
-    await expect(runInstall(f.deps)).rejects.toThrow('crash');
-    const pending = (await interrupted(f.deps.stateDir))[0]!;
-    expect(pending.data.approvals['claude-code']?.observed).toBeUndefined();
-    expect(await bytesAt(adapter.declaration.path)).toEqual(
-      staging === 'inactive' ? f.original : adapter.declaration.content
-    );
-    f.deps.fault = undefined;
-    f.deps.ui.recovery = async (reports) => {
-      expect(reports.join(' ')).not.toContain('Conflict:');
-      expect(reports.join(' ')).toContain(
-        staging === 'inactive' ? 'pre-existing or inactive declaration' : 'CLI-created declaration'
-      );
-      expect(reports.join(' ')).toContain('cannot be attributed');
-      return 'rollback';
-    };
-    const result = await runInstall(f.deps, pending);
-    expect(result.phase).toBe('rolled_back');
-    expect(adapter.revoked).toEqual([]);
-    expect(result.reports.join(' ')).toContain(adapter.revokeAction);
-    expect(await readFile(adapter.declaration.path)).toEqual(f.original);
   }
 );
 
@@ -393,17 +314,6 @@ it('account switch returns to consent before requesting new host validation', as
     expect.objectContaining({ account: 'another-account' })
   );
   expect(f.deps.upload!.start).not.toHaveBeenCalled();
-});
-
-it('cancel reports unsupported host revocation and never offers archive for nonempty projects', async () => {
-  const f = await fixture();
-  f.adapters[0] = new SimulatedHostAdapter('claude-code', f.adapters[0]!.declaration, false);
-  f.adapters[0].grant = { id: 'host-owned', account: 'owner', scopes: ['mcp'] };
-  f.deps.projectEmpty = async () => false;
-  f.deps.ui.review = async () => 'cancel';
-  const result = await runInstall(f.deps);
-  expect(result.reports.join(' ')).toContain(f.adapters[0].revokeAction);
-  expect(result.reports.join(' ')).not.toContain('explicitly archive');
 });
 
 it('captures service state before Apply and resume renews consent without restarting services', async () => {

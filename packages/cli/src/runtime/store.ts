@@ -190,6 +190,7 @@ export async function updateRuntime(update: RuntimeUpdate): Promise<Verified> {
 export interface HostPackagePin {
   package: string;
   version: string;
+  releaseVersion?: string;
   closure: Array<{ name: string; version: string; integrity: string }>;
 }
 /** Release hosts may supply the same RuntimeSource from their platform map. */
@@ -199,9 +200,10 @@ export interface HostReleaseMap {
 export async function hostNpmSource(
   host: HostArtifact,
   pin: HostPackagePin,
-  fetcher: typeof fetch = fetch
+  fetcher: typeof fetch = fetch,
+  releaseKey?: string
 ): Promise<RuntimeSource> {
-  const { releaseBytes } = await import('./releaseSource.js');
+  const { releaseBytes, signedReleaseManifest } = await import('./releaseSource.js');
   const { unpack } = await import('./bootstrap.js');
   if (
     pin.package !== `@mnemonik/${host}-hooks` ||
@@ -212,6 +214,13 @@ export async function hostNpmSource(
     pin.closure[0]?.version !== pin.version
   )
     throw new RuntimeError('unsigned');
+  if (pin.releaseVersion) {
+    const release = await signedReleaseManifest(pin.releaseVersion, fetcher, releaseKey);
+    const signed = release.packages[pin.package];
+    if (!signed) throw new RuntimeError('unsigned');
+    if (signed.version !== pin.version || signed.integrity !== pin.closure[0]?.integrity)
+      throw new RuntimeError('digest_mismatch');
+  }
   const files: Record<string, Buffer> = {};
   const packages: NpmReceipt[] = [];
   const seen = new Set<string>();

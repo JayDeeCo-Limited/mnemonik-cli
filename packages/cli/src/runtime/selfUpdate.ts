@@ -2,7 +2,7 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { atomicWrite } from '@mnemonik/local-setup';
 import { RuntimeError, RuntimeStore } from './store.js';
-import { npmReleaseSource, releaseBytes } from './releaseSource.js';
+import { npmReleaseSource, releaseBytes, signedReleaseManifest } from './releaseSource.js';
 import { newerVersion } from './bootstrap.js';
 
 const registry = 'https://registry.npmjs.org/%40mnemonik%2Fcli/';
@@ -24,7 +24,10 @@ async function metadata(version = 'latest', fetcher: typeof fetch = fetch) {
     throw new RuntimeError('unsigned');
   return value;
 }
-export async function updateCli(store: RuntimeStore): Promise<{
+export async function updateCli(
+  store: RuntimeStore,
+  options: { fetcher?: typeof fetch; releaseKey?: string } = {}
+): Promise<{
   status: 'NOT_INSTALLED' | 'UP_TO_DATE' | 'UPDATED' | 'FAILED';
   oldVersion?: string;
   newVersion?: string;
@@ -34,6 +37,7 @@ export async function updateCli(store: RuntimeStore): Promise<{
   let oldVersion: string | undefined;
   let newVersion: string | undefined;
   const dev = process.env.MNEMONIK_DEV_RELEASE_DIR ? { devReleaseSource: true } : {};
+  const fetcher = options.fetcher ?? fetch;
   try {
     // Source checkouts do not have a managed CLI; the public entry always installs one first.
     if (
@@ -47,14 +51,19 @@ export async function updateCli(store: RuntimeStore): Promise<{
     )
       return { status: 'NOT_INSTALLED', ...dev };
     oldVersion = (await store.verifyRuntime('cli')).reference.version;
-    const latest = await metadata();
+    const latest = await metadata('latest', fetcher);
     newVersion = latest.version;
     if (oldVersion === newVersion) return { status: 'UP_TO_DATE', oldVersion, newVersion, ...dev };
-    const exact = await metadata(newVersion);
+    const exact = await metadata(newVersion, fetcher);
     if (exact.dist.integrity !== latest.dist.integrity) throw new RuntimeError('digest_mismatch');
-    const source = await npmReleaseSource(fetch, async () => ({
+    const release = await signedReleaseManifest(newVersion, fetcher, options.releaseKey);
+    const signedCli = release.packages['@mnemonik/cli'];
+    if (!signedCli) throw new RuntimeError('unsigned');
+    if (signedCli.version !== exact.version || signedCli.integrity !== exact.dist.integrity)
+      throw new RuntimeError('digest_mismatch');
+    const source = await npmReleaseSource(fetcher, async () => ({
       version: exact.version,
-      'dist.integrity': exact.dist.integrity,
+      'dist.integrity': signedCli.integrity,
       'dist.tarball': exact.dist.tarball,
     }));
     await store.installRuntime('cli', newVersion, source);

@@ -2,12 +2,41 @@ import { createCliCredentials } from './auth/credentials.js';
 import { createInterface } from 'node:readline';
 import { execFile } from 'node:child_process';
 import { lstat } from 'node:fs/promises';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { createProjectSetupExecutor, } from '@mnemonik/local-setup';
 import { resolveProjectIdentity, selectRemote, } from '@mnemonik/shared';
 import { createServerTransport, ServerActionRequiredError, } from './transport/server.js';
 import { evaluateRoot } from './project/eligibility.js';
 import { identityHash, ownerLabel, readExecutorState, saveCommandRecord, } from './project/records.js';
+export async function ensureProjectRoot(root, executor) {
+    const resolution = await executor.resolveProjectIdentity(root);
+    return executor.ensureProject({
+        cwd: root,
+        allowCreate: true,
+        allowNestedInherit: false,
+        ...(resolution.kind !== 'git_unavailable' && resolution.repository.kind === 'plain'
+            ? { nonGitSelected: true }
+            : {}),
+    });
+}
+export function projectLimitMessage(result, roots) {
+    if (!('state' in result) || result.state !== 'project_limit_reached')
+        return undefined;
+    const details = result;
+    const limit = typeof details.limit === 'number' ? details.limit : 1;
+    const tier = typeof details.tier === 'string' ? details.tier : limit === 1 ? 'free' : 'plan';
+    const plan = tier === 'plan' ? 'current' : `${tier[0]?.toUpperCase()}${tier.slice(1)}`;
+    const allowance = limit === 1 ? 'one project' : `${limit} projects`;
+    const skipped = (Array.isArray(roots) ? roots : [roots]).map((root) => basename(root));
+    const subject = skipped.length === 1 ? skipped[0] : `${skipped[0]} and ${skipped.length - 1} more`;
+    return [
+        `${subject} ${skipped.length === 1 ? 'was' : 'were'} not connected. The ${plan} plan includes ${allowance}.`,
+        'To connect more projects, upgrade your plan via the Mnemonik web console.',
+    ];
+}
+export const connectedProjectsMessage = (roots) => roots.length === 1
+    ? `  ✓ Connected ${basename(roots[0] ?? '')}.`
+    : `  ✓ Connected ${roots.length} repositories.`;
 export const projectExecutor = (dependencies) => {
     const executor = createProjectSetupExecutor(dependencies);
     return {

@@ -1,5 +1,4 @@
 import { cliCredentialStatus } from './auth/credentials.js';
-import { type GrantTransport } from './auth/status.js';
 import type { Readable } from 'node:stream';
 import { type ReadinessCondition, type ReadinessDocument, type ReadinessDocumentInput } from '@mnemonik/shared';
 import { Output } from './output.js';
@@ -41,7 +40,8 @@ export interface ReadProjectStatusInput {
 }
 export interface CollectStatusInput extends ReadProjectStatusInput {
     launcher?: LauncherOptions;
-    grants?: GrantTransport;
+    /** Accepted for callers that also expose grant diagnostics; readiness ignores editor grants. */
+    grants?: unknown;
     preflight: PreflightResult;
     installationConditions?: readonly ReadinessCondition[];
     scannerStatus?: () => Promise<ScannerPickerResult>;
@@ -54,7 +54,9 @@ export declare function buildStatusDocument(input: StatusDocumentInput): Readine
 export declare function renderStatusSummaries(document: ReadinessDocument & {
     cliCredential?: Awaited<ReturnType<typeof cliCredentialStatus>>;
     launcher?: LauncherStatus;
-}, output: Pick<Output, 'line'>): void;
+}, output: Pick<Output, 'line'>, options?: {
+    diagnostics?: boolean;
+}): void;
 export declare function statusExitCode(document: ReadinessDocument): number;
 export declare function readProjectStatus(input: ReadProjectStatusInput): Promise<ProjectStatusResult>;
 export declare function collectStatusDocument(input: CollectStatusInput): Promise<ReadinessDocument & {

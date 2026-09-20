@@ -387,6 +387,47 @@ describe('project init', () => {
 });
 
 describe('project link and setup', () => {
+  it('replaces a stale setup record when init applies the same folder', async () => {
+    const f = await baseFixture();
+    await gitRoot(f.root);
+    const transport: SetupTransport = {
+      issueSetupRequest: vi
+        .fn()
+        .mockResolvedValueOnce({
+          status: 'project_setup_required' as const,
+          state: 'confirmation_required',
+          allowedActions: ['link', 'cancel'],
+          candidates: [{ projectId, displayName: 'repo' }],
+        })
+        .mockResolvedValueOnce({
+          status: 'project_setup_required' as const,
+          state: 'missing',
+          allowedActions: ['create', 'cancel'],
+          requestId: randomUUID(),
+        }),
+      consumeSetupRequest: vi.fn(async () => ({
+        status: 'complete' as const,
+        projectId,
+        displayName: 'repo',
+      })),
+    };
+    const deps = commandDeps(f, { transport });
+    expect(
+      await runCli(
+        ['project', 'setup', f.root, `--owner=team:${otherId}`, '--non-interactive', '--apply'],
+        deps
+      )
+    ).toBe(3);
+    f.stdout.text = '';
+    f.stderr.text = '';
+
+    expect(await runCli(['project', 'init', f.root, '--non-interactive', '--apply'], deps)).toBe(0);
+    expect(f.stdout.text + f.stderr.text).not.toContain('operation_context_changed');
+    expect(JSON.parse(await readFile(join(f.root, '.mnemonik.json'), 'utf8')).projectId).toBe(
+      projectId
+    );
+  });
+
   it('requires mismatch confirmation and replacement, then rollback restores exact bytes', async () => {
     const f = await baseFixture();
     const before = Buffer.from(

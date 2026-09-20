@@ -53,6 +53,7 @@ export function hostAdapterConformance(
       runtimeRoot,
       credentialFamily: 'hook-family',
       runtimeEntry: join(runtimeRoot, '1.0.0', 'dist', 'hook.js'),
+      installationId: '11111111-1111-4111-8111-111111111111',
     };
     const deps: AdapterDependencies = {
       target,
@@ -391,55 +392,10 @@ export function hostAdapterConformance(
       assert.deepEqual(await readFile(configPath('user')), before);
     }
   );
-  check(
-    'parses connected listings without inferring account and uses execFile arguments',
-    async ({ deps, project, target }) => {
-      let stdout = 'mnemonik: https://api.mnemonik.dev/mcp - ✔ Connected\n';
-      const calls: unknown[][] = [];
-      const host = create({
-        ...deps,
-        target: { ...target, component: 'mcp' },
-        execFile: async (...args) => {
-          if (args[1][0] === '--version') return { stdout: versionOutput, stderr: '' };
-          calls.push(args);
-          return { stdout, stderr: '' };
-        },
-      });
-      const inspection = await host.verify();
-      if (options.name === 'cursor') {
-        assert.equal(inspection.authenticatedTools, false);
-        assert.equal(inspection.grant, undefined);
-        assert.deepEqual(calls, []);
-        return;
-      }
-      assert.equal(inspection.authenticatedTools, true);
-      assert.equal(inspection.grant, undefined);
-      assert.deepEqual(calls[0], [
-        options.name === 'claude-code'
-          ? 'claude'
-          : options.name === 'cursor'
-            ? 'agent'
-            : options.name,
-        ['mcp', 'list'],
-        { env: deps.env, cwd: project, timeout: 5000, maxBuffer: 64 * 1024, windowsHide: true },
-      ]);
-      for (const listing of [
-        'mnemonik: not connected',
-        'foreign: ✔ Connected',
-        'mnemonik: enabled OAuth',
-        'mnemonik-foreign: Connected',
-        'mnemonik: warning: was previously connected',
-        'unrecognized format',
-      ]) {
-        stdout = listing;
-        assert.equal((await host.verify()).authenticatedTools, false);
-      }
-    }
-  );
   if (options.mcpConfig)
     for (const scope of options.scopes)
       check(
-        `${scope}: MCP URL only, foreign server preserved, staged lifecycle`,
+        `${scope}: MCP declaration has the correct machine header and preserves foreign fields`,
         async ({ root, project, deps, target: base }) => {
           const target = { ...base, component: 'mcp' as const, scope };
           const adapter = create({ ...deps, target });
@@ -458,14 +414,14 @@ export function hostAdapterConformance(
           const raw = plan.changes[0]?.content.toString();
           assert.ok(raw);
           assert.ok(raw.includes('https://api.mnemonik.dev/mcp'));
-          const sessionHeader = 'headers = { "x-mcp-session-id" = "{{session_id}}" }\n';
+          const sessionHeader = /headers\s*=.*"x-mcp-session-id"\s*=\s*"\{\{session_id\}\}"/u;
           const withoutSessionHeader =
-            options.name === 'grok' && config.toml ? raw.replace(sessionHeader, '') : raw;
-          if (options.name === 'grok') assert.ok(raw.includes(sessionHeader));
-          assert.doesNotMatch(
-            withoutSessionHeader,
-            /token|secret|headers|credential|bearer|runtime|client.?id/i
-          );
+            options.name === 'grok' && config.toml
+              ? raw.replace(/,?\s*"x-mcp-session-id"\s*=\s*"\{\{session_id\}\}"/u, '')
+              : raw;
+          if (options.name === 'grok') assert.match(raw, sessionHeader);
+          if (scope === 'user') assert.match(withoutSessionHeader, /x-mnemonik-installation-id/);
+          else assert.doesNotMatch(withoutSessionHeader, /x-mnemonik-installation-id/);
           if (config.toml) assert.ok(raw.startsWith(original));
           else {
             const parsed = JSON.parse(raw);
@@ -473,6 +429,13 @@ export function hostAdapterConformance(
             assert.deepEqual(parsed.mcpServers.mnemonik, {
               ...(config.type ? { type: config.type } : {}),
               url: 'https://api.mnemonik.dev/mcp',
+              ...(scope === 'user'
+                ? {
+                    headers: {
+                      'x-mnemonik-installation-id': '11111111-1111-4111-8111-111111111111',
+                    },
+                  }
+                : {}),
             });
           }
           const staged: FileChange[] = [];
@@ -487,6 +450,52 @@ export function hostAdapterConformance(
           await writeChanges(staged);
           assert.equal((await adapter.inspect()).declarationPresent, true);
           assert.deepEqual((await adapter.plan()).changes, plan.changes);
+
+          if (scope === 'user') {
+            const installed = await readFile(path, 'utf8');
+            if (config.toml)
+              await writeFile(
+                path,
+                installed
+                  .replace(/,?\s*"x-mnemonik-installation-id"\s*=\s*"[^"]*"/u, '')
+                  .replace(/\{\s*,/u, '{')
+                  .replace(/,\s*\}/u, ' }')
+                  .replace(
+                    'url = "https://api.mnemonik.dev/mcp"\n',
+                    'url = "https://api.mnemonik.dev/mcp"\ncustom = "keep exactly"\n'
+                  )
+              );
+            else {
+              const missing = JSON.parse(installed);
+              missing.mcpServers.mnemonik.custom = 'keep exactly';
+              missing.mcpServers.mnemonik.headers['x-foreign'] = 'keep exactly';
+              delete missing.mcpServers.mnemonik.headers['x-mnemonik-installation-id'];
+              await writeFile(path, JSON.stringify(missing, null, 2) + '\n');
+            }
+            const missingHeader = await readFile(path, 'utf8');
+            staged.length = 0;
+            await adapter.repair(writer, target);
+            await writeChanges(staged);
+            const repaired = await readFile(path, 'utf8');
+            assert.match(repaired, /x-mnemonik-installation-id/);
+            assert.match(repaired, /keep exactly/);
+            if (options.name === 'grok') assert.match(repaired, /x-mcp-session-id/);
+            if (config.toml) {
+              const withoutManagedHeader = repaired
+                .replace(
+                  /(?:,\s*)?(?:["']x-mnemonik-installation-id["']|x-mnemonik-installation-id)\s*=\s*["'][^"']*["']\s*,?/u,
+                  ''
+                )
+                .replace(/\{\s*,/u, '{')
+                .replace(/,\s*\}/u, ' }');
+              assert.equal(withoutManagedHeader, missingHeader);
+            } else {
+              const withoutManagedHeader = JSON.parse(repaired);
+              delete withoutManagedHeader.mcpServers.mnemonik.headers['x-mnemonik-installation-id'];
+              assert.equal(JSON.stringify(withoutManagedHeader, null, 2) + '\n', missingHeader);
+            }
+          }
+
           staged.length = 0;
           await adapter.uninstall(writer, target);
           await writeChanges(staged);

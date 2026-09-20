@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { bytesAt, withInstall } from '../../src/install/journal.js';
 import { runHosts } from '../../src/install/hosts.js';
-import { Readable } from 'node:stream';
+import { PassThrough, Readable } from 'node:stream';
 import { runCli } from '../../src/router.js';
 import { waitForInstallation } from '../../src/install/journey.js';
 import { serializeReadiness } from '@mnemonik/shared';
@@ -16,7 +16,6 @@ it.each([
   'recommended',
   'account',
   'cli_approval',
-  'host_approvals',
   'scanner',
   'apply',
   'done',
@@ -51,12 +50,103 @@ it.each([
       ],
       total: 240,
       completed: 38,
-      skipped: 'Cursor was skipped. Connect it later: mnemonik connect cursor',
+      skipped: 'Background indexing was skipped.',
       remaining: 1,
       reason: 'Access is denied.',
     }
   );
-  expect(text).toBe(await readFile(new URL(`./${screen}.golden.txt`, import.meta.url), 'utf8'));
+  const golden = await readFile(new URL(`./${screen}.golden.txt`, import.meta.url), 'utf8');
+  expect(text).toBe(
+    ['account', 'scanner'].includes(screen)
+      ? golden
+      : golden.endsWith('\n\n')
+        ? golden
+        : `${golden}\n`
+  );
+});
+
+it('states the controls on every choice screen', () => {
+  let text = '';
+  screens.renderJourney('recommended', new Output({ write: (chunk) => void (text += chunk) }), {
+    hosts: ['Claude Code', 'Codex'],
+    project: '~/Projects',
+    node: '24.21.0',
+    os: 'macOS',
+  });
+  expect(text).toContain('Use the Up/Down arrow keys and Enter.');
+
+  text = '';
+  screens.renderScreen(
+    {
+      id: 'cancel',
+      title: 'Cancel installation?',
+      lines: [],
+      choices: ['Keep going', 'Cancel'],
+      default: 0,
+    },
+    new Output({ write: (chunk) => void (text += chunk) })
+  );
+  expect(text).toContain('Use the Up/Down arrow keys and Enter.');
+});
+
+it('uses arrow keys and Enter, with Enter accepting the highlighted default', async () => {
+  const input = Object.assign(new PassThrough(), {
+    isTTY: true,
+    setRawMode: vi.fn(),
+  });
+  let text = '';
+  const answers = screens.journeyAnswers(
+    input,
+    new Output({ write: (chunk) => void (text += chunk) })
+  );
+  const changed = answers.choose(['Recommended', 'Customize']);
+  input.write('\u001b[B\r');
+  await expect(changed).resolves.toBe('Customize');
+
+  const accepted = answers.choose(['Recommended', 'Customize']);
+  input.write('\r');
+  await expect(accepted).resolves.toBe('Recommended');
+  expect(input.setRawMode).toHaveBeenCalledWith(true);
+  answers.close();
+});
+
+it('renders Customize as one checklist and applies its keyboard changes', async () => {
+  let text = '';
+  const output = new Output({ write: (chunk) => void (text += chunk) });
+  screens.renderCustomize(
+    [
+      { value: 'claude-code', label: 'Claude Code', checked: true },
+      { value: 'codex', label: 'Codex', checked: true },
+      { value: 'scanner', label: 'Indexing of your projects', checked: true },
+    ],
+    output
+  );
+  expect(text).toContain(
+    'Use the Up/Down arrow keys to move, Space to select, Enter to continue, Esc to go back.'
+  );
+  expect(text).toContain('[x] Claude Code');
+  expect(text).not.toContain('Scope');
+
+  const input = Object.assign(new PassThrough(), { isTTY: true, setRawMode: vi.fn() });
+  const answers = screens.journeyAnswers(input, output);
+  const result = answers.customize([
+    { value: 'claude-code', label: 'Claude Code', checked: true },
+    { value: 'codex', label: 'Codex', checked: true },
+    { value: 'scanner', label: 'Indexing of your projects', checked: true },
+  ]);
+  input.write(' \u001b[B\r');
+  await expect(result).resolves.toEqual({ selected: ['codex', 'scanner'] });
+  answers.close();
+});
+
+it('reports closed input as a cancellation', async () => {
+  let text = '';
+  const answers = screens.journeyAnswers(
+    Readable.from([]),
+    new Output({ write: (chunk) => void (text += chunk) })
+  );
+  await expect(answers.choose(['Recommended', 'Customize'])).resolves.toBe('Cancel');
+  expect(text).toContain('Installation cancelled.');
 });
 
 it.each([
@@ -79,7 +169,7 @@ it.each([
   );
   expect(text).toContain(`  ${heading}\n`);
   expect(text).toContain(
-    'host digest_mismatch; scanner unavailable; no automatic fix; mnemonik repair'
+    '1. host digest_mismatch; scanner unavailable; no automatic fix; mnemonik repair'
   );
 });
 
@@ -149,35 +239,32 @@ it('prints the failed discovery URL and network detail before stopping setup', a
   expect(text).toContain('https://staging.example/.well-known/oauth-protected-resource');
   expect(text).toContain('HTTP 503');
 });
-it.each(['grok', 'vscode-copilot'])(
-  'rejects the non-launch host %s before preflight',
-  async (host) => {
-    let text = '';
-    const resolveIdentity = vi.fn(async () => {
-      throw new Error('preflight must not run');
-    });
-    const code = await runCli(
-      [
-        'install',
-        `--hosts=${host}`,
-        '--components=hooks,mcp',
-        '--without-scanner',
-        '--integration-scope=user',
-        '--accept-limited',
-        '--apply',
-      ],
-      {
-        stdout: { write: (chunk) => (text += chunk) },
-        stderr: { write: (chunk) => (text += chunk) },
-        preflight: { resolveIdentity },
-      }
-    );
-    expect(code).toBe(2);
-    expect(resolveIdentity).not.toHaveBeenCalled();
-    expect(text).toContain('claude-code, codex, cursor');
-    expect(text).toContain('grok, vscode-copilot');
-  }
-);
+it('rejects the unsupported install host before preflight', async () => {
+  const host = 'vscode-copilot';
+  let text = '';
+  const resolveIdentity = vi.fn(async () => {
+    throw new Error('preflight must not run');
+  });
+  const code = await runCli(
+    [
+      'install',
+      `--hosts=${host}`,
+      '--components=hooks,mcp',
+      '--without-scanner',
+      '--accept-limited',
+      '--apply',
+    ],
+    {
+      stdout: { write: (chunk) => (text += chunk) },
+      stderr: { write: (chunk) => (text += chunk) },
+      preflight: { resolveIdentity },
+    }
+  );
+  expect(code).toBe(2);
+  expect(resolveIdentity).not.toHaveBeenCalled();
+  expect(text).toContain('claude-code, codex, cursor, grok');
+  expect(text).toContain('vscode-copilot');
+});
 it('names the found and minimum Node versions before stopping setup', async () => {
   let text = '';
   const output = { write: (chunk: string) => (text += chunk) };
@@ -187,7 +274,6 @@ it('names the found and minimum Node versions before stopping setup', async () =
       '--hosts=codex',
       '--components=hooks,mcp',
       '--without-scanner',
-      '--integration-scope=user',
       '--accept-limited',
       '--apply',
     ],
@@ -209,7 +295,8 @@ it('names the found and minimum Node versions before stopping setup', async () =
     }
   );
   expect(code).toBe(3);
-  expect(text).toContain('Node 23.1.0 found; Node 24 or newer is required.');
+  expect(text).toContain('Node 23.1.0 is installed. Mnemonik needs Node 24 or newer.');
+  expect(text).toContain('Install Node 24: https://nodejs.org/en/download/package-manager');
   expect(text.trim()).not.toBe('preflight_failed');
 });
 it('doctor does not wait for indexing and bounds each Retry attempt', async () => {
@@ -255,7 +342,7 @@ it('accepts a READY document returned exactly at the deadline', async () => {
   expect(result).toEqual({ document: ready, skipped: false });
   expect(timeout).not.toHaveBeenCalled();
 });
-it('renders the indexing counts from a receipt that carries them', () => {
+it('keeps indexing detail out of the finished install transcript', () => {
   let text = '';
   screens.renderJourney(
     'done',
@@ -266,9 +353,12 @@ it('renders the indexing counts from a receipt that carries them', () => {
     }),
     { total: 6, completed: 3 }
   );
-  expect(text).toContain('Indexing 6 files, 3 done.');
+  expect(text).not.toContain('Indexing');
+  expect(text).toContain(
+    '  ✓ Installed.\n  Your editors will ask you to sign in to Mnemonik the first time you use it.\n'
+  );
 });
-it('unknown indexing counts are kept unknown in the completion wording', () => {
+it('keeps unknown indexing detail out of the completion wording', () => {
   let text = '';
   screens.renderJourney(
     'done',
@@ -279,7 +369,7 @@ it('unknown indexing counts are kept unknown in the completion wording', () => {
     }),
     { total: null, completed: null }
   );
-  expect(text).toContain('Indexing in progress.');
+  expect(text).not.toContain('Indexing');
   expect(text).not.toContain('Indexing 0');
 });
 

@@ -1,3 +1,3 @@
+  Your editors will ask you to sign in to Mnemonik the first time you use it.
   Done, with one thing left.
-  Cursor was skipped. Connect it later: mnemonik connect cursor
-
+  1. Background indexing was skipped.

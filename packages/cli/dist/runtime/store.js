@@ -136,8 +136,8 @@ export async function updateRuntime(update) {
     }
     return installed;
 }
-export async function hostNpmSource(host, pin, fetcher = fetch) {
-    const { releaseBytes } = await import('./releaseSource.js');
+export async function hostNpmSource(host, pin, fetcher = fetch, releaseKey) {
+    const { releaseBytes, signedReleaseManifest } = await import('./releaseSource.js');
     const { unpack } = await import('./bootstrap.js');
     if (pin.package !== `@mnemonik/${host}-hooks` ||
         !/^\d+\.\d+\.\d+(?:-[\w.-]+)?$/.test(pin.version) ||
@@ -146,6 +146,14 @@ export async function hostNpmSource(host, pin, fetcher = fetch) {
         pin.closure[0]?.name !== pin.package ||
         pin.closure[0]?.version !== pin.version)
         throw new RuntimeError('unsigned');
+    if (pin.releaseVersion) {
+        const release = await signedReleaseManifest(pin.releaseVersion, fetcher, releaseKey);
+        const signed = release.packages[pin.package];
+        if (!signed)
+            throw new RuntimeError('unsigned');
+        if (signed.version !== pin.version || signed.integrity !== pin.closure[0]?.integrity)
+            throw new RuntimeError('digest_mismatch');
+    }
     const files = {};
     const packages = [];
     const seen = new Set();

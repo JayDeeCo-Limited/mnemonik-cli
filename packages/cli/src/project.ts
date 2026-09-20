@@ -2,7 +2,7 @@ import { createCliCredentials } from './auth/credentials.js';
 import { createInterface, type Interface } from 'node:readline';
 import { execFile } from 'node:child_process';
 import { lstat } from 'node:fs/promises';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import type { Readable } from 'node:stream';
 import type { createCredentialAdapter } from '@mnemonik/credentials';
 import {
@@ -41,6 +41,45 @@ export interface ProjectExecutor {
   apply(options: EnsureOptions): Promise<SetupResult>;
   rollback(options: EnsureOptions): Promise<SetupResult>;
 }
+
+export async function ensureProjectRoot(
+  root: string,
+  executor: ProjectExecutor
+): Promise<SetupResult> {
+  const resolution = await executor.resolveProjectIdentity(root);
+  return executor.ensureProject({
+    cwd: root,
+    allowCreate: true,
+    allowNestedInherit: false,
+    ...(resolution.kind !== 'git_unavailable' && resolution.repository.kind === 'plain'
+      ? { nonGitSelected: true as const }
+      : {}),
+  });
+}
+
+export function projectLimitMessage(
+  result: SetupResult,
+  roots: string | readonly string[]
+): string[] | undefined {
+  if (!('state' in result) || result.state !== 'project_limit_reached') return undefined;
+  const details = result as unknown as Record<string, unknown>;
+  const limit = typeof details.limit === 'number' ? details.limit : 1;
+  const tier = typeof details.tier === 'string' ? details.tier : limit === 1 ? 'free' : 'plan';
+  const plan = tier === 'plan' ? 'current' : `${tier[0]?.toUpperCase()}${tier.slice(1)}`;
+  const allowance = limit === 1 ? 'one project' : `${limit} projects`;
+  const skipped = (Array.isArray(roots) ? roots : [roots]).map((root) => basename(root));
+  const subject =
+    skipped.length === 1 ? skipped[0] : `${skipped[0]} and ${skipped.length - 1} more`;
+  return [
+    `${subject} ${skipped.length === 1 ? 'was' : 'were'} not connected. The ${plan} plan includes ${allowance}.`,
+    'To connect more projects, upgrade your plan via the Mnemonik web console.',
+  ];
+}
+
+export const connectedProjectsMessage = (roots: string[]): string =>
+  roots.length === 1
+    ? `  ✓ Connected ${basename(roots[0] ?? '')}.`
+    : `  ✓ Connected ${roots.length} repositories.`;
 
 export const projectExecutor = (dependencies: ExecutorDependencies): ProjectExecutor => {
   const executor = createProjectSetupExecutor(dependencies);

@@ -1,3 +1,1 @@
-  Opening your browser to sign in.
-  Waiting for you to sign in and approve, up to 10 minutes.
-
+Step 2 of 5: Sign in. Your browser will open. This waits up to 10 minutes.

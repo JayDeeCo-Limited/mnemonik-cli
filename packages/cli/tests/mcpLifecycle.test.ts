@@ -1,359 +1,144 @@
 import { afterAll, afterEach, beforeAll, expect, it, vi } from 'vitest';
-import { readFile, rm, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
-import { Readable } from 'node:stream';
-import { runCli } from '../src/router.js';
-import { collectStatusDocument } from '../src/status.js';
-import { connectHost, runHosts } from '../src/install/hosts.js';
+import { readFile, rm } from 'node:fs/promises';
+import { hostPackageImports, hostOrder } from '../src/install/adapters.js';
 import { readOwnership } from '../src/install/ownership.js';
-import { grantTransport, matchHostGrant, type AccountGrant } from '../src/auth/status.js';
+import { saveInstallation } from '../src/installation.js';
+import { joinedInstall } from '../src/install/journey.js';
+import { Output } from '../src/output.js';
 import { hostFixture, packedHosts } from './fixtures/hostRuntime.js';
-import { hostOrder } from '../src/install/adapters.js';
-// The install journey offers only these hosts; grok stays in hostOrder (and in the grants fixture)
-// for tests that install runtimes directly through runHosts.
-const launchHosts = hostOrder.filter((host) => host !== 'grok');
+import { serializeReadiness } from '@mnemonik/shared';
+
+const scanner = vi.hoisted(() => ({ prepare: vi.fn(), status: vi.fn() }));
+vi.mock('../src/scanner/enable.js', async (original) => ({
+  ...(await original<typeof import('../src/scanner/enable.js')>()),
+  prepareScanner: scanner.prepare,
+}));
+vi.mock('../src/status.js', async (original) => ({
+  ...(await original<typeof import('../src/status.js')>()),
+  collectStatusDocument: scanner.status,
+}));
 
 let packed: Awaited<ReturnType<typeof packedHosts>>;
 const homes: string[] = [];
+
 beforeAll(async () => {
   packed = await packedHosts();
 }, 120_000);
+
 afterAll(async () => {
   await rm(packed.root, { recursive: true, force: true });
 });
+
 afterEach(async () => {
   await Promise.all(homes.splice(0).map((home) => rm(home, { recursive: true, force: true })));
 });
-async function fixture() {
-  const f = await hostFixture(packed.sources);
-  homes.push(f.home);
-  const calls: { path: string; method: string }[] = [];
-  const grants: AccountGrant[] = hostOrder.map((host) => ({
-    id: `grant-${host}`,
-    clientId: `registered-${host}`,
-    clientName: host === 'claude-code' ? 'Claude Code' : host,
-    softwareId: null,
-    scopes: ['mcp:use', 'offline_access'],
-    resource: 'https://api.mnemonik.dev/mcp',
-    createdAt: '2026-09-11T00:00:00Z',
-    activatedAt: '2026-09-11T00:01:00Z',
-    lastUsedAt: null,
-  }));
-  let account = 'owner';
-  f.deps.grants = grantTransport(
-    async () => 'fixture-cli-bearer',
-    async (input, init) => {
-      expect(init?.headers).toEqual({ authorization: 'Bearer fixture-cli-bearer' });
-      const path = new URL(String(input)).pathname;
-      calls.push({ path, method: init?.method ?? 'GET' });
-      if (init?.method === 'POST') {
-        const id = path.split('/').at(-2);
-        if (path.endsWith('/approve-host')) {
-          const grant = grants.find((g) => g.id === id)!;
-          grant.deviceInstallationId = 'installation';
-          return Response.json({ id, deviceInstallationId: 'installation' });
-        }
-        grants.splice(
-          grants.findIndex((g) => g.id === id),
-          1
-        );
-        return Response.json({});
-      }
-      return Response.json({
-        account,
-        deviceInstallationId: 'installation',
-        grants: [
-          {
-            ...grants[0]!,
-            id: 'cli',
-            clientId: 'mnemonik-cli',
-            clientName: 'Mnemonik CLI',
-            resource: 'https://api.mnemonik.dev/',
-            scopes: ['install:manage', 'components:manage'],
-            deviceInstallationId: 'installation',
-            createdAt: '2026-09-10T00:00:00Z',
+
+it('installs hooks and MCP declarations for four editors without launching or listing grants', async () => {
+  const fixture = await hostFixture(packed.sources);
+  homes.push(fixture.home);
+  await saveInstallation(fixture.deps.stateDir, '11111111-1111-4111-8111-111111111111');
+  const launch = vi.fn(async () => {
+    throw new Error('editor_login_must_not_launch');
+  });
+  const list = vi.fn(async () => {
+    throw new Error('editor_grants_must_not_be_listed');
+  });
+  fixture.deps.grants = { list, revoke: vi.fn() };
+  fixture.deps.imports = Object.fromEntries(
+    hostOrder.map((host) => [
+      host,
+      async (runtime: Parameters<(typeof hostPackageImports)[typeof host]>[0]) => {
+        const module = await hostPackageImports[host](runtime);
+        return {
+          createHostAdapter: (deps: Parameters<typeof module.createHostAdapter>[0]) => {
+            const configured = module.createHostAdapter(deps);
+            return {
+              ...configured,
+              launch,
+              verify: async (target?: Parameters<typeof configured.verify>[0]) => ({
+                ...(await configured.verify(target)),
+                trustPending: false,
+              }),
+            };
           },
-          ...grants,
-        ],
-      });
+        };
+      },
+    ])
+  ) as unknown as typeof hostPackageImports;
+  scanner.prepare.mockImplementation(async (_options, work) =>
+    work({
+      roots: [],
+      exclusions: [],
+      files: [],
+      session: { id: 'active-session' },
+      apply: async () => serializeReadiness({ installation: { conditions: [] } }),
+      rollback: async () => {},
+      complete: async () => {},
+    })
+  );
+  scanner.status.mockResolvedValue(serializeReadiness({ installation: { conditions: [] } }));
+
+  let stdout = '';
+  const completionFetch = vi.fn(
+    async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+      const path = new URL(String(input)).pathname;
+      if (path === '/api/v1/install-sessions/current')
+        return Response.json({ id: 'active-session' });
+      if (path === '/api/v1/install-sessions/active-session/complete' && init?.method === 'POST')
+        return Response.json({ status: 'completed' });
+      throw new Error(`unexpected_install_request:${path}`);
     }
   );
-  return {
-    ...f,
-    calls,
-    grants,
-    setAccount: (value: string) => {
-      account = value;
-    },
-  };
-}
-const cliAuth = {
-  getCliBearer: async () => 'fixture',
-  signIn: async () => {},
-  logout: async () => {},
-};
-const quiet = { write() {} };
-const statusFor = (f: Awaited<ReturnType<typeof fixture>>) =>
-  collectStatusDocument({
-    stateDir: f.deps.stateDir,
-    grants: f.deps.grants,
-    cwd: f.projectRoot,
-    input: Readable.from(''),
-    preflight: {
-      status: 'ready',
-      node: { supported: true, version: '24' },
-      os: 'Linux',
-      hosts: [],
-      project: { resolution: 'absent' },
-      network: { reachable: true, discoveryUrl: '' },
-    },
-    scannerStatus: async () => ({ roots: [], exclusions: [], repositories: [] }),
-    projectHookConditions: [],
-  });
-
-it('installs six component targets; Codex MCP-only uninstall keeps five and their declarations', async () => {
-  const f = await fixture();
-  const output: string[] = [];
-  expect(
-    await runCli(
-      [
-        'install',
-        '--components',
-        'hooks,mcp',
-        '--hosts',
-        launchHosts.join(','),
-        '--integration-scope',
-        'user',
-        '--non-interactive',
-        '--accept-limited',
-        '--apply',
-        '--json',
-      ],
-      {
-        hostManagement: f.deps,
-        home: f.home,
-        cwd: f.projectRoot,
-        cliAuth,
-        stdout: { write: (text) => output.push(String(text)) },
-      }
-    )
-  ).toBe(3);
-  expect(
-    JSON.parse(output.join('')).targets.find((target: { target: string }) =>
-      target.target.startsWith('cursor:mcp:')
-    )
-  ).toMatchObject({ status: 'READY' });
-  const before = (await readOwnership(f.deps.stateDir)).targets;
-  expect(before).toHaveLength(6);
-  expect(
-    before
-      .filter((t) => t.component === 'mcp')
-      .map((t) => t.grant?.id)
-      .sort()
-  ).toEqual(launchHosts.map((host) => `grant-${host}`).sort());
-  const codex = before.find((t) => t.host === 'codex' && t.component === 'mcp')!;
-  const otherFiles = await Promise.all(
-    before
-      .filter((t) => t.id !== codex.id)
-      .map(async (t) => ({ path: t.profilePath, bytes: await readFile(t.profilePath) }))
-  );
-  await runCli(
-    ['uninstall', '--component', 'mcp', '--host', 'codex', '--non-interactive', '--confirm'],
+  const exit = await joinedInstall(
+    new Map<string, string | true>([
+      ['hosts', hostOrder.join(',')],
+      ['components', 'hooks,mcp,scanner'],
+      ['accept-scanner', true],
+      ['apply', true],
+    ]),
     {
-      hostManagement: f.deps,
-      stdout: quiet,
-    }
+      home: fixture.home,
+      cwd: fixture.projectRoot,
+      installStateDir: fixture.deps.stateDir,
+      grantFetch: completionFetch,
+      projectExecutor: {
+        stage: async () => ({ status: 'staged' as const }),
+        apply: async () => ({ status: 'done' as const, projectId: 'unused' }),
+        rollback: async () => {},
+      } as any,
+      preflight: {
+        nodeVersion: '24.21.0',
+        pathExists: async () => false,
+        fetch: async () => Response.json({}),
+        resolveIdentity: async () => ({
+          kind: 'absent',
+          root: fixture.projectRoot,
+          repository: { kind: 'plain', root: fixture.projectRoot },
+          nested: [],
+        }),
+      },
+    },
+    new Output({ write: (chunk) => (stdout += chunk) }),
+    async () => 'owner',
+    async () => fixture.deps
   );
-  expect((await readOwnership(f.deps.stateDir)).targets).toHaveLength(5);
-  expect(await readFile(codex.profilePath, 'utf8')).not.toContain('mcp_servers.mnemonik');
-  expect(await readFile(codex.profilePath, 'utf8')).toContain('hooks = true');
-  for (const file of otherFiles) expect(await readFile(file.path)).toEqual(file.bytes);
-  // Six real runtime installs from packed tarballs plus the hook credential
-  // issuance take about two minutes alone and longer beside other workers.
+
+  expect(exit, stdout).toBe(0);
+  expect(launch).not.toHaveBeenCalled();
+  expect(list).not.toHaveBeenCalled();
+  expect(
+    stdout.match(/Your editors will ask you to sign in to Mnemonik the first time you use it\./g)
+  ).toHaveLength(1);
+  const targets = (await readOwnership(fixture.deps.stateDir)).targets;
+  expect(targets).toHaveLength(8);
+  const declarations = await Promise.all(
+    targets
+      .filter((target) => target.component === 'mcp')
+      .map((target) => readFile(target.profilePath, 'utf8'))
+  );
+  expect(declarations.every((raw) => raw.includes('x-mnemonik-installation-id'))).toBe(true);
+  const grok = declarations.find((raw) => raw.includes('x-mcp-session-id'))!;
+  const headerLines = grok.match(/^headers\s*=.*$/gm) ?? [];
+  expect(headerLines).toHaveLength(1);
+  expect(headerLines[0]).toContain('x-mnemonik-installation-id');
 }, 300_000);
-
-it('connected listing binds only an authenticated account grant; mismatch leaves an unbound resumable target', async () => {
-  const f = await fixture();
-  const selection = { ...f.selections[0]!, component: 'mcp' as const };
-  const result = await runHosts('install', [selection], f.deps);
-  expect(result.results[0]!.reason).toBe('hooks_not_verified');
-  let target = (await readOwnership(f.deps.stateDir)).targets[0]!;
-  expect(target.grant?.account).toBe('owner');
-  const status = await matchHostGrant(
-    { authenticatedTools: true, declarationPresent: true },
-    'claude-code',
-    'owner',
-    f.deps.grants!,
-    0
-  );
-  expect(status).toMatchObject({
-    authenticatedTools: true,
-    grant: { id: 'grant-claude-code', account: 'owner' },
-  });
-  await expect(
-    matchHostGrant(
-      { authenticatedTools: true, declarationPresent: true },
-      'claude-code',
-      'owner',
-      f.deps.grants!,
-      Date.parse('2026-09-12T00:00:00Z')
-    )
-  ).resolves.toMatchObject({ grant: { id: target.grant?.id } });
-  expect(
-    (
-      await matchHostGrant(
-        { authenticatedTools: true, declarationPresent: true },
-        'claude-code',
-        'owner',
-        f.deps.grants!,
-        Date.parse('2026-09-12T00:00:00Z'),
-        target.grant
-      )
-    ).grant?.id
-  ).toBe(target.grant?.id);
-  const bound = target.grant;
-  f.setAccount('different-account');
-  const mismatch = await connectHost(target, f.deps);
-  expect(mismatch).toMatchObject({ status: 'ACTION_REQUIRED', reason: 'host_account_mismatch' });
-  target = (await readOwnership(f.deps.stateDir)).targets[0]!;
-  // The failed attempt keeps the recorded grant, so status still reads the target as a binding to
-  // restore rather than a sign-in that never happened.
-  expect(target.grant).toEqual(bound);
-  expect(await readFile(target.profilePath, 'utf8')).toContain('https://api.mnemonik.dev/mcp');
-  const document = await statusFor(f);
-  expect(document.installation.reasons).toContain('claude-code: host_grant_unbound');
-  expect(document.installation.actions).toContain('mnemonik connect claude-code');
-}, 60_000);
-
-it('a repair that cannot verify the recorded grant leaves it recorded for status', async () => {
-  const f = await fixture();
-  await runHosts('install', [{ ...f.selections[0]!, component: 'mcp' as const }], f.deps);
-  const owned = (await readOwnership(f.deps.stateDir)).targets[0]!;
-  expect(owned.grant?.id).toBe('grant-claude-code');
-  // Revoked from another machine: the binding is gone from the account, the record of it is not.
-  f.grants.splice(
-    f.grants.findIndex((g) => g.id === 'grant-claude-code'),
-    1
-  );
-  const repair = await runHosts('repair', [owned], { ...f.deps, apply: true });
-  expect(repair.results[0]).toMatchObject({ reason: 'host_grant_unverified' });
-  expect((await readOwnership(f.deps.stateDir)).targets[0]!.grant).toEqual(owned.grant);
-  const document = await statusFor(f);
-  expect(document.installation.reasons).toContain('claude-code: host_grant_unbound');
-  expect(document.installation.actions).toContain('mnemonik connect claude-code');
-}, 60_000);
-
-it('auth logout revokes only the chosen host through the grant-id route and auth status shows raw unknown names', async () => {
-  const f = await fixture();
-  f.grants.push({ ...f.grants[0]!, id: 'unknown', clientName: 'Unknown client' });
-  const out: string[] = [];
-  await runCli(['auth', 'status', '--json'], {
-    hostManagement: f.deps,
-    stdout: {
-      write: (s) => {
-        out.push(String(s));
-      },
-    },
-  });
-  expect(JSON.parse(out.join('')).grants.at(-1).host).toBe('Unknown client');
-  expect(
-    await runCli(['auth', 'logout', '--host', 'claude-code', '--confirm', '--json'], {
-      hostManagement: f.deps,
-      stdout: quiet,
-    })
-  ).toBe(0);
-  expect(f.calls.filter((c) => c.method === 'POST')).toEqual([
-    { method: 'POST', path: '/api/v1/auth/grants/grant-claude-code/revoke' },
-  ]);
-  expect(f.grants.map((g) => g.id).sort()).toEqual([
-    'grant-codex',
-    'grant-cursor',
-    'grant-grok',
-    'unknown',
-  ]);
-});
-
-it('connect cursor does not stage or plan; two-minute timeout offers retry/skip and retains config', async () => {
-  const f = await fixture();
-  await runHosts(
-    'install',
-    [{ ...f.selections.find((s) => s.host === 'cursor')!, component: 'mcp' }],
-    f.deps
-  );
-  const target = (await readOwnership(f.deps.stateDir)).targets[0]!;
-  const before = await readFile(target.profilePath);
-  const clock = f.deps.now!();
-  await writeFile(
-    join(f.bin, 'cursor'),
-    '#!/bin/sh\nif [ "$1" = "--version" ]; then echo "3.20.17"; else echo "Cursor Desktop"; fi\n',
-    { mode: 0o700 }
-  );
-  const timeout = vi.fn(async () => 'skip' as const);
-  const imports = f.deps.imports;
-  expect(imports).toBeUndefined();
-  const { hostPackageImports } = await import('../src/install/adapters.js');
-  let launches = 0;
-  f.deps.imports = {
-    ...hostPackageImports,
-    cursor: async (runtime) => {
-      const mod = await hostPackageImports.cursor(runtime);
-      return {
-        createHostAdapter: (deps) => {
-          const adapter = mod.createHostAdapter(deps);
-          const launch = adapter.launch;
-          adapter.plan = async () => {
-            throw new Error('connect_must_not_plan');
-          };
-          adapter.launch = async () => {
-            launches++;
-            return launch();
-          };
-          return adapter;
-        },
-      };
-    },
-  };
-  f.deps.timeout = timeout;
-  const messages: string[] = [];
-  expect(
-    await runCli(['connect', 'cursor', '--approve-host', '--json'], {
-      hostManagement: f.deps,
-      cliAuth,
-      stdout: {
-        write: (text) => {
-          messages.push(String(text));
-        },
-      },
-    })
-  ).toBe(3);
-  expect(f.deps.now!() - clock, messages.join(' ')).toBe(120_000);
-  expect(timeout).toHaveBeenCalledExactlyOnceWith('cursor');
-  expect(launches).toBe(1);
-  const { readdir } = await import('node:fs/promises');
-  const entries = await readdir(join(f.deps.stateDir, 'install'));
-  const journals = await Promise.all(
-    entries.map(async (e) =>
-      JSON.parse(await readFile(join(f.deps.stateDir, 'install', e, 'journal.json'), 'utf8'))
-    )
-  );
-  expect(journals.some((j) => j.targets.length === 0)).toBe(true);
-  expect(await readFile(target.profilePath)).toEqual(before);
-}, 60_000);
-
-it('Cursor Desktop without an activated grant stays actionable with the Customize instruction', async () => {
-  const f = await fixture();
-  const selection = f.selections.find((s) => s.host === 'cursor')!;
-  await runHosts('install', [{ ...selection, component: 'hooks' }], f.deps);
-  f.grants.find((grant) => grant.clientName === 'cursor')!.activatedAt = null;
-  const result = await runHosts('install', [{ ...selection, component: 'mcp' }], f.deps);
-  expect(result.results[0]).toMatchObject({
-    status: 'ACTION_REQUIRED',
-    reason: 'host_verification_timeout',
-  });
-  expect(result.reports.join(' ')).toContain(
-    'Open Cursor Settings, click Open Customize, then MCPs'
-  );
-  expect(await readFile(join(f.home, '.cursor/mcp.json'), 'utf8')).toContain(
-    'https://api.mnemonik.dev/mcp'
-  );
-}, 60_000);

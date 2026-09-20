@@ -53,6 +53,9 @@ export class Output {
     line(value = '') {
         this.stdout.write(`${redact(value, this.context)}\n`);
     }
+    write(value) {
+        this.stdout.write(redact(value, this.context));
+    }
     /** Deliberate local-only identity display; never use for logs, JSON, or errors. */
     signedIn(email) {
         if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/u.test(email))

@@ -17,11 +17,10 @@ import {
   type AdapterDependencies,
   type HostPackageImports,
 } from '../src/install/adapters.js';
-import { Output } from '../src/output.js';
-import { joinedInstall, hostReadinessConditions } from '../src/install/journey.js';
+import { hostReadinessConditions } from '../src/install/journey.js';
 import { hookStatusConditions, runHosts } from '../src/install/hosts.js';
-import { bytesAt, digest, interrupted, withInstall } from '../src/install/journal.js';
-import { ownershipPath, readOwnership } from '../src/install/ownership.js';
+import { bytesAt, interrupted, withInstall } from '../src/install/journal.js';
+import { readOwnership } from '../src/install/ownership.js';
 import { runCli } from '../src/router.js';
 import { createCliCredentials } from '../src/auth/credentials.js';
 import { RuntimeStore, type Verified } from '../src/runtime/store.js';
@@ -29,6 +28,7 @@ import { bump, hostStateFixture, packedHosts } from './fixtures/hostRuntime.js';
 import { buildStatusDocument } from '../src/status.js';
 import { createCredentialAdapter } from '@mnemonik/credentials';
 import { ensureLauncher, launcherStatus } from '../src/launcher.js';
+import { saveInstallation } from '../src/installation.js';
 
 const createCliAuthOptions = vi.hoisted(() => vi.fn());
 vi.mock('../src/auth/index.js', async (original) => {
@@ -63,9 +63,10 @@ afterEach(async () => {
   await Promise.all(homes.splice(0).map((home) => rm(home, { recursive: true, force: true })));
 });
 
-async function fixture() {
+async function fixture(installationId = 'installation') {
   const result = await hostStateFixture(packed.sources);
   homes.push(result.home);
+  await saveInstallation(result.deps.stateDir, installationId);
   overrideInspection(result.deps, 'codex', () => ({ trustPending: false }));
   return result;
 }
@@ -120,133 +121,6 @@ async function replaceJson(path: string, mutate: (value: Record<string, any>) =>
 }
 
 describe('joined install journal', () => {
-  it('joined consent binds every connected host to this installation', async () => {
-    const f = await fixture();
-    const approve = vi.spyOn(f.deps.grants!, 'approveHost');
-    await joinedInstall(
-      new Map<string, string | true>([
-        ['hosts', 'claude-code,codex,cursor'],
-        ['integration-scope', 'user'],
-        ['components', 'hooks,mcp'],
-        ['accept-limited', true],
-        ['apply', true],
-        ['non-interactive', true],
-      ]),
-      {
-        home: f.home,
-        cwd: f.projectRoot,
-        installStateDir: f.deps.stateDir,
-        grantFetch: async () => Response.json({ id: 'fixture-session' }),
-        preflight: {
-          nodeVersion: '24.21.0',
-          pathExists: async () => false,
-          fetch: async () => new Response('{}'),
-          resolveIdentity: async () => ({
-            kind: 'absent',
-            root: f.projectRoot,
-            repository: { kind: 'plain', root: f.projectRoot },
-            nested: [],
-          }),
-        },
-      },
-      new Output({ write: () => {} }),
-      async () => 'owner',
-      async () => f.deps
-    );
-    expect(approve).toHaveBeenCalledTimes(3);
-    const owned = (await readOwnership(f.deps.stateDir)).targets.filter(
-      (target) => target.component === 'mcp'
-    );
-    expect(owned).toHaveLength(3);
-    expect(owned.map((target) => target.grant?.installationId)).toEqual([
-      'installation',
-      'installation',
-      'installation',
-    ]);
-  }, 120000);
-
-  it.each(['codex', 'cursor'])(
-    'skipped %s activation keeps hooks and MCP and continues the joined journey',
-    async (host) => {
-      const f = await fixture();
-      const pendingGrant = f.grants.find((grant) => grant.clientName === host)!;
-      pendingGrant.activatedAt = null;
-      if (host === 'codex') f.grants.push({ ...pendingGrant, id: 'another-codex-grant' });
-      const selection = f.selections.find((s) => s.host === host)!;
-      const next = f.selections.find((s) => s.host === 'cursor')!;
-      let scannerReached = false;
-      let clock = 0;
-      const result = await runHosts(
-        'install',
-        [
-          { ...selection, component: 'hooks' },
-          { ...selection, component: 'mcp' },
-          ...(host === 'codex'
-            ? [
-                { ...next, component: 'hooks' as const },
-                { ...next, component: 'mcp' as const },
-              ]
-            : []),
-        ],
-        {
-          ...f.deps,
-          now: () => clock,
-          sleep: async () => {
-            clock += 120_000;
-          },
-          timeout: async () => {
-            if (host === 'codex') {
-              const config = join(f.home, '.codex/config.toml');
-              await writeFile(config, (await readFile(config, 'utf8')) + '\n# native hook trust\n');
-            }
-            return 'skip';
-          },
-          afterHosts: async (journal) => {
-            scannerReached = true;
-            journal.data.state = 'LIMITED';
-          },
-        }
-      );
-      expect(result.journal.phase).toBe('complete');
-      expect(scannerReached).toBe(true);
-      for (const scanner of [false, true])
-        expect(hostReadinessConditions(result.results, scanner)).toContainEqual({
-          kind: 'login_pending',
-          reason: `${host === 'codex' ? 'Codex' : 'Cursor'} is still connecting. Finish the sign-in in the app, then run mnemonik status.`,
-          action: 'mnemonik status',
-        });
-      expect(
-        result.results.filter((r) => r.target.startsWith(`${host}:`)).map((r) => r.status)
-      ).toEqual(['READY', 'ACTION_REQUIRED']);
-      expect(result.results.find((r) => r.target.startsWith(`${host}:mcp:`))?.reason).toBe(
-        'login_pending'
-      );
-      if (host === 'codex') {
-        expect(
-          result.results.filter((r) => r.target.startsWith('cursor:')).map((r) => r.status)
-        ).toEqual(['READY', 'READY']);
-        expect(await readFile(join(f.home, '.codex/config.toml'), 'utf8')).toContain(
-          '# native hook trust'
-        );
-      }
-      const owned = (await readOwnership(f.deps.stateDir)).targets;
-      expect(owned.filter((t) => t.host === host).map((t) => t.component)).toEqual([
-        'hooks',
-        'mcp',
-      ]);
-      const path =
-        host === 'codex' ? join(f.home, '.codex/hooks.json') : join(f.home, '.cursor/hooks.json');
-      expect(await bytesAt(path)).not.toBeNull();
-      expect(
-        await readFile(
-          owned.find((t) => t.host === host && t.component === 'mcp')!.profilePath,
-          'utf8'
-        )
-      ).toContain('/mcp');
-    },
-    120000
-  );
-
   it('re-reads pending Codex trust before the completion document and final host result', async () => {
     const f = await fixture();
     let checks = 0;
@@ -426,6 +300,7 @@ describe('host rulings', () => {
         'Run the codex command in a terminal and use its hook trust prompt to allow the Mnemonik hooks; then quit and reopen Codex.'
       );
       if (args.includes('--json')) expect(stdout.text).toContain('codex_trust_pending');
+      else expect(stdout.text).not.toMatch(/CLI 0\.1\.18\.|CLI credential:|Launcher:/u);
     }
   }, 120_000);
 
@@ -474,8 +349,8 @@ describe('host rulings', () => {
   }, 120_000);
 
   it('uses device authorization while reopening an install session with --no-browser', async () => {
-    const f = await fixture();
     const installation = '11111111-1111-4111-8111-111111111111';
+    const f = await fixture(installation);
     secretStore.current = Object.assign(new SimulatedSecretStore(true), {
       kind: 'credential-manager' as const,
     });
@@ -493,12 +368,6 @@ describe('host rulings', () => {
         accessExpiresAt: new Date(Date.now() + 600_000).toISOString(),
       }
     );
-    const list = f.deps.grants!.list;
-    f.deps.grants!.list = async () => ({
-      ...(await list()),
-      deviceInstallationId: installation,
-    });
-    f.deps.timeout = async () => 'cancel';
     let requests = 0;
     f.deps.credentialFetch = vi.fn(async () => {
       if (requests++ === 0)
@@ -514,7 +383,6 @@ describe('host rulings', () => {
         '--no-browser',
         '--hosts=claude-code',
         '--components=hooks',
-        '--integration-scope=user',
         '--accept-limited',
         '--apply',
         '--non-interactive',
@@ -545,13 +413,15 @@ describe('host rulings', () => {
     );
 
     expect(result).toBe(3);
-    expect(stdout.text).toContain('hook_credential_authorization_required');
+    expect(stdout.text).toContain(
+      'Run `mnemonik auth login --reopen-install` to start a new install session'
+    );
     expect(createCliAuthOptions).toHaveBeenCalledWith(expect.objectContaining({ noBrowser: true }));
   }, 60_000);
 
   it('reopens an expired install session once and keeps the hook target READY', async () => {
-    const f = await fixture();
     const installation = '11111111-1111-4111-8111-111111111111';
+    const f = await fixture(installation);
     const authorizeInstallSession = vi.fn(async (id: string) => {
       expect(id).toBe(installation);
       return 'reopened-cli-bearer';
@@ -560,8 +430,6 @@ describe('host rulings', () => {
       authorizeInstallSession?: (installationId: string) => Promise<string>;
     };
     deps.authorizeInstallSession = authorizeInstallSession;
-    const list = deps.grants!.list;
-    deps.grants!.list = async () => ({ ...(await list()), deviceInstallationId: installation });
     let issuance = 0;
     deps.credentialFetch = vi.fn(async (input, init) => {
       const path = new URL(String(input)).pathname;
@@ -591,7 +459,7 @@ describe('host rulings', () => {
     };
     const result = await runHosts('install', [selection], deps);
 
-    expect(result.results[0]).toMatchObject({ status: 'READY', reason: 'hooks_not_verified' });
+    expect(result.results[0]).toMatchObject({ status: 'READY', reason: 'hooks installed' });
     expect(issuance).toBe(2);
     expect(authorizeInstallSession).toHaveBeenCalledOnce();
     expect(authorizeInstallSession).toHaveBeenCalledWith(installation);
@@ -602,15 +470,13 @@ describe('host rulings', () => {
   }, 60_000);
 
   it('rolls the hook target back after install-session reopening still gets a 403', async () => {
-    const f = await fixture();
     const installation = '11111111-1111-4111-8111-111111111111';
+    const f = await fixture(installation);
     const authorizeInstallSession = vi.fn(async () => 'reopened-cli-bearer');
     const deps = f.deps as typeof f.deps & {
       authorizeInstallSession?: (installationId: string) => Promise<string>;
     };
     deps.authorizeInstallSession = authorizeInstallSession;
-    const list = deps.grants!.list;
-    deps.grants!.list = async () => ({ ...(await list()), deviceInstallationId: installation });
     deps.credentialFetch = vi.fn(async (input) => {
       const path = new URL(String(input)).pathname;
       if (path === '/api/v1/install-sessions/current') return new Response(null, { status: 404 });
@@ -640,16 +506,14 @@ describe('host rulings', () => {
   }, 60_000);
 
   it('surfaces the authorization failure when interactive reopening fails', async () => {
-    const f = await fixture();
     const installation = '11111111-1111-4111-8111-111111111111';
+    const f = await fixture(installation);
     const deps = f.deps as typeof f.deps & {
       authorizeInstallSession?: (installationId: string) => Promise<string>;
     };
     deps.authorizeInstallSession = vi.fn(async () => {
       throw new Error('oauth_callback_timeout');
     });
-    const list = deps.grants!.list;
-    deps.grants!.list = async () => ({ ...(await list()), deviceInstallationId: installation });
     deps.credentialFetch = vi.fn(async (input) => {
       const path = new URL(String(input)).pathname;
       if (path === '/api/v1/install-sessions/current') return new Response(null, { status: 404 });
@@ -672,14 +536,7 @@ describe('host rulings', () => {
     const stdout = capture();
     expect(
       await runCli(
-        [
-          'install',
-          '--hosts=claude-code',
-          '--components=hooks',
-          '--integration-scope=user',
-          '--accept-limited',
-          '--apply',
-        ],
+        ['install', '--hosts=claude-code', '--components=hooks', '--accept-limited', '--apply'],
         {
           home: f.home,
           cwd: f.home,
@@ -694,18 +551,13 @@ describe('host rulings', () => {
       )
     ).toBe(3);
     expect(stdout.text).toContain(
-      'ACTION_REQUIRED (hook_credential_authorization_required: oauth_callback_timeout)'
+      'Run `mnemonik auth login --reopen-install` to start a new install session'
     );
   }, 60_000);
 
   it('reopens from the non-interactive action command and retries to READY', async () => {
-    const f = await fixture();
     const installation = '11111111-1111-4111-8111-111111111111';
-    const list = f.deps.grants!.list;
-    f.deps.grants!.list = async () => ({
-      ...(await list()),
-      deviceInstallationId: installation,
-    });
+    const f = await fixture(installation);
     let reopened = false;
     f.deps.credentialFetch = vi.fn(async () => {
       if (!reopened) return Response.json({ error: 'install_session_required' }, { status: 403 });
@@ -735,7 +587,9 @@ describe('host rulings', () => {
       reason: 'hook_credential_authorization_required',
       action: 'Run `mnemonik auth login --reopen-install` to start a new install session',
     });
-    expect(f.deps.credentialFetch).toHaveBeenCalledOnce();
+    expect(
+      vi.mocked(f.deps.credentialFetch).mock.calls.map(([input]) => new URL(String(input)).pathname)
+    ).toEqual(['/api/v1/component-credentials', '/api/v1/install-sessions/current']);
 
     const signIn = vi.fn(async () => {
       reopened = true;
@@ -766,7 +620,7 @@ describe('host rulings', () => {
     expect(second.results[0]).toMatchObject({ status: 'READY' });
   }, 60_000);
 
-  it('unsupported versions and absent hosts write no state and give exact recovery actions while supported hosts proceed', async () => {
+  it('selected hosts proceed without a supported or present editor binary', async () => {
     const first = await fixture();
     await first.hostOutput('codex', 'codex-cli 0.144.9');
     const protectedPaths = [
@@ -779,55 +633,65 @@ describe('host rulings', () => {
       await mkdir(dirname(path), { recursive: true });
       await writeFile(path, '{"foreign":true}\n');
     }
-    const before = await Promise.all(
-      protectedPaths.map(async (path) => digest(await readFile(path)))
-    );
     const result = await runHosts('install', targets(first, 'hooks'), first.deps);
 
-    expect(result.results.find((row) => row.target.startsWith('codex:'))).toMatchObject({
-      status: 'ACTION_REQUIRED',
-      reason: 'unsupported_version',
-      action: 'upgrade codex to 0.145.0 and retry',
-    });
-    expect(result.results.filter((row) => row.status === 'READY')).toHaveLength(3);
-    expect(digest(await readFile(protectedPaths[0]!))).toBe(before[0]);
-    expect(await bytesAt(new RuntimeStore(first.deps.stateDir).pointerPath('codex'))).toBeNull();
-    await expect(
-      stat(
-        join(
-          dirname(new RuntimeStore(first.deps.stateDir).pointerPath('codex')),
-          packed.sources.codex.manifest.version
-        )
-      )
-    ).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(result.results.every((row) => row.status === 'READY')).toBe(true);
+    expect(
+      await bytesAt(new RuntimeStore(first.deps.stateDir).pointerPath('codex'))
+    ).not.toBeNull();
 
     const second = await fixture();
     await Promise.all(['claude', 'cursor', 'grok'].map((binary) => rm(join(second.bin, binary))));
-    const unverified = await runHosts('install', targets(second, 'hooks'), second.deps);
-    expect(unverified.results.find((row) => row.target.startsWith('codex:'))?.status).toBe('READY');
-    for (const host of ['claude-code', 'cursor', 'grok'] as const) {
-      const row = unverified.results.find((candidate) => candidate.target.startsWith(`${host}:`));
-      expect(row).toMatchObject({
-        status: 'ACTION_REQUIRED',
-        reason: 'not_found',
-        action:
-          host === 'cursor'
-            ? 'Cursor was not found (looked on PATH and in /usr/share/cursor/bin/cursor, /opt/Cursor/resources/app/bin/cursor). Install it, or open a new terminal if you just installed it.'
-            : `${host === 'claude-code' ? 'Claude Code' : 'Grok'} was not found on PATH. Install it, or open a new terminal if you just installed it.`,
-      });
-      expect(await bytesAt(new RuntimeStore(second.deps.stateDir).pointerPath(host))).toBeNull();
-      await expect(
-        stat(
-          join(
-            dirname(new RuntimeStore(second.deps.stateDir).pointerPath(host)),
-            packed.sources[host].manifest.version
-          )
-        )
-      ).rejects.toMatchObject({ code: 'ENOENT' });
-    }
+    const launch = vi.fn(async () => {
+      throw new Error('editor login must not launch');
+    });
+    const imports = second.deps.imports ?? hostPackageImports;
+    second.deps.imports = Object.fromEntries(
+      hostOrder.map((host) => [
+        host,
+        async (runtime: Verified) => {
+          const module = await imports[host](runtime);
+          return {
+            createHostAdapter(deps?: AdapterDependencies) {
+              return { ...module.createHostAdapter(deps), launch };
+            },
+          };
+        },
+      ])
+    ) as unknown as HostPackageImports;
+    const unverified = await runHosts('install', targets(second, 'mcp'), second.deps);
+    expect(unverified.results.every((row) => row.status === 'READY')).toBe(true);
+    for (const host of ['claude-code', 'cursor', 'grok'] as const)
+      expect(
+        await bytesAt(new RuntimeStore(second.deps.stateDir).pointerPath(host))
+      ).not.toBeNull();
+    expect(launch).not.toHaveBeenCalled();
   }, 180_000);
 
-  it('keeps the exact Codex command array through pending trust, update, repair, rollback and scope change', async () => {
+  it('installs selected Cursor hooks and MCP files without a Cursor binary', async () => {
+    const f = await fixture();
+    await rm(join(f.bin, 'cursor'));
+    const cursor = f.selections.find((selection) => selection.host === 'cursor')!;
+
+    const result = await runHosts(
+      'install',
+      [
+        { ...cursor, component: 'hooks' },
+        { ...cursor, component: 'mcp' },
+      ],
+      f.deps
+    );
+
+    expect(result.results.every((row) => row.status === 'READY')).toBe(true);
+    expect(
+      JSON.parse(await readFile(join(f.home, '.cursor', 'hooks.json'), 'utf8')).hooks
+    ).toBeTruthy();
+    expect(
+      JSON.parse(await readFile(join(f.home, '.cursor', 'mcp.json'), 'utf8')).mcpServers.mnemonik
+    ).toBeTruthy();
+  }, 120_000);
+
+  it('keeps the exact Codex command array through pending trust, update, repair and rollback', async () => {
     const f = await fixture();
     const user = {
       ...f.selections.find((selection) => selection.host === 'codex')!,
@@ -874,16 +738,9 @@ describe('host rulings', () => {
     expect((await new RuntimeStore(f.deps.stateDir).verifyRuntime('codex')).manifest.version).toBe(
       '99.0.0'
     );
-
-    trust = 'approved';
-    f.deps.source = async () => bump(packed.sources.codex);
-    await runHosts('install', [{ ...user, scope: 'project' }], f.deps, true);
-    current = (await readOwnership(f.deps.stateDir)).targets[0]!;
-    expect(current.scope).toBe('project');
-    expect(await codexCommands(current.profilePath)).toEqual(exact);
   }, 180_000);
 
-  it('preserves native policy and foreign hook entries by value through update, repair and scope change', async () => {
+  it('preserves native policy and foreign hook entries by value through update and repair', async () => {
     const f = await fixture();
     const selections = targets(f, 'hooks');
     const claude = join(f.home, '.claude', 'settings.json');
@@ -909,14 +766,6 @@ describe('host rulings', () => {
     f.deps.source = async (host) => bump(packed.sources[host]);
     await runHosts('update', (await readOwnership(f.deps.stateDir)).targets, f.deps);
     await runHosts('repair', (await readOwnership(f.deps.stateDir)).targets, f.deps);
-    const user = (await readOwnership(f.deps.stateDir)).targets;
-    await runHosts(
-      'install',
-      user.map((selection) => ({ ...selection, scope: 'project' as const })),
-      f.deps,
-      true
-    );
-
     expect(JSON.parse(await readFile(claude, 'utf8')).permissions).toEqual(permissions);
     expect(JSON.parse(await readFile(cursor, 'utf8')).hooks.preToolUse).toContainEqual(
       cursorForeign
@@ -988,85 +837,63 @@ describe('host state matrix', () => {
     expect(result.journal.state).toBe('READY');
     const owned = (await readOwnership(f.deps.stateDir)).targets;
     expect(owned).toHaveLength(8);
-    expect(owned.find((target) => target.host === 'claude-code')?.editorVersion).toBe('1.0.100');
+    expect(owned.every((target) => target.editorVersion === undefined)).toBe(true);
   }, 300_000);
 
-  it.each([false, true])(
-    'maintenance verification: update checks three connected hosts without waiting (revoked: %s)',
-    async (revoked) => {
-      const f = await fixture();
-      const selections = f.selections.filter((selection) => selection.host !== 'grok');
-      await runHosts(
-        'install',
-        selections.flatMap((selection) => [
-          { ...selection, component: 'hooks' as const },
-          { ...selection, component: 'mcp' as const },
-        ]),
-        f.deps
-      );
-      const before = await readOwnership(f.deps.stateDir);
-      const imports = f.deps.imports ?? hostPackageImports;
-      let clock = 0;
-      const verify = vi.fn(async () => {
-        clock += 7;
-        return { declarationPresent: true, authenticatedTools: false };
-      });
-      const launch = vi.fn(async () => 'Open the editor.');
-      for (const { host } of selections) {
-        f.deps.imports = {
-          ...(f.deps.imports ?? imports),
-          [host]: async (runtime: Verified) => {
-            const module = await imports[host](runtime);
-            return {
-              createHostAdapter(deps?: AdapterDependencies) {
-                return { ...module.createHostAdapter(deps), verify, launch };
-              },
-            };
-          },
-        } as HostPackageImports;
-      }
-      if (revoked) await f.deps.grants!.revoke('grant-codex');
-      f.deps.now = () => clock;
-      const sleep = vi.fn(async (ms: number) => {
-        clock += ms;
-      });
-      f.deps.sleep = sleep;
-      const list = vi.spyOn(f.deps.grants!, 'list');
-      f.deps.source = async (host) => bump(packed.sources[host]);
-      const result = await runHosts('update', before.targets, f.deps);
-      expect(result.results.map(({ status, reason }) => ({ status, reason }))).toEqual(
-        before.targets.map((target) => ({
-          status:
-            revoked && target.host === 'codex' && target.component === 'mcp'
-              ? 'ACTION_REQUIRED'
-              : 'READY',
-          reason:
-            revoked && target.host === 'codex' && target.component === 'mcp'
-              ? 'host_grant_unverified'
-              : 'hooks_not_verified',
-        }))
-      );
-      expect(sleep).not.toHaveBeenCalled();
-      expect(launch).not.toHaveBeenCalled();
-      expect(verify).toHaveBeenCalledTimes(6);
-      expect(list).toHaveBeenCalledTimes(3);
-      expect(result.results.map((row) => row.elapsedMs)).toEqual([7, 7, 7, 7, 7, 7]);
-      const journal = JSON.parse(
-        await readFile(
-          join(f.deps.stateDir, 'install', result.journal.runId, 'journal.json'),
-          'utf8'
-        )
-      );
-      expect(journal.hostRuns.map((run: { elapsedMs: number }) => run.elapsedMs)).toEqual([
-        7, 7, 7, 7, 7, 7,
-      ]);
-      if (revoked)
-        expect(result.results.find((row) => row.reason === 'host_grant_unverified')?.action).toBe(
-          'Run mnemonik connect codex.'
-        );
-    },
-    120_000
-  );
+  it('maintenance verifies declarations without login, grant polling, or waiting', async () => {
+    const f = await fixture();
+    const selections = f.selections.filter((selection) => selection.host !== 'grok');
+    await runHosts(
+      'install',
+      selections.flatMap((selection) => [
+        { ...selection, component: 'hooks' as const },
+        { ...selection, component: 'mcp' as const },
+      ]),
+      f.deps
+    );
+    const before = await readOwnership(f.deps.stateDir);
+    const imports = f.deps.imports ?? hostPackageImports;
+    let clock = 0;
+    const verify = vi.fn(async () => {
+      clock += 7;
+      return { declarationPresent: true, authenticatedTools: false };
+    });
+    const launch = vi.fn(async () => {
+      throw new Error('editor login must not launch');
+    });
+    for (const { host } of selections) {
+      f.deps.imports = {
+        ...(f.deps.imports ?? imports),
+        [host]: async (runtime: Verified) => {
+          const module = await imports[host](runtime);
+          return {
+            createHostAdapter(deps?: AdapterDependencies) {
+              return { ...module.createHostAdapter(deps), verify, launch };
+            },
+          };
+        },
+      } as HostPackageImports;
+    }
+    const list = vi.spyOn(f.deps.grants!, 'list');
+    f.deps.now = () => clock;
+    f.deps.sleep = vi.fn(async () => {
+      throw new Error('maintenance must not wait for login');
+    });
+    f.deps.source = async (host) => bump(packed.sources[host]);
+
+    const result = await runHosts('update', before.targets, f.deps);
+
+    expect(result.results.every((row) => row.status === 'READY')).toBe(true);
+    expect(result.results.map((row) => row.reason)).toEqual(
+      before.targets.map((target) =>
+        target.component === 'hooks' ? 'hooks installed' : 'MCP entry declared'
+      )
+    );
+    expect(launch).not.toHaveBeenCalled();
+    expect(list).not.toHaveBeenCalled();
+    expect(verify).toHaveBeenCalledTimes(6);
+    expect(result.results.map((row) => row.elapsedMs)).toEqual([7, 7, 7, 7, 7, 7]);
+  }, 120_000);
 
   it('upgrade: advances hosts independently and rolls one failed native verification back with mixed results', async () => {
     const f = await fixture();
@@ -1095,12 +922,24 @@ describe('host state matrix', () => {
     await runHosts('install', targets(f, 'hooks'), f.deps);
     f.deps.source = async (host) => bump(packed.sources[host]);
     f.deps.now = Date.now;
+    const getCliBearer = vi.fn(async () => {
+      throw new Error('update must not read sign-in state');
+    });
+    const list = vi
+      .spyOn(f.deps.grants!, 'list')
+      .mockRejectedValue(new Error('update must not list grants'));
+    f.deps.getCliBearer = getCliBearer;
     const stdout = capture();
     expect(
       await runCli(['update', '--json'], {
         home: f.home,
         hostManagement: f.deps,
         stdout,
+        cliAuth: {
+          signIn: async () => undefined,
+          getCliBearer,
+          logout: async () => undefined,
+        },
       })
     ).toBe(0);
     expect(
@@ -1108,41 +947,12 @@ describe('host state matrix', () => {
         (row: { elapsedMs: number }) => Number.isFinite(row.elapsedMs) && row.elapsedMs > 0
       )
     ).toBe(true);
+    expect(
+      (await readOwnership(f.deps.stateDir)).targets.every((row) => row.version === '99.0.0')
+    ).toBe(true);
+    expect(getCliBearer).not.toHaveBeenCalled();
+    expect(list).not.toHaveBeenCalled();
   }, 240_000);
-
-  it.each([true, false])(
-    'Desktop update requires an activated grant: %s',
-    async (active) => {
-      const f = await fixture();
-      const selection = f.selections.find((selection) => selection.host === 'cursor')!;
-      await runHosts(
-        'install',
-        [
-          { ...selection, component: 'hooks' },
-          { ...selection, component: 'mcp' },
-        ],
-        f.deps
-      );
-      if (!active) f.grants.find((grant) => grant.clientName === 'cursor')!.activatedAt = null;
-      f.deps.source = async () => bump(packed.sources.cursor);
-      const stdout = capture();
-      const exit = await runCli(['update', '--json'], {
-        home: f.home,
-        hostManagement: f.deps,
-        stdout,
-      });
-      const output = JSON.parse(stdout.text);
-      expect(exit).toBe(active ? 0 : 3);
-      const mcp = output.targets.find((row: { target: string }) => row.target.includes(':mcp:'));
-      expect(mcp).toMatchObject(
-        active
-          ? { status: 'READY' }
-          : { status: 'ACTION_REQUIRED', reason: 'host_grant_unverified' }
-      );
-      if (!active) expect(mcp.action).toBe('Run mnemonik connect cursor.');
-    },
-    120_000
-  );
 
   it('partial: resumes the remaining two hosts from the journal without re-staging the completed two', async () => {
     const f = await fixture();
@@ -1284,90 +1094,6 @@ describe('host state matrix', () => {
     ).toBe(0);
     expect(JSON.parse(stdout.text).targets[0].status).toBe('READY');
     expect(await readFile(config, 'utf8')).toContain('hooks = true');
-  }, 90_000);
-
-  it('project-shared collaborator: adopts an identical declaration and refuses a different unowned one', async () => {
-    const f = await fixture();
-    const project = targets(f, 'hooks')
-      .filter((selection) => ['claude-code', 'cursor'].includes(selection.host))
-      .map((selection) => ({ ...selection, scope: 'project' as const }));
-    await runHosts('install', project, f.deps);
-    const record = await readOwnership(f.deps.stateDir);
-    const claude = record.targets.find((target) => target.host === 'claude-code')!;
-    const cursor = record.targets.find((target) => target.host === 'cursor')!;
-    const claudeBytes = await readFile(claude.profilePath);
-    const claudeStat = await stat(claude.profilePath);
-    await replaceJson(cursor.profilePath, (json) => {
-      for (const groups of Object.values(json.hooks as Record<string, any[]>))
-        for (const hook of groups as any[])
-          if (typeof hook.command === 'string' && hook.command.includes('mnemonik-owner'))
-            hook.command = hook.command.replace(
-              '--credential-family hook-family',
-              '--credential-family colleague-family'
-            );
-    });
-    const cursorBytes = await readFile(cursor.profilePath);
-    await writeFile(
-      ownershipPath(f.deps.stateDir),
-      JSON.stringify({ schemaVersion: 1, generation: record.generation, targets: [] }, null, 2) +
-        '\n'
-    );
-
-    const result = await runHosts('install', project, f.deps);
-    expect(result.results.find((row) => row.target.startsWith('claude-code:'))?.status).toBe(
-      'READY'
-    );
-    expect(result.results.find((row) => row.target.startsWith('cursor:'))).toMatchObject({
-      status: 'ACTION_REQUIRED',
-      reason: 'project_shared_declaration_conflict',
-    });
-    expect(await readFile(claude.profilePath)).toEqual(claudeBytes);
-    expect((await stat(claude.profilePath)).mtimeMs).toBe(claudeStat.mtimeMs);
-    expect(result.journal.targets.some((target) => target.path === claude.profilePath)).toBe(false);
-    expect(await readFile(cursor.profilePath)).toEqual(cursorBytes);
-  }, 120_000);
-
-  it('install-time account switch: leaves the host target unbound and gives the sign-out step', async () => {
-    const f = await fixture();
-    f.setGrantAccount('other-account');
-    const selection = {
-      ...f.selections.find((candidate) => candidate.host === 'claude-code')!,
-      component: 'mcp' as const,
-    };
-    const result = await runHosts('install', [selection], f.deps);
-    expect(result.results[0]).toMatchObject({
-      status: 'ACTION_REQUIRED',
-      reason: 'host_account_mismatch',
-    });
-    expect(result.results[0]?.action).toContain('Sign out of Mnemonik in claude-code');
-    const owned = (await readOwnership(f.deps.stateDir)).targets[0]!;
-    expect(owned.grant).toBeUndefined();
-    expect(await readFile(owned.profilePath, 'utf8')).toContain('https://api.mnemonik.dev/mcp');
-  }, 60_000);
-
-  it('later-profile account switch: warns with the second profile and leaves the first binding unchanged', async () => {
-    const f = await fixture();
-    const base = {
-      ...f.selections.find((candidate) => candidate.host === 'codex')!,
-      component: 'mcp' as const,
-    };
-    await runHosts('install', [{ ...base }], f.deps);
-    const first = (await readOwnership(f.deps.stateDir)).targets[0]!;
-    f.deps.env = { ...f.deps.env, CODEX_HOME: join(f.home, 'other-codex') };
-    f.setGrantAccount('other-account');
-    const result = await runHosts('install', [{ ...base }], f.deps);
-    const second = (await readOwnership(f.deps.stateDir)).targets.find(
-      (target) => target.profilePath !== first.profilePath
-    )!;
-    expect(result.results[0]).toMatchObject({
-      status: 'ACTION_REQUIRED',
-      reason: 'host_account_mismatch',
-    });
-    expect(result.results[0]?.action).toContain(second.profilePath);
-    expect(
-      (await readOwnership(f.deps.stateDir)).targets.find((target) => target.id === first.id)?.grant
-    ).toEqual(first.grant);
-    expect(second.grant).toBeUndefined();
   }, 90_000);
 
   it('CLI/host mismatch: mocked consume refuses changed root evidence and writes no identity', async () => {

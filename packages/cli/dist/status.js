@@ -1,7 +1,5 @@
 import { cliCredentialStatus } from './auth/credentials.js';
-import { bindInstalledHostGrants, grantHost } from './auth/status.js';
 import { readOwnership } from './install/ownership.js';
-import { apiOrigin } from '@mnemonik/shared';
 import { scannerReceipt } from './scanner/control.js';
 import { stateDirectory } from '@mnemonik/local-setup';
 import { readFile } from 'node:fs/promises';
@@ -9,11 +7,11 @@ import { join } from 'node:path';
 import { devReadiness } from './runtime/releaseSource.js';
 import { pendingProjectSetup } from '@mnemonik/shared/hook-runtime';
 import { basename, isAbsolute, relative, resolve } from 'node:path';
-import { describeReadiness, reduceReadiness, serializeReadiness as baseReadiness, } from '@mnemonik/shared';
+import { reduceReadiness, serializeReadiness as baseReadiness, } from '@mnemonik/shared';
 import { Output } from './output.js';
 import { runProjectCommand, } from './project.js';
 import { hostOrder } from './install/adapters.js';
-import { hookStatusConditions, hostNotConnectedCondition, hostStillConnectingCondition, } from './install/hosts.js';
+import { hookStatusConditions } from './install/hosts.js';
 import { launcherStatus } from './launcher.js';
 const contains = (parent, child) => {
     const path = relative(resolve(parent), resolve(child));
@@ -27,8 +25,8 @@ function scannerConditions(installationConditions, projectRoot, scanner) {
         return [
             {
                 kind: 'scanner_omitted',
-                reason: 'Scanner was deliberately omitted for this installation.',
-                action: 'Run mnemonik scanner enable to add this project.',
+                reason: 'Background indexing was deliberately omitted for this installation.',
+                action: `mnemonik add ${projectRoot}`,
             },
         ];
     if (!scanner)
@@ -38,8 +36,8 @@ function scannerConditions(installationConditions, projectRoot, scanner) {
         return [
             {
                 kind: 'scanner_omitted',
-                reason: 'Scanner coverage was deliberately omitted for this project.',
-                action: 'Run mnemonik scanner enable to add this project.',
+                reason: 'Background indexing was deliberately omitted for this project.',
+                action: `mnemonik add ${projectRoot}`,
             },
         ];
     if (scanner.roots.some((root) => contains(root, projectRoot)))
@@ -47,8 +45,8 @@ function scannerConditions(installationConditions, projectRoot, scanner) {
     return [
         {
             kind: 'project_uncovered',
-            reason: `${projectRoot} is outside approved scanner roots.`,
-            action: `mnemonik roots add ${projectRoot}`,
+            reason: 'This project is not connected.',
+            action: `mnemonik add ${projectRoot}`,
         },
     ];
 }
@@ -91,8 +89,8 @@ export function buildStatusDocument(input) {
             {
                 kind: 'scanner_not_verified',
                 component: 'scanner',
-                reason: 'scanner_not_verified',
-                action: 'run mnemonik status after the scanner service starts',
+                reason: 'background_indexing_not_verified',
+                action: 'Run mnemonik status after indexing starts.',
             },
         ];
     const hooksNotVerified = input.projectHookConditions
@@ -148,26 +146,201 @@ export function buildStatusDocument(input) {
         limitedMode: scannerOmitted
             ? {
                 acknowledgement: 'Limited Mode was acknowledged.',
-                enableScannerAction: 'npx -y @mnemonik/cli@latest scanner enable',
+                enableScannerAction: 'mnemonik add <folder>',
             }
             : null,
         generatedAt: input.generatedAt,
     });
 }
-export function renderStatusSummaries(document, output) {
-    if (document.cliCredential)
-        output.line(`CLI credential: store=${document.cliCredential.store ?? 'unknown'} present=${document.cliCredential.present}${document.cliCredential.diagnostics.length ? ` (${document.cliCredential.diagnostics.join(', ')})` : ''}`);
-    if (document.cliCredential?.detail)
+const readinessMessages = [
+    [
+        /host_trust_pending|trust_pending/iu,
+        {
+            sentence: 'Codex needs permission to use the Mnemonik hooks.',
+            nextStep: 'Open Codex, allow the Mnemonik hooks, then quit and reopen Codex.',
+        },
+    ],
+    [
+        /vendor_policy_pending|vendor policy/iu,
+        {
+            sentence: 'Your editor is waiting for permission to use Mnemonik.',
+            nextStep: 'Open the editor, approve Mnemonik, then start a new session.',
+        },
+    ],
+    [
+        /restart_pending|needs? (?:a )?restart/iu,
+        {
+            sentence: 'An editor needs to restart before Mnemonik can work.',
+            nextStep: 'Quit and reopen the editor, then start a new session.',
+        },
+    ],
+    [
+        /project_identity_choice_pending|project_setup_required|project identity|pending project setup/iu,
+        {
+            sentence: 'A project on this machine still needs to be connected.',
+            nextStep: 'Run mnemonik status in the project and follow the project setup step.',
+        },
+    ],
+    [
+        /scanner_not_verified|background_indexing_not_verified|scanner_paused|dev_release_source/iu,
+        {
+            sentence: 'The scanner has not checked in yet.',
+            nextStep: 'Run mnemonik status on this machine after the scanner starts.',
+        },
+    ],
+    [
+        /hook_not_verified|hooks? (?:still )?needs? verification|could not be inspected/iu,
+        {
+            sentence: 'Mnemonik has not received context from an editor hook yet.',
+            nextStep: 'Start a new editor session, then run mnemonik status.',
+        },
+    ],
+    [
+        /hooks_missing|hook (?:declaration|credential family) is missing|hooks are not installed/iu,
+        {
+            sentence: 'The Mnemonik hooks are not installed correctly for an editor.',
+            nextStep: 'Run mnemonik repair on this machine, then restart the editor.',
+        },
+    ],
+    [
+        /host_grant_unbound|credential_revoked/iu,
+        {
+            sentence: 'An editor is signed out of Mnemonik on this machine.',
+            nextStep: 'Sign in to Mnemonik from that editor to restore context.',
+        },
+    ],
+    [
+        /host_not_connected|signed in, not connected yet/iu,
+        {
+            sentence: 'An editor is signed in but has not used Mnemonik yet.',
+            nextStep: 'Open the editor and start a session in a connected project.',
+        },
+    ],
+    [
+        /scanner_omitted|scanner (?:was |coverage was )?(?:deliberately )?(?:omitted|skipped)/iu,
+        {
+            sentence: 'The scanner is not watching projects on this machine.',
+            nextStep: 'Run mnemonik scanner enable to choose the projects to watch.',
+        },
+    ],
+    [
+        /project_uncovered|outside approved scanner roots/iu,
+        {
+            sentence: 'A connected project is outside the folders watched by the scanner.',
+            nextStep: 'Run mnemonik scanner enable and add that project.',
+        },
+    ],
+    [
+        /host_skipped/iu,
+        {
+            sentence: 'An editor on this machine is not connected to Mnemonik.',
+            nextStep: 'Open that editor and sign in to Mnemonik.',
+        },
+    ],
+    [
+        /windows_task_creation_failed|windows.*task/iu,
+        {
+            sentence: 'Windows could not start the scanner in the background.',
+            nextStep: 'Run mnemonik scanner enable again from a terminal with permission to create tasks.',
+        },
+    ],
+    [
+        /post_commit_upload_failed|status could not be uploaded/iu,
+        {
+            sentence: 'Setup finished on this machine, but its status did not reach Mnemonik.',
+            nextStep: 'Run mnemonik doctor, then run mnemonik status again.',
+        },
+    ],
+    [
+        /indexing_failed|indexing failed/iu,
+        {
+            sentence: 'The scanner could not index one or more projects.',
+            nextStep: 'Run mnemonik doctor on this machine and follow the scanner repair step.',
+        },
+    ],
+    [
+        /indexing_stalled|not_reporting|indexing stalled/iu,
+        {
+            sentence: 'The scanner stopped making progress.',
+            nextStep: 'Run mnemonik doctor on this machine and restart the scanner when prompted.',
+        },
+    ],
+    [
+        /selected_component_failed|failed|unreachable/iu,
+        {
+            sentence: 'Part of Mnemonik did not finish setting up.',
+            nextStep: 'Run mnemonik doctor on this machine and follow the first repair step.',
+        },
+    ],
+    [
+        /login_pending|sign.?in|grants? could not be verified|access has not been verified/iu,
+        {
+            sentence: 'A Mnemonik sign-in has not finished on this machine.',
+            nextStep: 'Finish signing in from the editor, then run mnemonik status.',
+        },
+    ],
+];
+const genericReadinessMessage = {
+    sentence: 'This machine needs attention before Mnemonik can work fully.',
+    nextStep: 'Run mnemonik doctor on this machine and follow the first repair step.',
+};
+function messageFor(reason, actions) {
+    const message = readinessMessages.find(([pattern]) => pattern.test(reason))?.[1] ?? genericReadinessMessage;
+    if (!/host_trust_pending|trust_pending/iu.test(reason))
+        return message;
+    const nextStep = actions.find((action) => action.startsWith('Run the codex command in a terminal ') ||
+        action.startsWith('Open the ChatGPT app '));
+    return nextStep ? { ...message, nextStep } : message;
+}
+function renderAttention(label, summary, output, rendered) {
+    output.line(`${label}: Needs attention.`);
+    const messages = summary.reasons.length
+        ? summary.reasons.map((reason) => messageFor(reason, summary.actions))
+        : [genericReadinessMessage];
+    for (const message of messages) {
+        const key = `${message.sentence}\n${message.nextStep}`;
+        if (rendered.has(key))
+            continue;
+        rendered.add(key);
+        output.line(message.sentence);
+        output.line(message.nextStep);
+    }
+}
+export function renderStatusSummaries(document, output, options = {}) {
+    if (options.diagnostics && document.cliCredential)
+        output.line(`CLI credential: store=${document.cliCredential.store ?? 'unknown'} present=${document.cliCredential.present}`);
+    if (options.diagnostics && document.cliCredential?.detail)
         output.line(document.cliCredential.detail);
-    if (document.launcher)
-        output.line(`Launcher: ${document.launcher.ownership === 'ours' ? 'present and ours' : document.launcher.ownership === 'not_ours' ? 'present and not ours' : 'missing'}; ${document.launcher.path}; directory ${document.launcher.onPath ? 'on' : 'off'} current PATH. ${document.launcher.action}`);
-    output.line(`Installation: ${describeReadiness(document.installation)}`);
-    for (const grant of document.devicesAndGrants ?? [])
-        if (grant.resource === `${apiOrigin()}/mcp`)
-            output.line(`${grant.client}: ${grant.device ?? 'host_grant_unbound'}`);
+    if (options.diagnostics && document.launcher) {
+        const state = document.launcher.ownership === 'ours'
+            ? 'present and ours'
+            : document.launcher.ownership === 'not_ours'
+                ? 'present and not ours'
+                : 'missing';
+        const action = document.launcher.ownership === 'not_ours'
+            ? document.launcher.action.replace(/^Move the existing .+ aside yourself,/u, 'Move the existing mnemonik launcher aside,')
+            : document.launcher.ownership === 'ours' && document.launcher.onPath
+                ? ''
+                : document.launcher.action;
+        output.line(`Launcher: ${state}; directory ${document.launcher.onPath ? 'on' : 'off'} current PATH.${action ? ` ${action}` : ''}`);
+    }
+    const rendered = new Set();
+    if (document.installation.state === 'READY')
+        output.line('Mnemonik is installed and working.');
+    else
+        renderAttention('Installation', document.installation, output, rendered);
+    const connected = document.scanner?.roots?.map((root) => basename(root)) ?? [];
+    if (connected.length) {
+        const shown = connected.slice(0, 8).join(', ');
+        output.line(`Connected: ${shown}${connected.length > 8 ? `, and ${connected.length - 8} more` : ''}`);
+    }
     const project = document.projects?.[0];
-    if (project)
-        output.line(`This project: ${describeReadiness(project.summary)}`);
+    if (project) {
+        if (project.summary.state === 'READY')
+            output.line('This project: Done.');
+        else
+            renderAttention('This project', project.summary, output, rendered);
+    }
 }
 export function statusExitCode(document) {
     const states = [document.installation, ...(document.projects ?? []).map((row) => row.summary)];
@@ -205,13 +378,13 @@ export async function collectStatusDocument(input) {
             scannerReason = {
                 kind: 'login_pending',
                 reason: 'credential_revoked',
-                action: 'mnemonik scanner enable',
+                action: 'mnemonik install',
             };
         else if (snapshot?.lifecycle.state === 'paused')
             scannerReason = {
                 kind: 'scanner_not_verified',
                 reason: 'scanner_paused',
-                action: 'mnemonik scanner resume',
+                action: 'mnemonik install',
             };
         let alive = false;
         if (snapshot?.lifecycle.pid)
@@ -256,88 +429,12 @@ export async function collectStatusDocument(input) {
             .map((repository) => ({
             kind: 'scanner_omitted',
             component: repository.path,
-            reason: `${repository.path} was omitted from scanner coverage.`,
-            action: 'Run mnemonik scanner enable to change coverage.',
+            reason: `${repository.path} is not connected.`,
+            action: `mnemonik add ${repository.path}`,
         })) ?? []),
     ];
     const owned = await readOwnership(statusStateDir);
     const details = { ...input.details };
-    const targets = owned.targets.filter((target) => target.component === 'mcp');
-    if (targets.length && input.grants) {
-        try {
-            const listing = await input.grants.list();
-            await bindInstalledHostGrants(listing, targets
-                .filter((target) => !target.grant || target.grant.account === listing.account)
-                .map((target) => target.host), input.grants);
-            details.devicesAndGrants = listing.grants
-                .filter((g) => grantHost(g) &&
-                (g.activatedAt ||
-                    (listing.deviceInstallationId &&
-                        g.deviceInstallationId === listing.deviceInstallationId)) &&
-                g.scopes.includes('mcp:use') &&
-                g.resource === `${apiOrigin()}/mcp`)
-                .map((g) => ({
-                id: g.id,
-                client: grantHost(g) ?? g.clientId,
-                device: listing.deviceInstallationId && g.deviceInstallationId === listing.deviceInstallationId
-                    ? g.activatedAt
-                        ? 'connected to this machine'
-                        : 'signed in, not connected yet'
-                    : 'host_grant_unbound',
-                platform: null,
-                scopes: g.scopes,
-                resource: g.resource,
-                createdAt: g.createdAt,
-                lastUsedAt: g.lastUsedAt,
-                expiresAt: null,
-                incompleteInstallation: !g.deviceInstallationId,
-                revokeAction: `mnemonik auth logout --host ${grantHost(g)}`,
-            }));
-            for (const target of targets) {
-                const matchesTarget = (g) => !target.grant || (target.grant.account === listing.account && target.grant.id === g.id);
-                const live = listing.grants.find((g) => g.resource === `${apiOrigin()}/mcp` &&
-                    g.activatedAt &&
-                    g.scopes.includes('mcp:use') &&
-                    grantHost(g) === target.host &&
-                    matchesTarget(g));
-                const notConnected = listing.grants.find((g) => listing.deviceInstallationId &&
-                    g.deviceInstallationId === listing.deviceInstallationId &&
-                    !g.activatedAt &&
-                    g.resource === `${apiOrigin()}/mcp` &&
-                    g.scopes.includes('mcp:use') &&
-                    grantHost(g) === target.host &&
-                    matchesTarget(g));
-                const liveHere = listing.deviceInstallationId &&
-                    live?.deviceInstallationId === listing.deviceInstallationId;
-                if (!liveHere && notConnected) {
-                    installationConditions.push(hostNotConnectedCondition(target.host));
-                    continue;
-                }
-                if (!listing.deviceInstallationId ||
-                    !live?.deviceInstallationId ||
-                    live.deviceInstallationId !== listing.deviceInstallationId)
-                    // No recorded grant means install never bound one: the host was skipped or its sign-in
-                    // never finished. A recorded grant that no longer resolves was revoked elsewhere.
-                    installationConditions.push(listing.deviceInstallationId && !target.grant
-                        ? hostStillConnectingCondition(target.host)
-                        : {
-                            kind: 'host_grant_unbound',
-                            component: target.host,
-                            reason: `${target.host}: host_grant_unbound`,
-                            action: !listing.deviceInstallationId
-                                ? 'mnemonik install'
-                                : `mnemonik connect ${target.host}`,
-                        });
-            }
-        }
-        catch {
-            installationConditions.push({
-                kind: 'login_pending',
-                reason: 'Host grants could not be verified.',
-                action: 'mnemonik auth login',
-            });
-        }
-    }
     const projectStatus = input.preflight.project.root ? await readProjectStatus(input) : undefined;
     const pending = await pendingProjectSetup(projectStatus?.resolvedRoot ?? input.cwd).catch(() => []);
     const setupConditions = pending.map((diagnostic) => ({

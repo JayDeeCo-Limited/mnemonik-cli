@@ -1,8 +1,8 @@
 import type { HostCommand, HostSelection } from './hosts.js';
 import type { HostRun } from './ownership.js';
 import type { AdapterWriter, FileChange } from '@mnemonik/shared';
-import type { HostName, Grant } from './adapters.js';
-export declare const MUTATION_KINDS: readonly ['journal_created', 'planned', 'stage_intent', 'stage_written', 'staged', 'host_intent', 'host_launched', 'host_observed', 'host_skipped', 'roots_confirmed', 'consent_recorded', 'project_stage_intent', 'project_staged', 'projects_staged', 'final_review', 'apply', 'commit_intent', 'commit_written', 'committed', 'local_commit', 'service_start_intent', 'service_started', 'upload_intent', 'upload_finished', 'complete', 'service_restored', 'project_restored', 'restored', 'credential_revoked', 'host_revoked', 'compensation_finished', 'reconciled'];
+import type { HostName } from './adapters.js';
+export declare const MUTATION_KINDS: readonly ['journal_created', 'planned', 'stage_intent', 'stage_written', 'staged', 'host_intent', 'host_observed', 'roots_confirmed', 'consent_recorded', 'project_stage_intent', 'project_staged', 'projects_staged', 'final_review', 'apply', 'commit_intent', 'commit_written', 'committed', 'local_commit', 'service_start_intent', 'service_started', 'upload_intent', 'upload_finished', 'complete', 'service_restored', 'project_restored', 'restored', 'credential_revoked', 'compensation_finished', 'reconciled'];
 export type MutationKind = (typeof MUTATION_KINDS)[number];
 export declare const digest: (bytes: Buffer | null) => string | null;
 export declare function bytesAt(path: string): Promise<Buffer | null>;
@@ -49,14 +49,6 @@ export interface JournalData {
     roots: string[];
     declaredTargets: string[];
     targets: Target[];
-    approvals: Partial<Record<HostName, {
-        intent: {
-            attempt: number;
-            targets: string[];
-        };
-        observed?: Grant;
-        skipped?: boolean;
-    }>>;
     consent?: Consent;
     credentials: Array<{
         reference: string;

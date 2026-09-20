@@ -156,7 +156,6 @@ export async function hostStateFixture(sources: Record<HostArtifact, RuntimeSour
   const revoked: string[] = [];
   let account = 'owner';
   fixture.deps.grants = {
-    approveHost: async () => 'installation',
     list: async () => ({
       account,
       deviceInstallationId: 'installation',

@@ -153,6 +153,36 @@ it('records whether a completed remote step created or linked the retained UUID'
   expect((await linked.record()).steps.remote).toMatchObject({ outcome: 'linked' });
 });
 
+it('replaces an effect-free stale context for the same folder', async () => {
+  const f = await fixture();
+  const confirmation = {
+    status: 'project_setup_required',
+    state: 'confirmation_required',
+    allowedActions: ['link', 'cancel'],
+    candidates: [{ projectId, displayName: 'repo' }],
+    requestId: randomUUID(),
+    expiresAt: new Date(Date.now() + 120000).toISOString(),
+  } satisfies SetupRequired;
+  f.transport.issueSetupRequest.mockResolvedValueOnce(confirmation);
+  const executor = createProjectSetupExecutor(f.deps);
+  expect(
+    await executor.stage({
+      ...f.options,
+      owner: { teamId: '22222222-2222-4222-8222-222222222222' },
+      allowCreate: false,
+    })
+  ).toBe(confirmation);
+  const staleOperation = (await f.record()).operationId;
+
+  expect(await executor.ensureProject({ ...f.options, owner: 'personal' })).toMatchObject({
+    status: 'done',
+    projectId,
+  });
+  expect((await f.record()).operationId).not.toBe(staleOperation);
+  expect(f.transport.consumeSetupRequest).toHaveBeenCalledTimes(1);
+  expect(JSON.parse(await readFile(f.file, 'utf8')).projectId).toBe(projectId);
+});
+
 it('refuses to write every project UUID the shared identity parser refuses', async () => {
   const f = await fixture();
   const invalid = 'ABCDEF12-ABCD-4ABC-8ABC-ABCDEF123456';

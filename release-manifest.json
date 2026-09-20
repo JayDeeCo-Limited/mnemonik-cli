@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "version": "7.101.1",
+  "packages": {
+    "@mnemonik/cli": {
+      "version": "7.101.1",
+      "integrity": "sha512-6lT/z0VfKKAzOBV73HMacWTKuYMj2gGuMDpLckCNtGE6kZIMYtVA4ImIv1vDhsiQQZ9QnZxaWNCq12xxv9GwAA=="
+    },
+    "@mnemonik/claude-code-hooks": {
+      "version": "0.9.199",
+      "integrity": "sha512-kcmlmWwrksYkrbbDke/OyRCN0kI3kJMOGcCXtUYpj9aZApTeNWzQHVyS5d/LjhMEc/LrezkUP6Bf8LVySHZqtg=="
+    },
+    "@mnemonik/codex-hooks": {
+      "version": "0.8.168",
+      "integrity": "sha512-ycQgBMoi/KnYqwTvnEYVsODXDKI3hWmR1nPjVtAOubRGw/jiODRpQDLjvGCv/fia9AHMnbQocjATwNuOJxJ/bg=="
+    },
+    "@mnemonik/cursor-hooks": {
+      "version": "0.7.155",
+      "integrity": "sha512-HxqCgHah5ZBh/OhTkItjGId8iUs1z2BwOLH+V9qiUDqHGvdE0/XYvJ5ikxckgS8uz4jOqWXar5PaAxckV6MdCA=="
+    },
+    "@mnemonik/grok-hooks": {
+      "version": "0.1.41",
+      "integrity": "sha512-BZa6V9DieI0L1edAeeclZvfRR1yHSuwrM1FB4XNJrBIjXi1Yqirj6kxMNMTYBxM6dpTJEjwAbW97AKQ/D+HifA=="
+    },
+    "@mnemonik/copilot-hooks": {
+      "version": "0.1.32",
+      "integrity": "sha512-N4qxw5ShTn9ZJIy6CxCYpp6ko6hSLdsPezaSSlFyAM9Wz5sN9469FfdOM+8PbFwDtHoYA0iKgu7q1h6GjeQoGg=="
+    }
+  }
+}

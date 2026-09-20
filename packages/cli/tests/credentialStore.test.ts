@@ -108,14 +108,15 @@ it.each(['keychain', 'credential-manager', 'secret-service', 'file'] as const)(
         installation: { state: 'READY', reasons: [], actions: [] },
         cliCredential: status,
       } as never,
-      { line }
+      { line },
+      { diagnostics: true }
     );
     expect(line.mock.calls.flat().join('\n')).toContain(`store=${kind} present=true`);
     expect(set).not.toHaveBeenCalled();
   }
 );
 
-it('explains a GUI keychain sign-in that is unavailable over SSH in both status commands', async () => {
+it('keeps unavailable-keychain detail in auth status but not human installation status', async () => {
   const stateDir = await mkdtemp(join(tmpdir(), 'cli-session-store-'));
   dirs.push(stateDir);
   store.current = Object.assign(new SimulatedSecretStore(), { kind: 'keychain' });
@@ -169,9 +170,10 @@ it('explains a GUI keychain sign-in that is unavailable over SSH in both status 
         scannerStatus: async () => ({ roots: [], exclusions: [], repositories: [] }),
       })
     ).toBe(code);
-    expect(text).toContain(
-      'Not signed in in this session. The sign-in is in the login keychain; run mnemonik auth login here or use Terminal.'
-    );
+    const detail =
+      'Not signed in in this session. The sign-in is in the login keychain; run mnemonik auth login here or use Terminal.';
+    if (args[0] === 'auth') expect(text).toContain(detail);
+    else expect(text).not.toContain(detail);
     expect(text).not.toMatch(/runtime_failed|gui-refresh/);
   }
   await expect(readFile(credentialPaths(stateDir).cliSecret)).rejects.toMatchObject({

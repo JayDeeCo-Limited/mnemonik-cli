@@ -1,8 +1,6 @@
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { apiOrigin, createHostBinary, hostBinaryDescriptor, resolveProjectIdentity, } from '@mnemonik/shared';
+import { apiOrigin, resolveProjectIdentity, } from '@mnemonik/shared';
 import { hostDiscovery } from './hostDiscovery.js';
 const osName = (platform) => platform === 'darwin'
     ? 'macOS'
@@ -11,25 +9,73 @@ const osName = (platform) => platform === 'darwin'
         : platform === 'linux'
             ? 'Linux'
             : platform;
-const hostPaths = (home) => [
+export function nodeVersionHelp(version, platform) {
+    return [
+        `Node ${version} is installed. Mnemonik needs Node 24 or newer.`,
+        platform === 'darwin'
+            ? 'Run: brew install node@24 && export PATH="$(brew --prefix node@24)/bin:$PATH"'
+            : platform === 'linux'
+                ? 'Install Node 24: https://nodejs.org/en/download/package-manager'
+                : 'Install Node 24: https://nodejs.org/en/download',
+    ];
+}
+const hostPaths = (home, project) => [
     {
         name: 'Claude Code',
         supported: true,
-        paths: [join(home, '.claude', 'settings.json'), join(home, '.claude.json')],
+        paths: [
+            join(home, '.claude', 'settings.json'),
+            join(home, '.claude.json'),
+            join(home, '.claude'),
+            join(project, '.claude', 'settings.json'),
+            join(project, '.mcp.json'),
+            join(project, '.claude'),
+        ],
     },
-    { name: 'Codex', supported: true, paths: [join(home, '.codex', 'config.toml')] },
+    {
+        name: 'Codex',
+        supported: true,
+        paths: [
+            join(home, '.codex', 'config.toml'),
+            join(home, '.codex', 'hooks.json'),
+            join(home, '.codex'),
+            join(project, '.codex', 'config.toml'),
+            join(project, '.codex', 'hooks.json'),
+            join(project, '.codex'),
+        ],
+    },
     {
         name: 'Cursor',
         supported: true,
-        paths: [join(home, '.cursor', 'mcp.json'), join(home, '.cursor', 'hooks.json')],
+        paths: [
+            join(home, '.cursor', 'mcp.json'),
+            join(home, '.cursor', 'hooks.json'),
+            join(home, '.cursor'),
+            join(project, '.cursor', 'mcp.json'),
+            join(project, '.cursor', 'hooks.json'),
+            join(project, '.cursor'),
+        ],
     },
-    { name: 'Grok', supported: true, paths: [join(home, '.grok', 'config.toml')] },
+    {
+        name: 'Grok',
+        supported: true,
+        paths: [
+            join(home, '.grok', 'config.toml'),
+            join(home, '.grok', 'hooks', 'mnemonik.json'),
+            join(home, '.grok'),
+            join(project, '.grok', 'config.toml'),
+            join(project, '.grok', 'hooks', 'mnemonik.json'),
+            join(project, '.grok'),
+        ],
+    },
 ];
 export async function runPreflight(deps = {}) {
     const home = deps.home ?? homedir();
+    const resolution = await (deps.resolveIdentity ?? resolveProjectIdentity)(deps.cwd ?? process.cwd());
+    const root = 'root' in resolution ? resolution.root : (deps.cwd ?? process.cwd());
     const pathExists = deps.pathExists ?? hostDiscovery.pathExists;
     const hosts = [];
-    for (const candidate of hostPaths(home)) {
+    for (const candidate of hostPaths(home, root)) {
         for (const path of candidate.paths) {
             if (await pathExists(path)) {
                 hosts.push({ name: candidate.name, supported: candidate.supported, path });
@@ -37,30 +83,7 @@ export async function runPreflight(deps = {}) {
             }
         }
     }
-    const env = { ...(deps.env ?? process.env), HOME: home, USERPROFILE: home };
-    const binaryExists = deps.binaryExists ?? hostDiscovery.binaryExists;
-    await Promise.all([
-        ['claude-code', 'Claude Code'],
-        ['codex', 'Codex'],
-        ['cursor', 'Cursor'],
-    ].map(async ([host, name]) => {
-        if (hosts.some((found) => found.name === name))
-            return;
-        const descriptor = hostBinaryDescriptor(host, { ...deps, env });
-        const binary = createHostBinary({ ...deps, env, binaryExists }, descriptor.binary, descriptor.windowsBinary, deps.execFile ?? promisify(execFile), descriptor.desktopPaths);
-        try {
-            const path = await binary.findOnDisk();
-            if (path)
-                hosts.push({ name, supported: true, path });
-        }
-        catch {
-            // A missing or unusable binary adds no candidate; existing config still counts.
-        }
-    }));
-    const order = hostPaths(home).map((host) => host.name);
-    hosts.sort((a, b) => order.indexOf(a.name) - order.indexOf(b.name));
-    const resolution = await (deps.resolveIdentity ?? resolveProjectIdentity)(deps.cwd ?? process.cwd());
-    const root = 'root' in resolution ? resolution.root : undefined;
+    const projectRoot = 'root' in resolution ? resolution.root : undefined;
     const discoveryUrl = deps.discoveryUrl ??
         new URL('/.well-known/oauth-protected-resource', deps.resource ?? apiOrigin()).href;
     let network;
@@ -89,7 +112,7 @@ export async function runPreflight(deps = {}) {
         node: { version, supported },
         os: osName(deps.platform ?? process.platform),
         hosts,
-        project: { ...(root ? { root } : {}), resolution: resolution.kind },
+        project: { ...(projectRoot ? { root: projectRoot } : {}), resolution: resolution.kind },
         network,
     };
 }
@@ -99,7 +122,6 @@ export function renderPreflight(result, output) {
     output.line();
     const hosts = result.hosts.map((host) => `${host.name}${host.supported ? '' : ' (not supported yet)'}`);
     output.line(`  Found      ${hosts.length ? hosts.join(', ') : 'No supported editors'}`);
-    output.line('  VS Code Copilot (not offered at launch)');
     output.line(`  Project    ${result.project.root ?? `Unavailable (${result.project.resolution})`}`);
     output.line(`  Node       ${result.node.version}, ${result.os}`);
     if (!result.network.reachable)

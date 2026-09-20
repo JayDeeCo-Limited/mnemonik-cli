@@ -11,10 +11,12 @@ import { joinedInstall } from '../src/install/journey.js';
 import { Output } from '../src/output.js';
 import type { Journal } from '../src/install/journal.js';
 import type { PreparedScanner } from '../src/scanner/enable.js';
+import { ScannerServiceLimited } from '../src/scanner/service.js';
 
 const mocks = vi.hoisted(() => ({
   prepare: vi.fn(),
   discover: vi.fn(),
+  classify: vi.fn(),
   status: vi.fn(),
   runtime: vi.fn(),
 }));
@@ -22,7 +24,11 @@ vi.mock('../src/scanner/enable.js', async (original) => ({
   ...(await original<typeof import('../src/scanner/enable.js')>()),
   prepareScanner: mocks.prepare,
 }));
-vi.mock('../src/scanner/discover.js', () => ({ discoverRepositories: mocks.discover }));
+vi.mock('../src/scanner/discover.js', async (original) => ({
+  ...(await original<typeof import('../src/scanner/discover.js')>()),
+  discoverRepositories: mocks.discover,
+  classifyRepository: mocks.classify,
+}));
 vi.mock('../src/status.js', async (original) => ({
   ...(await original<typeof import('../src/status.js')>()),
   collectStatusDocument: mocks.status,
@@ -41,6 +47,7 @@ afterEach(async () => {
 it.each([
   ['unresolved project', 'prepared'],
   ['scanner failure', 'prepared'],
+  ['scanner limited', 'prepared'],
   ['unresolved project', 'http'],
 ])(
   '%s via %s preserves completed hosts and finishes the joined journey with exit 3',
@@ -63,6 +70,8 @@ it.each([
         })
       );
       if (failure === 'scanner failure') throw new Error('service_start_failed');
+      if (failure === 'scanner limited')
+        throw new ScannerServiceLimited('windows_task_creation_failed', 'Access is denied.');
       return serializeReadiness({ installation: { conditions: [] } });
     });
     const rollback = vi.fn(async (current: Journal) => {
@@ -80,7 +89,7 @@ it.each([
           })
         );
         return work({
-          roots: [home],
+          roots: failure === 'unresolved project' ? [unresolved, home] : [home],
           exclusions: [],
           files: [scannerFile],
           session: { id: 'session' },
@@ -90,6 +99,11 @@ it.each([
         } as unknown as PreparedScanner);
       }
     );
+    mocks.classify.mockImplementation(async (path) => ({
+      path,
+      state: path === unresolved ? 'existing_project' : 'not_set_up',
+      ...(path === home ? { nonGitSelected: true } : {}),
+    }));
     mocks.discover.mockResolvedValue({
       repositories:
         failure === 'unresolved project'
@@ -113,12 +127,12 @@ it.each([
     };
     mocks.status.mockImplementation(async (input) => ({
       ...serializeReadiness({ installation: { conditions: input.installationConditions } }),
-      cliCredential: { store: 'credential-manager', present: true },
+      cliCredential: { store: 'credential-manager', present: true, diagnostics: [] },
     }));
     let text = '';
     const code = await joinedInstall(
       new Map<string, string | true>([
-        ['json', true],
+        ...(failure === 'scanner limited' ? [] : ([['json', true]] as Array<[string, true]>)),
         ['apply', true],
         ['accept-scanner', true],
         ['scan-roots', home],
@@ -126,9 +140,11 @@ it.each([
       {
         home,
         cwd: home,
+        ...(failure === 'scanner limited' ? { input: Readable.from('Recommended\n') } : {}),
         installStateDir: stateDir,
         preflight: {
           nodeVersion: '24.21.0',
+          ...(failure === 'scanner limited' ? { platform: 'win32' as const } : {}),
           fetch: async () => new Response('{}'),
           resolveIdentity: async () => ({
             kind: 'absent',
@@ -158,14 +174,16 @@ it.each([
       })
     );
     expect(code).toBe(3);
-    expect(complete).toHaveBeenCalledExactlyOnceWith(
-      expect.objectContaining({
-        installation: expect.objectContaining({
-          state: failure === 'unresolved project' ? 'ACTION_REQUIRED' : 'LIMITED',
-        }),
-      })
-    );
-    expect(isReadinessDocument(complete.mock.calls[0]?.[0])).toBe(true);
+    if (failure !== 'scanner limited') {
+      expect(complete).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({
+          installation: expect.objectContaining({
+            state: failure === 'unresolved project' ? 'ACTION_REQUIRED' : 'LIMITED',
+          }),
+        })
+      );
+      expect(isReadinessDocument(complete.mock.calls[0]?.[0])).toBe(true);
+    }
     expect(journal.data.phase).toBe('complete');
     expect(await readFile(hostFile, 'utf8')).toBe('host installed');
     expect(apply).toHaveBeenCalledOnce();
@@ -185,10 +203,21 @@ it.each([
           }),
         ])
       );
-    } else {
+    } else if (failure === 'scanner failure') {
       expect(rollback).toHaveBeenCalledOnce();
       await expect(readFile(scannerFile)).rejects.toMatchObject({ code: 'ENOENT' });
       expect(text).toContain('service_start_failed');
+    } else {
+      expect(rollback).toHaveBeenCalledOnce();
+      expect(
+        (
+          text.match(
+            /Your editors will ask you to sign in to Mnemonik the first time you use it/g
+          ) ?? []
+        ).length,
+        text
+      ).toBe(1);
+      expect(text).toContain('Background indexing could not be started.');
     }
   }
 );
@@ -203,10 +232,11 @@ it.each([true, false])('reports fresh launcher status (json=%s)', async (json) =
   await writeFile(join(home, '.mnemonik.json'), JSON.stringify({ schemaVersion: 1, projectId }));
   const transport = { readProjectState: vi.fn(async () => ({ state: 'access' })) };
   mocks.runtime.mockResolvedValue({ executor: {}, transport });
+  mocks.classify.mockImplementation(async (path) => ({ path, state: 'existing_project' }));
   mocks.discover.mockResolvedValue({ repositories: [] });
   mocks.prepare.mockImplementation(async (_options, work) =>
     work({
-      roots: [home],
+      roots: [],
       exclusions: [],
       files: [],
       session: { id: 'session' },
@@ -252,7 +282,7 @@ it.each([true, false])('reports fresh launcher status (json=%s)', async (json) =
   );
   expect(transport.readProjectState).toHaveBeenCalledWith(projectId, 'fixture', null);
   if (!json) {
-    expect(text).toContain('Launcher: present and ours;');
+    expect(text).not.toContain('Launcher:');
     expect(text).not.toContain('Launcher: missing;');
     return;
   }
@@ -261,5 +291,116 @@ it.each([true, false])('reports fresh launcher status (json=%s)', async (json) =
   expect(document.projects[0].projectId).toBe(projectId);
   expect(document.projects[0].summary.reasons).not.toContain(
     'Project access has not been verified.'
+  );
+});
+
+it('keeps earlier projects and reports the skipped count when the plan limit is reached', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'joined-project-limit-'));
+  homes.push(home);
+  const stateDir = join(home, 'state');
+  const app = join(home, 'app');
+  const shop = join(home, 'shop');
+  const docs = join(home, 'docs');
+  const api = join(home, 'api');
+  await Promise.all([mkdir(app), mkdir(shop), mkdir(docs), mkdir(api)]);
+  let appliedRoots: string[] = [];
+  mocks.classify.mockImplementation(async (path) => ({
+    path,
+    state: 'not_set_up',
+    nonGitSelected: true,
+  }));
+  mocks.prepare.mockImplementation(async (options, work) =>
+    work({
+      roots: [app, shop, docs, api],
+      exclusions: [],
+      files: [],
+      session: { id: 'session' },
+      projectExecutor: async () => options.projectExecutor,
+      apply: async () => {
+        appliedRoots = [app, shop, docs, api].filter((root) =>
+          options.journal.data.roots.includes(root)
+        );
+        return serializeReadiness({ installation: { conditions: [] } });
+      },
+      rollback: vi.fn(),
+      complete,
+    })
+  );
+  const executor = {
+    stage: vi.fn(async ({ cwd }: { cwd: string }) => {
+      if (cwd === shop)
+        return {
+          status: 'ACTION_REQUIRED',
+          state: 'project_limit_reached',
+          allowedActions: ['retry', 'cancel'],
+          used: 1,
+          limit: 1,
+          tier: 'free',
+          existingProjectNames: ['acme'],
+        };
+      const path = recordPath(cwd, stateDir);
+      await mkdir(dirname(path), { recursive: true });
+      await writeFile(
+        path,
+        JSON.stringify({ staged: { content: '{"projectId":"app"}\n', hash: 'fixture' } })
+      );
+      return { status: 'staged' };
+    }),
+    apply: vi.fn(async ({ cwd }: { cwd: string }) => {
+      await writeFile(join(cwd, '.mnemonik.json'), '{"projectId":"app"}\n');
+      return { status: 'done', projectId: 'app' };
+    }),
+    rollback: vi.fn(),
+  };
+  mocks.status.mockResolvedValue({
+    ...serializeReadiness({ installation: { conditions: [] } }),
+    cliCredential: { present: true, diagnostics: [] },
+    launcher: { ownership: 'ours', path: 'mnemonik', onPath: true, action: '' },
+  });
+  let text = '';
+  const code = await joinedInstall(
+    new Map<string, string | true>([
+      ['apply', true],
+      ['accept-scanner', true],
+      ['scan-roots', home],
+    ]),
+    {
+      home,
+      cwd: home,
+      input: Readable.from('Recommended\n'),
+      installStateDir: stateDir,
+      projectExecutor: executor as any,
+      preflight: {
+        nodeVersion: '24.21.0',
+        fetch: async () => Response.json({}),
+        resolveIdentity: async () => ({
+          kind: 'absent',
+          root: home,
+          repository: { kind: 'plain', root: home },
+          nested: [],
+        }),
+      },
+      grantFetch: async () => Response.json({ status: 'completed' }),
+    },
+    new Output({ write: (chunk) => void (text += chunk) }),
+    async () => 'owner',
+    async () => ({
+      stateDir,
+      account: 'owner',
+      getCliBearer: async () => 'fixture',
+      now: () => 0,
+      sleep: async () => {},
+    })
+  );
+
+  expect(code).toBe(0);
+  expect(appliedRoots).toEqual([app]);
+  expect(executor.apply).toHaveBeenCalledOnce();
+  expect(await readFile(join(app, '.mnemonik.json'), 'utf8')).toContain('app');
+  await expect(readFile(join(shop, '.mnemonik.json'))).rejects.toMatchObject({ code: 'ENOENT' });
+  expect(text).toContain('  ✓ Connected app.');
+  expect(text).toContain('shop and 2 more were not connected. The Free plan includes one project.');
+  expect(text).toContain(
+    'To connect more projects, upgrade your plan via the Mnemonik web console.'
   );
 });

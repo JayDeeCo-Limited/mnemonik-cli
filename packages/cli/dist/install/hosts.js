@@ -1,14 +1,13 @@
 import { apiOrigin } from '@mnemonik/shared';
-import { bindInstalledHostGrants, grantHost, matchHostGrant, } from '../auth/status.js';
 import { readFile, rm } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
-import { setTimeout as delay } from 'node:timers/promises';
 import { hostPackageImports, } from './adapters.js';
 import { RuntimeStore, hash, hostNpmSource, } from '../runtime/store.js';
 import { bytesAt, digest, interrupted, withInstall } from './journal.js';
 import { readOwnership, rollbackHost, saveOwnership, } from './ownership.js';
 import { ensureInstallSession } from '../auth/installSession.js';
 import { createCliCredentials } from '../auth/credentials.js';
+import { readInstallation } from '../installation.js';
 export function codexTrustAction(resolvedPath) {
     const desktop = resolvedPath?.includes('/ChatGPT.app/') ||
         /[\\/]Programs[\\/]OpenAI[\\/]Codex[\\/]/i.test(resolvedPath ?? '');
@@ -17,28 +16,6 @@ export function codexTrustAction(resolvedPath) {
         : 'Run the codex command in a terminal and use its hook trust prompt to allow the Mnemonik hooks; then quit and reopen Codex.';
 }
 export const CODEX_TRUST_ACTION = codexTrustAction();
-const hostLabels = {
-    'claude-code': 'Claude Code',
-    codex: 'Codex',
-    cursor: 'Cursor',
-    grok: 'Grok',
-};
-export const hostNotConnectedCondition = (host) => ({
-    kind: 'host_not_connected',
-    component: host,
-    reason: `${host}: signed in, not connected yet`,
-    action: `open ${hostLabels[host]} and start a session, then run mnemonik status`,
-});
-/**
- * A host skipped at install keeps its hooks and its URL-only MCP declaration and is recorded as
- * still connecting; the sign-in happens in the app and the next status run binds the grant.
- */
-export const hostStillConnectingCondition = (host) => ({
-    kind: 'login_pending',
-    component: host,
-    reason: `${hostLabels[host]} is still connecting. Finish the sign-in in the app, then run mnemonik status.`,
-    action: 'mnemonik status',
-});
 const identity = (t) => `${t.host}:${t.component ?? 'hooks'}:${t.scope}:${t.profilePath ?? (t.scope === 'user' ? t.home : t.projectRoot)}`;
 export async function hostSource(host, packagePath = new URL('../../package.json', import.meta.url)) {
     const pkg = JSON.parse(await readFile(packagePath, 'utf8'));
@@ -92,13 +69,7 @@ async function apply(journal, run) {
     for (const target of journal.data.targets.filter((t) => t.group === run.id))
         await journal.commit(target);
 }
-function actionFor(reason, selection, searchedLocations = [], resolvedPath) {
-    if (reason === 'not_found') {
-        const name = hostLabels[selection.host];
-        return searchedLocations.length
-            ? `${name} was not found (looked on PATH and in ${searchedLocations.join(', ')}). Install it, or open a new terminal if you just installed it.`
-            : `${name} was not found on PATH. Install it, or open a new terminal if you just installed it.`;
-    }
+function actionFor(reason, selection, resolvedPath) {
     if (reason === 'unsupported_version')
         return `upgrade ${selection.host} to ${selection.host === 'codex' ? '0.145.0' : 'a supported version'} and retry`;
     if (reason === 'unverified_version')
@@ -113,18 +84,12 @@ function actionFor(reason, selection, searchedLocations = [], resolvedPath) {
         return `Resolve the existing Mnemonik MCP declaration in ${selection.host}, then retry.`;
     if (reason === 'project_shared_declaration_conflict')
         return 'Ask the collaborator who owns the project declaration to reconcile it, then retry.';
-    if (reason === 'host_grant_unverified')
-        return `Run mnemonik connect ${selection.host}.`;
-    if (reason === 'host_enable_required')
-        return `Enable Mnemonik in ${hostLabels[selection.host]}, then run mnemonik connect ${selection.host}.`;
     if (reason === 'hooks_missing' || reason === 'mcp_declaration_missing')
         return `mnemonik repair --host ${selection.host} --component ${selection.component ?? 'hooks'}`;
     if (reason === 'installation_required')
         return 'Run mnemonik install first.';
     if (reason === 'digest_mismatch')
         return 'mnemonik repair';
-    if (reason === 'host_account_mismatch')
-        return `Sign out of Mnemonik in ${selection.host}${selection.profilePath ? ` profile ${selection.profilePath}` : ''}, then run mnemonik connect ${selection.host}.`;
     if (reason === 'hook_credential_authorization_required')
         return 'Run `mnemonik auth login --reopen-install` to start a new install session';
     return undefined;
@@ -190,6 +155,8 @@ const protectInstall = (deps, work) => async (journal) => {
 };
 /** All selected targets share the ownership lease; a failed target restores only its group. */
 export async function runHosts(command, selections, deps, allowMigration = false) {
+    if (command === 'install')
+        selections = selections.map((selection) => ({ ...selection, scope: 'user' }));
     const pending = (await interrupted(deps.stateDir))[0];
     if (pending && !pending.data.hostRequest)
         throw new Error('resolve_interrupted_install_first');
@@ -217,9 +184,7 @@ export async function runHosts(command, selections, deps, allowMigration = false
                 await deps.rollbackInstall(journal);
                 return { results, reports: journal.data.reports, journal: journal.data };
             }
-            const completed = journal.data.hostRuns.filter((run) => (run.status === 'complete' ||
-                run.status === 'verified' ||
-                run.reason === 'host_skipped') &&
+            const completed = journal.data.hostRuns.filter((run) => (run.status === 'complete' || run.status === 'verified') &&
                 !journal.data.targets.some((target) => target.group === run.id && target.status === 'restored'));
             for (const run of journal.data.hostRuns.filter((r) => r.status !== 'rolled_back' && !completed.includes(r))) {
                 await rollbackHost(deps.stateDir, journal, run.id);
@@ -238,14 +203,8 @@ export async function runHosts(command, selections, deps, allowMigration = false
                 results.push({
                     target: run.id,
                     elapsedMs: run.elapsedMs ?? 0,
-                    status: run.reason === 'host_skipped'
-                        ? 'LIMITED'
-                        : run.candidate?.component === 'mcp' && !run.candidate.grant
-                            ? 'ACTION_REQUIRED'
-                            : deps.grants
-                                ? 'READY'
-                                : 'LIMITED',
-                    reason: run.reason ?? 'host_grant_unverified',
+                    status: run.reason === 'codex_trust_pending' ? 'ACTION_REQUIRED' : 'READY',
+                    reason: run.reason ?? 'declaration installed',
                 });
             }
             selections = request.selections.filter((selection) => !completed.some((run) => run.id === identity(selection)));
@@ -270,12 +229,8 @@ export async function runHosts(command, selections, deps, allowMigration = false
                     results.push({
                         target: run.id,
                         elapsedMs: run.elapsedMs ?? 0,
-                        status: run.reason === 'uninstalled'
-                            ? 'READY'
-                            : run.candidate?.component === 'mcp' && !run.candidate.grant
-                                ? 'ACTION_REQUIRED'
-                                : 'LIMITED',
-                        reason: run.reason ?? 'host_grant_unverified',
+                        status: run.reason === 'codex_trust_pending' ? 'ACTION_REQUIRED' : 'READY',
+                        reason: run.reason ?? 'declaration installed',
                     });
             }
             if (request.command === 'uninstall')
@@ -308,8 +263,7 @@ export async function runHosts(command, selections, deps, allowMigration = false
             journal.data.hostRuns.push(run);
             await journal.save();
             let freshRuntimeVersion;
-            let searchedLocations = [];
-            let resolvedPath;
+            let runtimeChanged = false;
             try {
                 const pointer = store.pointerPath(selection.host);
                 const beforePointer = await bytesAt(pointer);
@@ -321,6 +275,7 @@ export async function runHosts(command, selections, deps, allowMigration = false
                     const previous = beforePointer
                         ? JSON.parse(beforePointer.toString())
                         : undefined;
+                    runtimeChanged = previous?.current.version !== source.manifest.version;
                     const proposed = previous?.current.version === source.manifest.version
                         ? beforePointer
                         : Buffer.from(JSON.stringify({
@@ -345,6 +300,11 @@ export async function runHosts(command, selections, deps, allowMigration = false
                 else
                     runtime = await store.verifyRuntime(selection.host);
                 const target = targetFor(selection, runtime, store, old);
+                if (target.component === 'mcp' && target.scope === 'user') {
+                    target.installationId = await readInstallation(deps.stateDir);
+                    if (command !== 'uninstall' && !target.installationId)
+                        throw new Error('installation_required');
+                }
                 const module = await (deps.imports ?? hostPackageImports)[selection.host](runtime);
                 const adapter = module.createHostAdapter({
                     target,
@@ -354,17 +314,6 @@ export async function runHosts(command, selections, deps, allowMigration = false
                 });
                 if (adapter.name !== selection.host)
                     throw new Error('adapter_identity_mismatch');
-                const detected = await adapter.detect();
-                resolvedPath = detected.resolvedPath;
-                if (!detected.supported) {
-                    searchedLocations = detected.searchedLocations ?? [];
-                    if (target.component === 'mcp' && command !== 'update' && command !== 'repair') {
-                        const instruction = await adapter.launch();
-                        journal.data.reports.push(instruction);
-                        deps.instruction?.(instruction);
-                    }
-                    throw new Error(detected.reason ?? 'unverified_version');
-                }
                 if (!adapter.capabilities().components.includes(target.component))
                     throw new Error('unsupported_component');
                 if (!adapter.capabilities().scopes.includes(selection.scope))
@@ -383,7 +332,8 @@ export async function runHosts(command, selections, deps, allowMigration = false
                                 candidate.component === 'hooks' &&
                                 candidate.home === selection.home)?.credentialFamily ??
                             '';
-                    if (command !== 'uninstall' &&
+                    if (command !== 'update' &&
+                        command !== 'uninstall' &&
                         (!target.credentialFamily || !(await credentials.readFamily(target.credentialFamily)))) {
                         let bearer = await deps.getCliBearer?.();
                         if (!bearer)
@@ -402,10 +352,8 @@ export async function runHosts(command, selections, deps, allowMigration = false
                             ? (await response.json().catch(() => ({})))
                             : undefined;
                         if (body?.error === 'install_session_required') {
-                            const installation = (await deps.grants?.list())?.deviceInstallationId;
+                            const installation = await readInstallation(deps.stateDir);
                             if (!installation)
-                                throw new Error('hook_credential_authorization_required');
-                            if (!deps.authorizeInstallSession && !deps.timeout)
                                 throw new Error('hook_credential_authorization_required');
                             try {
                                 bearer = await ensureInstallSession({
@@ -513,44 +461,24 @@ export async function runHosts(command, selections, deps, allowMigration = false
                 if (command === 'uninstall') {
                     if ((await adapter.verify(target)).declarationPresent)
                         throw new Error('uninstall_verification_failed');
-                    if (target.component === 'mcp' && (await deps.offerRevoke?.(selection.host))) {
-                        await revokeHostGrants(selection.host, deps, old?.grant?.id);
-                        if (old?.grant && adapter.revoke)
-                            await adapter.revoke(old.grant);
-                        else
-                            deps.instruction?.(adapter.revokeAction);
-                    }
                 }
                 else {
-                    try {
-                        inspection = await waitForHost(adapter, target, selection.host, {
-                            ...deps,
-                            instruction: (text) => {
-                                journal.data.reports.push(`${run.id}: ${text}`);
-                                deps.instruction?.(text);
-                            },
-                        }, old?.grant, command);
-                        run.reason = inspection.trustPending
-                            ? 'codex_trust_pending'
-                            : target.component === 'hooks' || inspection.grant
-                                ? 'hooks_not_verified'
-                                : 'host_grant_unverified';
-                        if (inspection.trustPending)
-                            journal.data.reports.push(`codex: ${codexTrustAction(inspection.resolvedPath ?? resolvedPath)}`);
-                    }
-                    catch (error) {
-                        if (target.component !== 'mcp')
-                            throw error;
-                        // Retain the URL-only declaration for `connect` to resume without planning again.
-                        run.reason = error instanceof Error ? error.message : 'host_verification_timeout';
-                        if (deps.afterHosts && run.reason === 'host_verification_timeout')
-                            run.reason = 'login_pending';
-                        journal.data.reports.push(`${run.id}: URL-only entry retained, not connected. Run mnemonik connect ${selection.host}.`);
-                    }
+                    inspection = await adapter.verify(target);
+                    if (inspection.trustDeclined)
+                        throw new Error('codex_trust_declined');
+                    if (!inspection.declarationPresent)
+                        throw new Error(target.component === 'hooks' ? 'hooks_missing' : 'mcp_declaration_missing');
+                    run.reason = inspection.trustPending
+                        ? 'codex_trust_pending'
+                        : target.component === 'hooks'
+                            ? 'hooks installed'
+                            : 'MCP entry declared';
+                    if (inspection.trustPending)
+                        journal.data.reports.push(`codex: ${codexTrustAction(inspection.resolvedPath)}`);
                 }
                 await journal.event('host_observed', run.id);
                 // Keep the old scope until the requested scope has passed its native probe.
-                const migrated = inspection?.grant || target.component === 'hooks' ? otherScopes : [];
+                const migrated = inspection?.declarationPresent ? otherScopes : [];
                 for (const other of migrated) {
                     const removals = [];
                     const otherOwned = record.targets.find((candidate) => candidate.host === selection.host &&
@@ -582,20 +510,13 @@ export async function runHosts(command, selections, deps, allowMigration = false
                     const profilePath = old?.profilePath ?? ownedChanges.at(-1)?.path;
                     if (!profilePath)
                         throw new Error('adapter_empty_plan');
-                    // An attempt that binds nothing keeps the grant already on record: status reads a
-                    // missing grant as a sign-in that never happened, so dropping it here would turn a
-                    // revoked binding into a host that looks like it is still connecting. Only a new
-                    // binding replaces it; uninstall and auth logout are what remove it.
-                    const grant = inspection?.grant ?? old?.grant;
                     const candidate = {
                         ...selection,
                         id: run.id,
                         component: target.component,
                         credentialFamily: target.credentialFamily,
-                        ...(grant ? { grant } : {}),
                         profilePath,
                         version: runtime.manifest.version,
-                        ...(detected.version ? { editorVersion: detected.version } : {}),
                         artifactDigest: runtime.reference.manifestSha256,
                         runtimePointer: pointer,
                         files: ownedChanges.map((c) => {
@@ -623,8 +544,7 @@ export async function runHosts(command, selections, deps, allowMigration = false
                             }
                             : {}),
                     };
-                    if (!grant)
-                        delete candidate.grant;
+                    delete candidate.grant;
                     run.candidate = candidate;
                 }
                 run.reason ??= 'uninstalled';
@@ -634,80 +554,42 @@ export async function runHosts(command, selections, deps, allowMigration = false
                 await saveOwnership(deps.stateDir, journal, run);
                 run.status = 'complete';
                 await journal.event('local_commit', run.id);
-                if (command === 'update')
+                if (command === 'update' && runtimeChanged)
                     journal.data.reports.push(`${selection.host}: shared runtime updated for all scopes to ${runtime.manifest.version}.`);
                 const result = {
                     target: run.id,
                     elapsedMs: run.elapsedMs ?? 0,
-                    status: inspection?.trustPending ||
-                        (target.component === 'mcp' && command !== 'uninstall' && !inspection?.grant)
-                        ? 'ACTION_REQUIRED'
-                        : deps.grants
-                            ? 'READY'
-                            : 'LIMITED',
+                    status: inspection?.trustPending ? 'ACTION_REQUIRED' : 'READY',
                     reason: run.reason,
-                    ...(actionFor(run.reason, selection, [], inspection?.resolvedPath ?? resolvedPath)
+                    ...(actionFor(run.reason, selection, inspection?.resolvedPath)
                         ? {
-                            action: actionFor(run.reason, selection, [], inspection?.resolvedPath ?? resolvedPath),
+                            action: actionFor(run.reason, selection, inspection?.resolvedPath),
                         }
                         : {}),
                 };
                 results.push(result);
-                if (command === 'install' &&
-                    deps.afterHosts &&
-                    (inspection?.trustPending || run.reason === 'login_pending'))
+                if (command === 'install' && deps.afterHosts && inspection?.trustPending)
                     completionChecks.push(async () => {
                         const reread = await adapter.verify(target);
                         if (reread.trustDeclined) {
                             result.status = 'ACTION_REQUIRED';
                             result.reason = 'codex_trust_declined';
-                            result.action = actionFor(result.reason, selection, [], reread.resolvedPath ?? resolvedPath);
+                            result.action = actionFor(result.reason, selection, reread.resolvedPath);
                             return;
                         }
                         if (reread.trustPending)
                             return;
                         if (target.component === 'hooks') {
-                            result.status = reread.declarationPresent
-                                ? deps.grants
-                                    ? 'READY'
-                                    : 'LIMITED'
-                                : 'ACTION_REQUIRED';
-                            result.reason = reread.declarationPresent ? 'hooks_not_verified' : 'hooks_missing';
+                            result.status = reread.declarationPresent ? 'READY' : 'ACTION_REQUIRED';
+                            result.reason = reread.declarationPresent ? 'hooks installed' : 'hooks_missing';
                             if (reread.declarationPresent)
                                 delete result.action;
                             else
                                 result.action = `mnemonik repair --host ${selection.host} --component hooks`;
-                            const report = `codex: ${codexTrustAction(reread.resolvedPath ?? resolvedPath)}`;
+                            const report = `codex: ${codexTrustAction(reread.resolvedPath)}`;
                             const index = journal.data.reports.indexOf(report);
                             if (index >= 0)
                                 journal.data.reports.splice(index, 1);
-                            return;
-                        }
-                        if (!deps.grants)
-                            return;
-                        const listing = await deps.grants.list();
-                        if (!deps.account || listing.account !== deps.account)
-                            return;
-                        const grants = listing.grants.filter((grant) => grantHost(grant) === selection.host &&
-                            grant.resource === `${apiOrigin()}/mcp` &&
-                            grant.scopes.includes('mcp:use'));
-                        const bound = grants.find((grant) => listing.deviceInstallationId &&
-                            grant.deviceInstallationId === listing.deviceInstallationId &&
-                            grant.activatedAt) ??
-                            grants.find((grant) => listing.deviceInstallationId &&
-                                grant.deviceInstallationId === listing.deviceInstallationId);
-                        if (bound && !bound.activatedAt) {
-                            const condition = hostNotConnectedCondition(selection.host);
-                            result.status = 'LIMITED';
-                            result.reason = condition.reason;
-                            result.action = condition.action;
-                        }
-                        else if (bound?.activatedAt &&
-                            reread.declarationPresent &&
-                            reread.authenticatedTools) {
-                            result.status = 'READY';
-                            result.reason = 'connected to this machine';
-                            delete result.action;
                         }
                     });
             }
@@ -734,8 +616,8 @@ export async function runHosts(command, selections, deps, allowMigration = false
                     status: 'ACTION_REQUIRED',
                     reason: run.reason,
                     ...(detail ? { detail } : {}),
-                    ...(actionFor(run.reason, selection, searchedLocations, resolvedPath)
-                        ? { action: actionFor(run.reason, selection, searchedLocations, resolvedPath) }
+                    ...(actionFor(run.reason, selection)
+                        ? { action: actionFor(run.reason, selection) }
                         : {}),
                 });
                 await journal.save();
@@ -882,188 +764,6 @@ export async function hookStatusConditions(deps, hosts) {
     }
     return conditions;
 }
-async function finishMcpTarget(adapter, target, deps, status) {
-    if (adapter.capabilities().nativeListing === false) {
-        if (!status.declarationPresent || !deps.grants)
-            return status;
-        const hookPath = (await adapter.verify({ ...target, component: 'hooks' })).declarationPath;
-        const hooks = (await readOwnership(deps.stateDir)).targets.find((t) => t.host === adapter.name && t.component === 'hooks' && t.profilePath === hookPath);
-        if (!hooks?.credentialFamily ||
-            !(await adapter.verify({
-                ...target,
-                component: 'hooks',
-                credentialFamily: hooks.credentialFamily,
-            })).declarationPresent)
-            return status;
-        const listing = await deps.grants.list();
-        if (!deps.account || listing.account !== deps.account)
-            throw new Error('host_account_mismatch');
-        return {
-            ...status,
-            authenticatedTools: listing.grants.some((g) => grantHost(g) === adapter.name &&
-                g.resource === `${apiOrigin()}/mcp` &&
-                !!g.activatedAt &&
-                g.scopes.includes('mcp:use')),
-        };
-    }
-    if (!status.enableRequired)
-        return status;
-    const instruction = await adapter.enable?.();
-    if (instruction)
-        deps.instruction?.(instruction);
-    const verified = await adapter.verify(target);
-    if (!verified.authenticatedTools)
-        throw new Error('host_enable_required');
-    return verified;
-}
-/** Shared native approval wait; a configured/connected listing never invents server account evidence. */
-export async function waitForHost(adapter, target, host, deps, recorded, command) {
-    if (command === 'update' || command === 'repair') {
-        let status = await adapter.verify(target);
-        if (!status.trustPending && !status.trustDeclined && status.enableRequired) {
-            const instruction = await adapter.enable?.();
-            if (instruction)
-                deps.instruction?.(instruction);
-            status = await adapter.verify(target);
-        }
-        if (status.trustDeclined)
-            throw new Error('codex_trust_declined');
-        if (status.trustPending)
-            return status;
-        if (status.enableRequired)
-            throw new Error('host_enable_required');
-        if (!status.declarationPresent)
-            throw new Error(target.component === 'hooks' ? 'hooks_missing' : 'mcp_declaration_missing');
-        // runHosts has already checked the hook component credential before applying files.
-        if (target.component === 'hooks')
-            return status;
-        if (!deps.grants)
-            throw new Error('host_grant_unverified');
-        if (!recorded) {
-            // Nothing recorded for this target: hosts that sign in on their own (Cursor Desktop) leave
-            // the grant to adopt from the account listing. One listing, one match, no launch, no wait.
-            if (!deps.account)
-                throw new Error('host_account_mismatch');
-            status = await finishMcpTarget(adapter, target, deps, status);
-            if (!status.authenticatedTools)
-                throw new Error('host_grant_unverified');
-            try {
-                const matched = await matchHostGrant(status, host, deps.account, deps.grants, (deps.now ?? Date.now)(), undefined, deps.approveHost, 'recovered');
-                if (matched.grant?.installationId)
-                    return matched;
-            }
-            catch (error) {
-                if (error instanceof Error && error.message === 'host_connection_pending')
-                    throw new Error('host_grant_unverified');
-                throw error;
-            }
-            throw new Error('host_grant_unverified');
-        }
-        const listing = await deps.grants.list();
-        if (!deps.account || listing.account !== deps.account || recorded.account !== deps.account)
-            throw new Error('host_account_mismatch');
-        const live = listing.grants.find((grant) => grant.id === recorded.id &&
-            grantHost(grant) === host &&
-            grant.resource === `${apiOrigin()}/mcp` &&
-            !!grant.activatedAt &&
-            grant.scopes.includes('mcp:use') &&
-            (!grant.deviceInstallationId ||
-                grant.deviceInstallationId === listing.deviceInstallationId) &&
-            (!recorded.installationId || recorded.installationId === listing.deviceInstallationId));
-        if (!live)
-            throw new Error('host_grant_unverified');
-        return { ...status, grant: { ...recorded, scopes: live.scopes } };
-    }
-    for (;;) {
-        const now = deps.now ?? Date.now;
-        const attemptStartedAt = now();
-        let signedIn = false;
-        let waitingForActivation = false;
-        // A recorded grant the server no longer lists is dead (revoked, expired, or refused with
-        // invalid_grant). Waiting for it to reappear can only time out; the host must sign in again.
-        let staleRecord = false;
-        const match = async (status, approvalMode = 'all') => {
-            const grants = deps.grants;
-            if (!grants)
-                return status;
-            try {
-                return await matchHostGrant(status, host, deps.account, grants, attemptStartedAt, recorded, deps.approveHost, approvalMode);
-            }
-            catch (error) {
-                if (!(error instanceof Error) || error.message !== 'host_connection_pending')
-                    throw error;
-                if (approvalMode === 'recovered' && recorded) {
-                    staleRecord = true;
-                    deps.instruction?.(`${hostLabels[host]} is no longer signed in to Mnemonik; starting a new sign-in.`);
-                    return undefined;
-                }
-                if (!waitingForActivation && !staleRecord)
-                    deps.instruction?.(`${host === 'codex' ? 'Codex' : host} is still finishing its connection.`);
-                waitingForActivation = true;
-                return undefined;
-            }
-        };
-        if (target.component === 'mcp' && deps.grants) {
-            const status = await finishMcpTarget(adapter, target, deps, await adapter.verify(target));
-            if (status.declarationPresent && status.authenticatedTools) {
-                const matched = await match(status, 'recovered');
-                if (matched?.grant?.installationId)
-                    return matched;
-                signedIn = !staleRecord && (waitingForActivation || !!matched?.grant);
-            }
-        }
-        if (target.component === 'mcp' &&
-            adapter.capabilities().nativeConnect &&
-            deps.grants &&
-            !signedIn &&
-            !staleRecord) {
-            const status = await deps.grants.list();
-            if (!deps.account || status.account !== deps.account)
-                throw new Error('host_account_mismatch');
-            signedIn = status.grants.some((grant) => grantHost(grant) === host &&
-                grant.resource === `${apiOrigin()}/mcp` &&
-                !!grant.activatedAt &&
-                grant.scopes.includes('mcp:use'));
-        }
-        const instruction = target.component === 'mcp' && !waitingForActivation
-            ? await adapter.launch({ signedIn: signedIn && !staleRecord })
-            : '';
-        if (instruction)
-            deps.instruction?.(instruction);
-        const deadline = now() + 120_000;
-        while (now() < deadline) {
-            const status = target.component === 'mcp'
-                ? await finishMcpTarget(adapter, target, deps, await adapter.verify(target))
-                : await adapter.verify(target);
-            if (status.trustDeclined)
-                throw new Error('codex_trust_declined');
-            if (status.trustPending)
-                return status;
-            if (status.declarationPresent &&
-                (target.component === 'hooks' || status.authenticatedTools)) {
-                if (target.component === 'hooks')
-                    return status;
-                if (!deps.grants)
-                    throw new Error('host_grant_unverified');
-                try {
-                    const matched = await match(status);
-                    if (matched)
-                        return matched;
-                }
-                catch (error) {
-                    deps.instruction?.(`Sign out of Mnemonik in ${host}, then run mnemonik connect ${host}.`);
-                    throw error;
-                }
-            }
-            await (deps.sleep ?? delay)(Math.max(0, Math.min(2000, deadline - now())));
-        }
-        if (host === 'cursor' && instruction)
-            deps.instruction?.(instruction);
-        deps.instruction?.(`mnemonik connect ${host}: retry or skip this host for now.`);
-        if ((await deps.timeout?.(host)) !== 'retry')
-            throw new Error('host_verification_timeout');
-    }
-}
 export async function revokeHostGrants(host, deps, grantId) {
     if (!deps.grants)
         throw new Error('host_grant_unverified');
@@ -1095,71 +795,24 @@ export async function logoutHost(host, deps) {
 }
 /** Resume one concrete profile under the ownership lease, with no config/runtime plan or stage. */
 export async function connectHost(selection, deps) {
-    return withInstall(deps.stateDir, {
-        account: deps.account,
-        hosts: [selection.host],
-        components: ['mcp'],
-        scopes: {},
-        roots: [],
-        credentials: [],
-    }, undefined, async (journal) => {
-        const now = deps.now ?? Date.now;
-        const startedAt = now();
-        const current = (await readOwnership(deps.stateDir)).targets.find((t) => t.id === selection.id);
-        if (!current || current.component !== 'mcp')
-            throw new Error('no_recorded_targets');
-        const store = new RuntimeStore(deps.stateDir);
-        const runtime = await store.verifyRuntime(current.host);
-        const target = targetFor(current, runtime, store);
-        const adapter = (await (deps.imports ?? hostPackageImports)[current.host](runtime)).createHostAdapter({ target, env: environment(current, deps.env) });
-        let reason = 'hooks_not_verified';
-        let status = 'LIMITED';
-        // The recorded grant survives an attempt that binds nothing: status reads a missing grant as
-        // a sign-in that never happened, not as a binding to reconnect.
-        const candidate = { ...current };
-        const run = { id: current.id, host: current.host, status: 'verified', candidate };
-        try {
-            const inspection = await waitForHost(adapter, target, current.host, deps, current.grant);
-            if (deps.grants) {
-                const listing = await deps.grants.list();
-                if (listing.account !== deps.account)
-                    throw new Error('host_account_mismatch');
-                await bindInstalledHostGrants(listing, [current.host], deps.grants);
-            }
-            if (inspection.grant)
-                run.candidate = { ...candidate, grant: inspection.grant };
-            if (inspection.grant?.installationId) {
-                status = 'READY';
-                reason = 'connected to this machine';
-            }
-            else
-                reason = 'host_grant_unbound';
-        }
-        catch (error) {
-            reason = error instanceof Error ? error.message : 'host_verification_timeout';
-            status = 'ACTION_REQUIRED';
-        }
-        await saveOwnership(deps.stateDir, journal, run);
-        journal.data.phase = 'complete';
-        journal.data.state = status;
-        run.elapsedMs = Math.max(0, now() - startedAt);
-        journal.data.hostRuns = [run];
-        await journal.event('complete');
-        return {
-            target: current.id,
-            elapsedMs: run.elapsedMs,
-            status,
-            reason,
-            ...(status === 'ACTION_REQUIRED'
-                ? {
-                    action: reason === 'installation_required'
-                        ? 'Run mnemonik install first.'
-                        : reason === 'host_account_mismatch'
-                            ? `Sign out of Mnemonik in ${current.host} profile ${current.profilePath}, then run mnemonik connect ${current.host}.`
-                            : `Run mnemonik connect ${current.host}.`,
-                }
-                : {}),
-        };
-    }, deps.fault);
+    const now = deps.now ?? Date.now;
+    const startedAt = now();
+    const current = (await readOwnership(deps.stateDir)).targets.find((t) => t.id === selection.id);
+    if (!current || current.component !== 'mcp')
+        throw new Error('no_recorded_targets');
+    const store = new RuntimeStore(deps.stateDir);
+    const runtime = await store.verifyRuntime(current.host);
+    const target = targetFor(current, runtime, store);
+    const adapter = (await (deps.imports ?? hostPackageImports)[current.host](runtime)).createHostAdapter({ target, env: environment(current, deps.env) });
+    // Keep native login behind this single boundary; a later SSH relay can replace the invocation.
+    const instruction = await adapter.launch();
+    if (instruction)
+        deps.instruction?.(instruction);
+    return {
+        target: current.id,
+        elapsedMs: Math.max(0, now() - startedAt),
+        status: 'READY',
+        reason: 'native_login',
+    };
 }
 //# sourceMappingURL=hosts.js.map

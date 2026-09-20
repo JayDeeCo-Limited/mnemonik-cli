@@ -139,8 +139,6 @@ it('CLI installs the three launch-host adapters with planned bytes, verified ent
       'claude-code,codex,cursor',
       '--components',
       'hooks',
-      '--integration-scope',
-      'user',
       '--non-interactive',
       '--accept-limited',
       '--apply',
@@ -202,7 +200,9 @@ it('CLI installs the three launch-host adapters with planned bytes, verified ent
         bytes.includes(Buffer.from(pathToFileURL(entry).href).toString('base64url'))
     ).toBe(true);
   }
-  expect(stdout.join('')).toContain('hooks_not_verified');
+  expect(stdout.join('')).toContain(
+    'use its hook trust prompt to allow the Mnemonik hooks; then quit and reopen Codex'
+  );
 }, 60_000);
 
 it('corrupt runtime fails before adapter plan and leaves config and current untouched', async () => {
@@ -361,33 +361,17 @@ it('updates independently with mixed digests and unchanged Codex command on corr
   }
   expect(await readFile(codex.profilePath)).toEqual(codexBytes);
   expect(result.results.find((r) => r.target === codex.id)!.reason).toBe('digest_mismatch');
-  expect(result.results.filter((r) => r.status === 'LIMITED')).toHaveLength(3);
+  expect(result.results.filter((r) => r.status === 'READY')).toHaveLength(3);
   expect(result.reports.some((r) => r.includes('shared runtime'))).toBe(true);
 }, 120_000);
 
-it('migration verifies project first, recovers interruption without losing both scopes', async () => {
+it('installs editor entries at user level even when a project selection reaches the host boundary', async () => {
   const f = await fixture();
-  const user = f.selections[0]!;
-  await runHosts('install', [user], f.deps);
-  const userPath = (await readOwnership(f.deps.stateDir)).targets[0]!.profilePath;
-  const projectPath = join(f.projectRoot, '.claude', 'settings.json');
-  f.deps.fault = async (event) => {
-    if (event === 'host_observed') {
-      expect(await readFile(userPath, 'utf8')).toContain('mnemonik');
-      expect(await readFile(projectPath, 'utf8')).toContain('mnemonik');
-      throw new Error('interrupt_migration');
-    }
-  };
-  await expect(runHosts('install', [{ ...user, scope: 'project' }], f.deps, true)).rejects.toThrow(
-    'interrupt_migration'
-  );
-  f.deps.fault = undefined;
-  await runHosts('install', [{ ...user, scope: 'project' }], f.deps, true);
-  expect(await readFile(projectPath, 'utf8')).toContain('mnemonik');
-  expect(await readFile(projectPath, 'utf8')).toContain('mnemonik');
-  await expect(readFile(userPath)).rejects.toMatchObject({ code: 'ENOENT' });
-  expect((await readOwnership(f.deps.stateDir)).targets.map((t) => t.scope)).toEqual(['project']);
-}, 120_000);
+  await runHosts('install', [{ ...f.selections[0]!, scope: 'project' }], f.deps);
+  const [target] = (await readOwnership(f.deps.stateDir)).targets;
+  expect(target?.scope).toBe('user');
+  expect(target?.profilePath).not.toContain(f.projectRoot);
+}, 60_000);
 
 it('stale ownership generation refuses rollback without changing any target', async () => {
   const f = await fixture();

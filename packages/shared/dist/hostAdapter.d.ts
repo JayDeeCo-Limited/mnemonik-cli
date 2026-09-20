@@ -10,6 +10,8 @@ export interface Target {
     runtimeRoot: string;
     /** Non-secret hook component family recorded by the CLI installer. */
     credentialFamily: string;
+    /** Machine identity written only to user-scope MCP declarations. */
+    installationId?: string;
     /** Config paths known to have been absent before Mnemonik first wrote them. */
     createdFiles?: string[];
     /** Verified first-install config backups supplied by the ownership journal. */
@@ -116,6 +118,7 @@ export declare function createFileHostAdapter(deps: AdapterDependencies, host: {
         path(target: Target): string;
         format: 'json' | 'toml';
         type?: 'http';
+        headerKey?: 'headers' | 'http_headers';
     };
     nativeConnect?: boolean;
     nativeListing?: boolean;

@@ -1,5 +1,8 @@
 import { RuntimeStore } from './store.js';
-export declare function updateCli(store: RuntimeStore): Promise<{
+export declare function updateCli(store: RuntimeStore, options?: {
+    fetcher?: typeof fetch;
+    releaseKey?: string;
+}): Promise<{
     status: 'NOT_INSTALLED' | 'UP_TO_DATE' | 'UPDATED' | 'FAILED';
     oldVersion?: string;
     newVersion?: string;

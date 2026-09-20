@@ -12,8 +12,6 @@ export type ReadinessConditionKind =
   | 'scanner_not_verified'
   | 'hook_not_verified'
   | 'hooks_missing'
-  | 'host_grant_unbound'
-  | 'host_not_connected'
   | 'scanner_omitted'
   | 'project_uncovered'
   | 'host_skipped'
@@ -177,8 +175,6 @@ const stateFor: Record<ReadinessConditionKind, Exclude<ReadinessState, 'READY'>>
   scanner_not_verified: 'LIMITED',
   hook_not_verified: 'LIMITED',
   hooks_missing: 'ACTION_REQUIRED',
-  host_grant_unbound: 'LIMITED',
-  host_not_connected: 'LIMITED',
   scanner_omitted: 'LIMITED',
   project_uncovered: 'LIMITED',
   host_skipped: 'LIMITED',
@@ -195,8 +191,6 @@ const rank: Record<ReadinessState, number> = {
 };
 
 function defaultAction(condition: ReadinessCondition): string | undefined {
-  if (condition.kind === 'host_skipped' && condition.component)
-    return `Connect it later: mnemonik connect ${condition.component}`;
   if (condition.kind === 'windows_task_creation_failed')
     return 'Run mnemonik scanner enable to try again.';
   return condition.action;
@@ -225,8 +219,7 @@ export function remainingReadinessCount(summary: ReadinessSummary): number {
 }
 
 export function describeReadiness(summary: ReadinessSummary): string {
-  if (summary.state === 'READY')
-    return 'Done. Your editors will use Mnemonik on their next session.';
+  if (summary.state === 'READY') return 'Done.';
   const count = remainingReadinessCount(summary);
   const opening =
     summary.state === 'FAILED'

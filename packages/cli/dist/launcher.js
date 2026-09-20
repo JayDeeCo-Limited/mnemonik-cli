@@ -2,7 +2,7 @@ import { spawn as nodeSpawn } from 'node:child_process';
 import { mkdir, open, realpath, rm } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, isAbsolute, join, resolve } from 'node:path';
-import { appendWindowsPath, atomicWrite, readWindowsUserPath, removeWindowsPathEntry, stateDirectory, windowsPathIncludes, withLock, writeWindowsUserPath, } from '@mnemonik/local-setup';
+import { appendWindowsPath, atomicWrite, cliLauncherPath, readWindowsUserPath, removeWindowsPathEntry, stateDirectory, windowsPathIncludes, withLock, writeWindowsUserPath, } from '@mnemonik/local-setup';
 import { bytesAt } from './install/journal.js';
 const fallback = 'npx -y @mnemonik/cli@latest';
 const marker = '--mnemonik-owner=cli';
@@ -22,7 +22,7 @@ function locations(options) {
         env,
         directory,
         state,
-        path: join(directory, platform === 'win32' ? 'mnemonik.cmd' : 'mnemonik'),
+        path: cliLauncherPath({ platform, home, env }),
         entry: join(state, 'runtimes', 'bootstrap', 'dist', 'bin.js'),
         record: join(state, 'launcher.json'),
     };

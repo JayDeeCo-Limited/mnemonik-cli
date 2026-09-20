@@ -1,4 +1,3 @@
-  Your editors are connected. The scanner could not be installed.
+  Background indexing could not be started.
   Windows could not create the logon task: Access is denied.
-  Run mnemonik scanner enable to try again.
-
+  Run mnemonik install to try again.

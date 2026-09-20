@@ -13,6 +13,7 @@ import {
   runDeviceFlow,
   runPkce,
 } from '../src/auth/index.js';
+import { signedInPage } from '../src/auth/pkce.js';
 import { DEVICE_WARNING } from '../src/auth/device.js';
 
 vi.mock('node:crypto', async (importOriginal) => {
@@ -65,6 +66,50 @@ async function localhostResponse(url: URL): Promise<number> {
 }
 
 describe('PKCE loopback flow', () => {
+  it('always prints the browser fallback link and serves the branded completion page', async () => {
+    const printed: string[] = [];
+    let page = '';
+    await runPkce({
+      issuer,
+      resource,
+      scopes: CLI_SCOPES,
+      clientId,
+      print: (line) => printed.push(line),
+      fetch: vi.fn(async () => token()) as typeof fetch,
+      openBrowser: async (url) => {
+        const authorize = new URL(url);
+        const response = await fetch(
+          `${authorize.searchParams.get('redirect_uri')}?code=done&state=${authorize.searchParams.get('state')}&iss=${issuer}`
+        );
+        page = await response.text();
+      },
+    });
+    expect(printed).toEqual([
+      'If your browser did not open, open this link:',
+      expect.stringMatching(/^https:\/\/auth\.mnemonik\.ai\/oauth\/authorize\?/u),
+    ]);
+    await vi.waitFor(() => expect(page).toBe(signedInPage));
+    expect(page).toContain('Mnemonik');
+    expect(page).toContain("You're signed in.");
+    expect(page).toContain('You can close this tab and return to your terminal.');
+    expect(page).toContain('class="au-wrap"');
+    expect(page).toContain('class="au-glow"');
+    expect(page).toContain('class="au-grid"');
+    expect(page).toContain('class="au-card"');
+    expect(page).toContain('class="au-panel"');
+    expect(page).toContain('class="cst green">Authorized');
+    expect(page).toContain('viewBox="0 0 1012.45 151.93"');
+    expect(page.match(/<path /gu)).toHaveLength(13);
+    expect(page.match(/<rect /gu)).toHaveLength(1);
+    expect(page).toContain('background: #07080c');
+    expect(page).toContain('color: #ECEEF5');
+    expect(page).toContain('background: #11141c');
+    expect(page).toContain('rgba(99, 91, 255, .16)');
+    expect(page).toContain('rgba(74, 222, 128, .09)');
+    expect(page.match(/data:font\/woff2;base64,/gu)).toHaveLength(3);
+    expect(page).not.toMatch(/<script|https?:\/\//u);
+  });
+
   it('binds before opening, refuses callback mix-ups, exchanges once, and closes', async () => {
     const events: string[] = [];
     let redirect!: URL;

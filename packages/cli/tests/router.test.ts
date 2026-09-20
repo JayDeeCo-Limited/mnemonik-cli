@@ -87,6 +87,15 @@ describe('command router', () => {
     }
   });
 
+  it('advertises add and remove while keeping roots as a hidden alias', async () => {
+    const f = fixture();
+    expect(await runCli(['--help'], f.deps)).toBe(0);
+    expect(f.stdout.text).toContain('add <folder>');
+    expect(f.stdout.text).toContain('remove <folder>');
+    expect(f.stdout.text).toContain('--accept-indexing');
+    expect(f.stdout.text).not.toMatch(/\b(?:scanner|roots)\b/iu);
+  });
+
   it('rejects the unimplemented scanner preview subcommand and omits it from help', async () => {
     const f = fixture();
     expect(await runCli(['scanner', 'preview'], f.deps)).toBe(2);
@@ -136,7 +145,7 @@ describe('command router', () => {
   });
   it.each([
     ['install', '--json', '--non-interactive', '--accept-scanner', '--apply'],
-    ['connect', 'codex', '--json', '--non-interactive', '--approve-host'],
+    ['connect', 'codex', '--json', '--non-interactive'],
     ['project', 'init', '--json', '--non-interactive', '--apply'],
     ['project', 'setup', '--json', '--non-interactive', '--apply'],
     ['project', 'status', '--json', '--non-interactive'],
@@ -196,10 +205,9 @@ describe('command router', () => {
   });
 
   it.each([
-    { args: ['install', '--non-interactive'], flag: '--accept-scanner' },
-    { args: ['connect', 'cursor', '--non-interactive'], flag: '--approve-host' },
+    { args: ['install', '--non-interactive'], flag: '--accept-indexing' },
     { args: ['project', 'init', '--non-interactive'], flag: '--apply' },
-    { args: ['scanner', 'enable', '--non-interactive'], flag: '--accept-scanner' },
+    { args: ['scanner', 'enable', '--non-interactive'], flag: '--accept-indexing' },
     { args: ['uninstall', '--non-interactive'], flag: '--confirm' },
   ])('names a missing non-interactive consent flag', async ({ args, flag }) => {
     const f = fixture();
@@ -226,7 +234,7 @@ describe('command router', () => {
       schemaVersion: 1,
       installation: {
         state: 'LIMITED',
-        reasons: ['scanner_not_verified'],
+        reasons: ['background_indexing_not_verified'],
       },
       scanner: null,
     });
@@ -267,7 +275,8 @@ describe('command router', () => {
       detail: 'not a project',
     });
     expect(await runCli(['status'], omitted.deps)).toBe(3);
-    expect(omitted.stdout.text).toContain('scanner_not_verified');
+    expect(omitted.stdout.text).toContain('The scanner has not checked in yet.');
+    expect(omitted.stdout.text).not.toContain('background_indexing_not_verified');
     expect(omitted.stdout.text).not.toContain('hooks are not installed.');
 
     const trust = fixture();
@@ -281,8 +290,9 @@ describe('command router', () => {
     ];
     expect(await runCli(['status'], trust.deps)).not.toBe(0);
     expect(trust.stdout.text).toContain(
-      'Run the codex command in a terminal, enter /hooks, and trust the Mnemonik hooks; then quit and reopen Codex.'
+      'Open Codex, allow the Mnemonik hooks, then quit and reopen Codex.'
     );
+    expect(trust.stdout.text).not.toContain('codex_trust_pending');
   });
 
   it('reports a repository discovered after install as not set up with one action', async () => {
@@ -296,7 +306,7 @@ describe('command router', () => {
     expect(f.stdout.text).toContain(
       '/work/later  Not set up yet - mnemonik project init /work/later\n'
     );
-    expect(f.stdout.text).toContain('Done. Your editors will use Mnemonik on their next session.');
+    expect(f.stdout.text).toContain('Done.');
   });
 
   it('status posts its canonical document only when signed in', async () => {
@@ -348,7 +358,7 @@ describe('command router', () => {
     expect(isReadinessDocument(posted)).toBe(true);
   });
 
-  it.each(['update', 'repair'])(
+  it.each(['repair'])(
     '%s posts after its terminal result without replacing stdout',
     async (command) => {
       const f = fixture();
@@ -442,14 +452,12 @@ it('forced install reopen reports an active session without starting authorizati
   expect(deps.grantFetch).toHaveBeenCalledOnce();
 });
 
-it('connect --approve-host persists the server installation and repeating connect is a no-op success', async () => {
+it('connect runs only the editor native login', async () => {
   const { mkdtemp, writeFile, rm } = await import('node:fs/promises');
   const { tmpdir } = await import('node:os');
   const { join } = await import('node:path');
   const { RuntimeStore } = await import('../src/runtime/store.js');
   const { SimulatedHostAdapter } = await import('../src/install/adapters.js');
-  const { readOwnership } = await import('../src/install/ownership.js');
-  const { grantTransport } = await import('../src/auth/status.js');
   const stateDir = await mkdtemp(join(tmpdir(), 'connect-host-'));
   const verified = vi
     .spyOn(RuntimeStore.prototype, 'verifyRuntime')
@@ -484,89 +492,28 @@ it('connect --approve-host persists the server installation and repeating connec
       version: '1',
       artifactDigest: 'a',
     });
-    adapter.verify = async () => ({ declarationPresent: true, authenticatedTools: true });
     adapter.launch = vi.fn(async () => 'native login');
-    const imports = {
-      codex: async () => ({ createHostAdapter: () => adapter }),
-      'claude-code': async () => ({ createHostAdapter: () => adapter }),
-      cursor: async () => ({ createHostAdapter: () => adapter }),
-      grok: async () => ({ createHostAdapter: () => adapter }),
+    const grants = {
+      list: vi.fn(async () => {
+        throw new Error('must not poll grants');
+      }),
     };
-    let installation: string | null = null;
-    let renewed = false;
-    let renewedInstallation: string | null = null;
-    const approval = vi.fn((id: string) => {
-      if (id === 'renewed') renewedInstallation = 'machine-a';
-      else installation = 'machine-a';
-      return Response.json({ id, deviceInstallationId: 'machine-a' });
-    });
-    const grants = grantTransport(
-      async () => 'cli',
-      async (url, init) =>
-        init?.method === 'POST'
-          ? approval(new URL(String(url)).pathname.split('/').at(-2)!)
-          : Response.json({
-              account: 'owner',
-              deviceInstallationId: 'machine-a',
-              grants: [
-                {
-                  id: 'cli',
-                  clientId: 'cli',
-                  clientName: null,
-                  softwareId: null,
-                  resource: 'https://api.mnemonik.dev/',
-                  scopes: ['install:manage', 'components:manage'],
-                  createdAt: '2026-01-01T00:00:00Z',
-                  activatedAt: null,
-                  lastUsedAt: null,
-                  deviceInstallationId: 'machine-a',
-                },
-                {
-                  id: 'native',
-                  clientId: 'https://chatgpt.com/oauth/codex/client.json',
-                  clientName: null,
-                  softwareId: null,
-                  resource: 'https://api.mnemonik.dev/mcp',
-                  scopes: ['mcp:use'],
-                  createdAt: new Date().toISOString(),
-                  activatedAt: new Date().toISOString(),
-                  lastUsedAt: null,
-                  deviceInstallationId: installation,
-                },
-                ...(renewed
-                  ? [
-                      {
-                        id: 'renewed',
-                        clientId: 'https://chatgpt.com/oauth/codex/client.json',
-                        clientName: null,
-                        softwareId: null,
-                        resource: 'https://api.mnemonik.dev/mcp',
-                        scopes: ['mcp:use'],
-                        createdAt: new Date().toISOString(),
-                        activatedAt: new Date().toISOString(),
-                        lastUsedAt: null,
-                        deviceInstallationId: renewedInstallation,
-                      },
-                    ]
-                  : []),
-              ],
-            })
-    );
-    const { deps } = fixture();
-    deps.hostManagement = { stateDir, account: 'owner', imports, grants, now: () => 0 };
-    for (let i = 0; i < 2; i++) {
-      expect(await runCli(['connect', 'codex', '--approve-host', '--json'], deps)).toBe(0);
-      renewed = true;
-    }
-    expect(renewedInstallation).toBe('machine-a');
-    expect((await readOwnership(stateDir)).targets[0]?.grant).toEqual({
-      id: 'native',
+    const { deps, stdout } = fixture();
+    deps.hostManagement = {
+      stateDir,
       account: 'owner',
-      scopes: ['mcp:use'],
-      installationId: 'machine-a',
-    });
-    expect(approval).toHaveBeenCalledTimes(2);
-    expect(adapter.launch).toHaveBeenCalledTimes(1);
+      imports: {
+        codex: async () => ({ createHostAdapter: () => adapter }),
+        'claude-code': async () => ({ createHostAdapter: () => adapter }),
+        cursor: async () => ({ createHostAdapter: () => adapter }),
+        grok: async () => ({ createHostAdapter: () => adapter }),
+      },
+      grants: grants as never,
+    };
+    expect(await runCli(['connect', 'codex'], deps)).toBe(0);
+    expect(adapter.launch).toHaveBeenCalledOnce();
+    expect(grants.list).not.toHaveBeenCalled();
+    expect(stdout.text).toContain('native login');
   } finally {
     verified.mockRestore();
     await rm(stateDir, { recursive: true, force: true });

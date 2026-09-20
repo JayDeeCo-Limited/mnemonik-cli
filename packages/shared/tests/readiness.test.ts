@@ -13,7 +13,6 @@ const cases: Array<[ReadinessCondition, ReadinessState]> = [
   [{ kind: 'host_trust_pending', reason: 'Approve Cursor.' }, 'ACTION_REQUIRED'],
   [{ kind: 'vendor_policy_pending', reason: 'Allow the extension.' }, 'ACTION_REQUIRED'],
   [{ kind: 'hooks_missing', reason: 'Hook declaration is missing.' }, 'ACTION_REQUIRED'],
-  [{ kind: 'host_not_connected', reason: 'Codex has not connected.' }, 'LIMITED'],
   [{ kind: 'scanner_omitted', reason: 'Scanner was omitted.' }, 'LIMITED'],
   [{ kind: 'project_uncovered', reason: 'Project is outside approved roots.' }, 'LIMITED'],
   [{ kind: 'post_commit_upload_failed', reason: 'Result upload failed.' }, 'FAILED'],
@@ -100,7 +99,7 @@ test('the CLI sentence names the concrete reason and action', () => {
         },
       ])
     ),
-    'Done, with one thing left. Cursor was skipped. Connect it later: mnemonik connect cursor'
+    'Done, with one thing left. Cursor was skipped.'
   );
 });
 

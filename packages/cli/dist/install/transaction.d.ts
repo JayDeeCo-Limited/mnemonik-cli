@@ -5,9 +5,8 @@ import { type ScannerPickerResult } from '../scanner/picker.js';
 import { type HostAdapter, type HostName, type Target } from './adapters.js';
 import { type Consent, type Journal, type MutationKind, type NewInstall } from './journal.js';
 export interface InstallUI {
-    batch(hosts: HostName[]): Promise<'connect' | 'cancel'>;
-    waiting(host: HostName | 'scanner service' | 'scanner heartbeat'): void;
-    timeout(host: HostName | 'scanner service' | 'scanner heartbeat'): Promise<'retry' | 'skip' | 'cancel'>;
+    waiting(host: 'scanner service' | 'scanner heartbeat'): void;
+    timeout(host: 'scanner service' | 'scanner heartbeat'): Promise<'retry' | 'skip' | 'cancel'>;
     roots(): Promise<{
         picked: ScannerPickerResult;
         account: string;

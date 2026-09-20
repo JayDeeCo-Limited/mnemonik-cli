@@ -1,6 +1,6 @@
 import { createInterface } from 'node:readline';
-import { lstat, readdir, realpath } from 'node:fs/promises';
-import { join, posix } from 'node:path';
+import { readdir, realpath } from 'node:fs/promises';
+import { posix } from 'node:path';
 import type { Readable } from 'node:stream';
 import type { EnsureOptions, SetupResult } from '@mnemonik/local-setup';
 import {
@@ -9,12 +9,15 @@ import {
   protectedPathsWithinRoot,
 } from '@mnemonik/shared';
 import type { Output } from '../output.js';
-import { evaluateRoot } from '../project/eligibility.js';
+import { evaluateRoot, repositoryAt } from '../project/eligibility.js';
 import {
   classifyRepository,
   discoverRepositories,
+  guessDiscoveryBoundary,
   repositoryName,
   repositoryStateLabel,
+  scannerCandidates,
+  type ScannerCandidate,
   type DiscoveredRepository,
   type RepositoryState,
 } from './discover.js';
@@ -30,6 +33,8 @@ export interface ScannerPickerResult {
   roots: string[];
   exclusions: string[];
   repositories: PickerRepository[];
+  boundary?: string;
+  candidates?: ScannerCandidate[];
 }
 
 export type ScannerPickerRunResult =
@@ -55,11 +60,15 @@ type ScannerPickerCancellation = Extract<ScannerPickerRunResult, { status: 'canc
 export interface ScannerConsentDraft {
   roots: string[];
   exclusions: string[];
+  candidates?: ScannerCandidate[];
+  boundary?: string;
 }
 
 export const SCANNER_SELECTION_LIMIT = 32;
 export const SCANNER_SELECTION_LIMIT_MESSAGE =
   'You can leave out up to 32 repositories here. Choose a narrower folder, or watch only this project.';
+export const scannerBoundaryPrompt = (shown: string): string =>
+  `Where do your projects live? [${shown}]`;
 
 interface PickerOptions {
   input: Readable;
@@ -73,6 +82,62 @@ interface PickerOptions {
   platform?: NodeJS.Platform;
   home?: string;
   env?: NodeJS.ProcessEnv;
+}
+
+export async function runScannerBoundaryPicker(
+  options: PickerOptions
+): Promise<ScannerPickerResult> {
+  const readline = createInterface({ input: options.input, terminal: false });
+  const answers = readline[Symbol.asyncIterator]();
+  const canonicalize = options.canonicalizePath ?? realpath;
+  const home = options.home ?? process.env.HOME ?? '';
+  const guess = await guessDiscoveryBoundary(options.currentFolder, home);
+  const shown =
+    home && (guess === home || guess.startsWith(`${home}/`))
+      ? `~${guess.slice(home.length)}`
+      : guess;
+  options.output.line(scannerBoundaryPrompt(shown));
+  try {
+    const answer = String((await answers.next()).value ?? '').trim();
+    const boundary = await canonicalize(answer || guess);
+    const decision = await evaluateRoot(
+      { kind: 'absent', root: boundary, repository: await repositoryAt(boundary), nested: [] },
+      {
+        cwd: boundary,
+        home: options.home,
+        platform: options.platform,
+        env: options.env,
+        nonGitSelected: true,
+      }
+    );
+    if (!decision.allowed && decision.reason !== 'broad_workspace_parent')
+      throw new Error(decision.reason);
+    const protectedPaths =
+      options.protectedPaths ?? protectedLocalPaths(options.platform, options.env, options.home);
+    const enclosing = protectedPaths.find((path) =>
+      isProtectedLocalPath(boundary, [path], options.platform)
+    );
+    if (enclosing) throw new Error(`protected_path: ${enclosing}`);
+    const discovered = await scannerCandidates(boundary);
+    if (!discovered.candidates.length) throw new Error('no_projects_found');
+    const exclusions = protectedPathsWithinRoot(boundary, protectedPaths, options.platform);
+    if (exclusions.length > SCANNER_SELECTION_LIMIT)
+      throw new RangeError(SCANNER_SELECTION_LIMIT_MESSAGE);
+    return {
+      roots: [],
+      exclusions,
+      boundary: discovered.boundary,
+      candidates: discovered.candidates,
+      repositories: discovered.repositories.map(({ path, state, nonGitSelected }) => ({
+        path,
+        state,
+        selected: !nonGitSelected,
+        ...(nonGitSelected ? { nonGitSelected } : {}),
+      })),
+    };
+  } finally {
+    readline.close();
+  }
 }
 
 function writeChoices(output: Output, currentFolder: string): void {
@@ -151,17 +216,7 @@ export async function runScannerPicker(options: PickerOptions): Promise<ScannerP
       );
       return { status: 'cancelled', reason: 'temporary_directory' };
     }
-    const marker = await lstat(join(candidate, '.git')).catch(() => undefined);
-    const repository =
-      marker?.isDirectory() || marker?.isFile()
-        ? {
-            kind: 'git' as const,
-            root: candidate,
-            commonDir: join(candidate, '.git'),
-            isLinkedWorktree: false,
-            nested: [],
-          }
-        : { kind: 'plain' as const, root: candidate };
+    const repository = await repositoryAt(candidate);
     const decision = await evaluateRoot(
       {
         kind: 'absent',
@@ -313,7 +368,11 @@ export function consentDraft(picked: ScannerPickerResult): ScannerConsentDraft {
   ) {
     throw new RangeError(SCANNER_SELECTION_LIMIT_MESSAGE);
   }
-  return { roots: picked.roots, exclusions: picked.exclusions };
+  return {
+    roots: picked.roots,
+    exclusions: picked.exclusions,
+    ...(picked.candidates ? { candidates: picked.candidates, boundary: picked.boundary } : {}),
+  };
 }
 
 export const scannerRootsParameter = (picked: ScannerPickerResult): string =>

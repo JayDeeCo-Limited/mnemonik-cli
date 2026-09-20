@@ -15,6 +15,25 @@ async function canonical(path, platform) {
         return absolute;
     return realpath(path).catch(() => absolute);
 }
+/**
+ * Repository shape of a candidate root from what is on disk: a `.git` directory
+ * or file (a linked worktree) makes it a git repository; anything else is a
+ * plain folder. Every root-picking path must use this before evaluateRoot, so
+ * that a repository which happens to contain other repositories is never
+ * mistaken for a broad workspace parent.
+ */
+export async function repositoryAt(candidate) {
+    const marker = await lstat(join(candidate, '.git')).catch(() => undefined);
+    return marker?.isDirectory() || marker?.isFile()
+        ? {
+            kind: 'git',
+            root: candidate,
+            commonDir: join(candidate, '.git'),
+            isLinkedWorktree: false,
+            nested: [],
+        }
+        : { kind: 'plain', root: candidate };
+}
 async function broadWorkspace(root) {
     let repositories = 0;
     for (const entry of await readdir(root, { withFileTypes: true }).catch(() => [])) {

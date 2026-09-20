@@ -33,11 +33,15 @@ function decodeBase64(text: string, length: number): Buffer {
   return bytes;
 }
 
-async function verifyMinisign(path: string, signaturePath: string, identity: string) {
-  const [message, signatureText] = await Promise.all([
-    readFile(path),
-    readFile(signaturePath, 'utf8'),
-  ]);
+/** Pinned release identity; a downloaded manifest can never replace its own trust anchor. */
+export const RELEASE_MINISIGN_PUBLIC_KEY =
+  'RWSBYwgbjz0qKB4/ToA3dywBiAlQeBjoQpib4OHdjP2nDbpQnOVqpPm0';
+
+export function verifyMinisign(
+  message: Buffer,
+  signatureText: string,
+  identity = RELEASE_MINISIGN_PUBLIC_KEY
+): void {
   const publicPacket = decodeBase64(identity, 42);
   const lines = signatureText.trimEnd().split(/\r?\n/);
   const [untrustedComment, encodedSignature, trustedLine, encodedGlobalSignature] = lines;
@@ -79,6 +83,14 @@ async function verifyMinisign(path: string, signaturePath: string, identity: str
     throw new Error('unsigned');
 }
 
+async function verifyMinisignFile(path: string, signaturePath: string, identity: string) {
+  const [message, signatureText] = await Promise.all([
+    readFile(path),
+    readFile(signaturePath, 'utf8'),
+  ]);
+  verifyMinisign(message, signatureText, identity);
+}
+
 /** Release tooling supplies the real identity and artifacts. These checks do not sign anything. */
 export async function verifySigner(path: string, signer: Signer, run = execute): Promise<void> {
   if (signer.platform === 'darwin' && /^[A-Z0-9]{10}$/.test(signer.identity)) {
@@ -104,7 +116,7 @@ export async function verifySigner(path: string, signer: Signer, run = execute):
     ]);
   } else if (signer.platform === 'linux') {
     try {
-      await verifyMinisign(path, signer.signature, signer.identity);
+      await verifyMinisignFile(path, signer.signature, signer.identity);
     } catch {
       throw new Error('unsigned');
     }

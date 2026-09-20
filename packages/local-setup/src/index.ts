@@ -22,6 +22,7 @@ import {
 } from './storage.js';
 export * from './contracts.js';
 export * from './windowsPath.js';
+export * from './automaticUpdate.js';
 export {
   stateDirectory,
   recordPath,
@@ -147,7 +148,26 @@ export function createProjectSetupExecutor(deps: ExecutorDependencies) {
       const bytes = await readBytes(file);
       const diskHash = digest(bytes);
       const saved = await readBytes(path);
+      const freshRecord = (): SetupRecord => ({
+        schemaVersion: 1,
+        operationId: randomUUID(),
+        root,
+        scopeKey: hash(deps.scopeKey),
+        owner: options.owner,
+        ...(resolution.kind !== 'git_unavailable' &&
+        resolution.repository.kind === 'plain' &&
+        options.nonGitSelected
+          ? { nonGitSelected: true as const }
+          : {}),
+        ...(options.intent ? { intent: options.intent } : {}),
+        before: {
+          base64: bytes && bytes.length <= MAX_ORIGINAL_BYTES ? bytes.toString('base64') : null,
+          hash: diskHash,
+        },
+        steps: { remote: step(diskHash), identity: step(diskHash), rollback: step(diskHash) },
+      });
       let record: SetupRecord;
+      let recordIsNew = !saved;
       if (saved) {
         try {
           record = JSON.parse(saved.toString()) as SetupRecord;
@@ -193,35 +213,32 @@ export function createProjectSetupExecutor(deps: ExecutorDependencies) {
             JSON.stringify(record.owner) !== JSON.stringify(options.owner)) ||
           JSON.stringify(record.intent) !== JSON.stringify(options.intent)
         ) {
-          if (record.ignored) {
-            delete record.ignored;
-            await atomicWrite(
-              path,
-              Buffer.from(JSON.stringify(record, null, 2) + '\n'),
-              undefined,
-              assertOwned
-            );
+          const replaceable =
+            !record.remote &&
+            !record.staged &&
+            !record.steps.remote.started &&
+            !record.steps.identity.started &&
+            !record.steps.rollback.started &&
+            diskHash === record.before.hash;
+          if (replaceable) {
+            record = freshRecord();
+            recordIsNew = true;
+          } else {
+            if (record.ignored) {
+              delete record.ignored;
+              await atomicWrite(
+                path,
+                Buffer.from(JSON.stringify(record, null, 2) + '\n'),
+                undefined,
+                assertOwned
+              );
+            }
+            return actionRequired('operation_context_changed');
           }
-          return actionRequired('operation_context_changed');
         }
       } else {
         if (mode === 'apply' || mode === 'rollback') return actionRequired('record_missing');
-        record = {
-          schemaVersion: 1,
-          operationId: randomUUID(),
-          root,
-          scopeKey: hash(deps.scopeKey),
-          owner: options.owner,
-          ...(resolution.repository.kind === 'plain' && options.nonGitSelected
-            ? { nonGitSelected: true as const }
-            : {}),
-          ...(options.intent ? { intent: options.intent } : {}),
-          before: {
-            base64: bytes && bytes.length <= MAX_ORIGINAL_BYTES ? bytes.toString('base64') : null,
-            hash: diskHash,
-          },
-          steps: { remote: step(diskHash), identity: step(diskHash), rollback: step(diskHash) },
-        };
+        record = freshRecord();
       }
       if (resolution.repository.kind === 'plain' && record.nonGitSelected !== true) {
         return nonGitSelectionRequired();
@@ -282,7 +299,7 @@ export function createProjectSetupExecutor(deps: ExecutorDependencies) {
         (bytes && bytes.length > MAX_ORIGINAL_BYTES) ||
         (record.before.base64 === null && record.before.hash !== null)
       ) {
-        if (!saved) await save();
+        if (recordIsNew) await save();
         return actionRequired('identity_too_large');
       }
       if (record.ignored && record.ignored.identityHash !== diskHash) {
@@ -350,7 +367,7 @@ export function createProjectSetupExecutor(deps: ExecutorDependencies) {
         diskHash !== record.staged?.hash
       )
         return actionRequired('identity_changed');
-      if (!saved) await save(); // Operation ID and before-state MUST be durable before any remote request.
+      if (recordIsNew) await save(); // Operation ID and before-state MUST be durable before any remote request.
       if (record.evidence && JSON.stringify(record.evidence) !== JSON.stringify(evidence))
         return actionRequired('operation_context_changed');
       if (record.steps.identity.complete && mode === 'ensure' && record.remote) {

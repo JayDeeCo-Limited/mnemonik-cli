@@ -13,8 +13,6 @@ const BOUNDARY_KINDS = [
   'stage_intent',
   'stage_written',
   'staged',
-  'host_intent',
-  'host_observed',
   'consent_recorded',
   'project_staged',
   'commit_intent',
@@ -26,8 +24,8 @@ const BOUNDARY_KINDS = [
   'upload_finished',
 ] as const;
 const NON_BOUNDARY_KINDS = [
-  'host_launched',
-  'host_skipped',
+  'host_intent',
+  'host_observed',
   'roots_confirmed',
   'project_stage_intent',
   'projects_staged',
@@ -39,7 +37,6 @@ const NON_BOUNDARY_KINDS = [
   'project_restored',
   'restored',
   'credential_revoked',
-  'host_revoked',
   'compensation_finished',
   'reconciled',
 ] as const;
@@ -235,6 +232,7 @@ it('restores a real Cursor adapter after interruption at host commit', async () 
     credentialFamily: 'hook-family',
     runtimeEntry: runtime.entry,
     runtimeRoot: join(f.stateDir, 'runtimes', 'cursor'),
+    installationId: '11111111-1111-4111-8111-111111111111',
   };
   const adapter = createHostAdapter({
     target,
@@ -248,15 +246,6 @@ it('restores a real Cursor adapter after interruption at host commit', async () 
     declarationPresent: true,
     authenticatedTools: false,
   });
-  // The current CLI enriches Cursor's no-listing inspection from its activated account grant.
-  adapter.verify = async (input) => {
-    const inspection = await verifyDesktop(input);
-    return {
-      ...inspection,
-      authenticatedTools: inspection.declarationPresent,
-      grant: { id: 'grant-cursor', account: 'owner', scopes: ['mcp:use'] },
-    };
-  };
   f.install.adapters = [adapter];
   f.install.input.hosts = ['cursor'];
   f.install.targets = { cursor: target };

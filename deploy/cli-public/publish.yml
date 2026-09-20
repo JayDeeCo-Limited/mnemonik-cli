@@ -32,6 +32,9 @@ jobs:
           npm pack ./dist-package --json > pack.json
           tgz=$(node -p "require('./pack.json')[0].filename")
           tar -xOf "$tgz" package/package.json | node deploy/cli-public/lifecycle-gate.mjs
+          sudo apt-get update && sudo apt-get install -y minisign
+          minisign -Vm release-manifest.json -x release-manifest.json.minisig -P RWSBYwgbjz0qKB4/ToA3dywBiAlQeBjoQpib4OHdjP2nDbpQnOVqpPm0
+          node -e "const p=require('./pack.json')[0],m=require('./release-manifest.json'),e=m.packages?.['@mnemonik/cli']; if(m.schemaVersion!==1||m.version!==p.version||e?.version!==p.version||e.integrity!==p.integrity) process.exit(1)"
           sha256sum "$tgz" > cli-digests.txt
           MNEMONIK_STATE_DIR="$RUNNER_TEMP/cli-state" npm exec --yes --cache "$RUNNER_TEMP/cli-cache" --package "./$tgz" -- mnemonik --help
       - uses: actions/upload-artifact@v4
@@ -41,6 +44,8 @@ jobs:
             *.tgz
             pack.json
             cli-digests.txt
+            release-manifest.json
+            release-manifest.json.minisig
             dist-package/dist/sbom.json
       - name: Publish from public source with npm provenance
         if: inputs.dry_run != true && github.ref == 'refs/heads/main'

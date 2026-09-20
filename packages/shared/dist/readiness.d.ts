@@ -1,6 +1,6 @@
 export declare const READINESS_SCHEMA_VERSION: 1;
 export type ReadinessState = 'READY' | 'LIMITED' | 'ACTION_REQUIRED' | 'FAILED';
-export type ReadinessConditionKind = 'selected_component_failed' | 'host_trust_pending' | 'vendor_policy_pending' | 'login_pending' | 'restart_pending' | 'project_identity_choice_pending' | 'scanner_not_verified' | 'hook_not_verified' | 'hooks_missing' | 'host_grant_unbound' | 'host_not_connected' | 'scanner_omitted' | 'project_uncovered' | 'host_skipped' | 'windows_task_creation_failed' | 'post_commit_upload_failed' | 'indexing_failed' | 'indexing_stalled';
+export type ReadinessConditionKind = 'selected_component_failed' | 'host_trust_pending' | 'vendor_policy_pending' | 'login_pending' | 'restart_pending' | 'project_identity_choice_pending' | 'scanner_not_verified' | 'hook_not_verified' | 'hooks_missing' | 'scanner_omitted' | 'project_uncovered' | 'host_skipped' | 'windows_task_creation_failed' | 'post_commit_upload_failed' | 'indexing_failed' | 'indexing_stalled';
 export interface ReadinessCondition {
     kind: ReadinessConditionKind;
     component?: string;

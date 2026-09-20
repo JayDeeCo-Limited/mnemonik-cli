@@ -3,7 +3,6 @@ import { apiOrigin } from '@mnemonik/shared';
 import { scannerService, ScannerServiceLimited, } from '../scanner/service.js';
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
-import { setTimeout as delay } from 'node:timers/promises';
 import { recordPath } from '@mnemonik/local-setup';
 import { reviewScannerProjects } from '../scanner/picker.js';
 import { hostOrder } from './adapters.js';
@@ -80,24 +79,6 @@ async function retainProjects(journal, deps) {
     }
     await journal.save();
 }
-async function revokeHost(journal, deps, host) {
-    const adapter = adapterFor(deps, host);
-    const approval = journal.data.approvals[host];
-    const grant = approval?.observed;
-    let revoked = false;
-    if (grant && adapter.capabilities().revoke && adapter.revoke) {
-        try {
-            revoked = await adapter.revoke(grant);
-        }
-        catch {
-            /* Report retained effect below. */
-        }
-    }
-    if (revoked)
-        await journal.event('host_revoked', host);
-    else if (approval)
-        report(journal, `${host}: grant ${grant?.id ?? 'unattributed/possibly pending'} may remain. ${adapter.revokeAction}`);
-}
 export async function compensate(journal, deps, keepCli = false) {
     journal.data.phase = 'rolling_back';
     await journal.save();
@@ -157,8 +138,6 @@ export async function compensate(journal, deps, keepCli = false) {
     }
     else
         report(journal, 'Credentials retained until local rollback succeeds; retry rollback.');
-    for (const host of Object.keys(journal.data.approvals))
-        await revokeHost(journal, deps, host);
     await retainProjects(journal, deps);
     if (journal.data.mutations.some((m) => m.event === 'upload_intent'))
         report(journal, `Uploaded data is retained. ${deps.upload?.deletionAction ?? 'Delete the cloud index separately in the console.'}`);
@@ -171,15 +150,6 @@ export async function reconcile(journal, deps) {
     for (const { target, state } of states)
         if (state === 'conflict')
             report(journal, `Conflict: ${target.path} matches neither recorded hash; resolve before resume/rollback.`);
-    for (const host of Object.keys(journal.data.approvals)) {
-        const approval = required(journal.data.approvals[host]);
-        if (approval.observed || approval.skipped)
-            continue;
-        const inspection = await adapterFor(deps, host).inspect(deps.targets?.[host]);
-        const own = states.some((s) => s.target.host === host && s.state === 'proposed');
-        // Configuration ownership alone cannot prove ownership of an external grant.
-        report(journal, `${host}: ${own ? 'CLI-created declaration' : 'pre-existing or inactive declaration'}; grant ${inspection.grant?.id ?? 'unknown'} cannot be attributed after interruption. ${adapterFor(deps, host).revokeAction}`);
-    }
     await retainProjects(journal, deps);
     await journal.event('reconciled');
     return !states.some((s) => s.state === 'conflict');
@@ -213,9 +183,6 @@ export async function runInstall(deps, resume) {
                 return cancel();
             if (!clean || journal.data.phase === 'rolling_back')
                 return journal.data;
-            // A commit interrupted mid-flight must re-enter review/consent before proceeding.
-            if (journal.data.account !== deps.input.account)
-                report(journal, 'Account changed: existing host approvals require validation again.');
         }
         try {
             cancelled();
@@ -249,73 +216,6 @@ export async function runInstall(deps, resume) {
                 // Stage the captured plan, without invoking a second read/plan cycle.
                 for (const change of plan.changes)
                     await journal.stage(change);
-            }
-            if ((await deps.ui.batch(journal.data.hosts)) === 'cancel')
-                return cancel();
-            for (const host of hostOrder.filter((h) => journal.data.hosts.includes(h))) {
-                const adapter = adapterFor(deps, host);
-                const old = journal.data.approvals[host];
-                if (old?.observed?.account === deps.input.account)
-                    continue;
-                while (true) {
-                    cancelled();
-                    const attempt = (journal.data.approvals[host]?.intent.attempt ?? 0) + 1;
-                    journal.data.approvals[host] = {
-                        intent: {
-                            attempt,
-                            targets: journal.data.targets.filter((t) => t.host === host).map((t) => t.id),
-                        },
-                    };
-                    await event('host_intent', host);
-                    let accepted = false;
-                    try {
-                        const instruction = await adapter.launch();
-                        if (instruction)
-                            report(journal, `${host}: ${instruction}`);
-                        const now = deps.now ?? Date.now;
-                        const deadline = now() + 120_000;
-                        await event('host_launched', host);
-                        deps.ui.waiting(host);
-                        while (now() < deadline) {
-                            cancelled();
-                            const result = await adapter.verify(deps.targets?.[host]);
-                            if (result.authenticatedTools &&
-                                (!result.grant || result.grant.account === deps.input.account)) {
-                                if (result.grant) {
-                                    const { id, account, scopes } = result.grant;
-                                    required(journal.data.approvals[host]).observed = { id, account, scopes };
-                                }
-                                else
-                                    report(journal, `${host}: host_grant_unverified`);
-                                await event('host_observed', host);
-                                accepted = true;
-                                break;
-                            }
-                            await (deps.sleep ?? delay)(Math.min(2000, deadline - now()));
-                        }
-                    }
-                    catch (error) {
-                        if (deps.signal?.aborted || deps.fault)
-                            throw error;
-                        report(journal, `${host}: approval failed or was interrupted.`);
-                    }
-                    if (accepted)
-                        break;
-                    const choice = await deps.ui.timeout(host);
-                    if (choice === 'cancel')
-                        return cancel();
-                    if (choice === 'retry')
-                        continue;
-                    for (const target of journal.data.targets.filter((t) => t.host === host))
-                        await journal.restore(target);
-                    await revokeHost(journal, deps, host);
-                    required(journal.data.approvals[host]).skipped = true;
-                    journal.data.hosts = journal.data.hosts.filter((h) => h !== host);
-                    journal.data.state = 'LIMITED';
-                    report(journal, `${host} skipped. Connect it later: mnemonik connect ${host}`);
-                    await event('host_skipped', host);
-                    break;
-                }
             }
             while (true) {
                 cancelled();
@@ -449,7 +349,6 @@ export async function runInstall(deps, resume) {
                 !journal.data.hosts.length && !journal.data.components.includes('scanner')
                     ? 'FAILED'
                     : journal.data.state === 'LIMITED' ||
-                        Object.values(journal.data.approvals).some((a) => a?.skipped) ||
                         !journal.data.components.includes('scanner') ||
                         journal.data.reports.includes('scanner_not_verified') ||
                         journal.data.reports.includes('hook_not_verified')

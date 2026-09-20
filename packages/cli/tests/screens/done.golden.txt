@@ -1,3 +1,2 @@
-  Done. Your editors will use Mnemonik on their next session.
-  Indexing 240 files, 38 done. You can close this terminal.
-
+  ✓ Installed.
+  Your editors will ask you to sign in to Mnemonik the first time you use it.

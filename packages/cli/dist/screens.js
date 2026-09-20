@@ -14,24 +14,13 @@ export const interruptedScreen = {
     default: 0,
     owner: 'installation',
 };
-export const hostApprovalScreen = (hosts) => ({
-    id: 'host_approvals',
-    title: 'Connect your editors',
-    lines: [
-        'Mnemonik will connect these editors one at a time. Each opens its own approval, and each keeps its own sign-in.',
-        ...hosts.map((host) => `${host}    user scope    ${host === 'cursor' ? 'approve in Cursor, then return here' : 'approval opens here'}`),
-        'Up to 2 minutes each. You can skip any editor and connect it later.',
-    ],
-    choices: ['Connect them', 'Back'],
-    default: 0,
-});
 export const finalReviewScreen = (lines, scanner) => ({
     id: 'apply',
     title: 'Ready to install',
     lines: [
         ...lines,
         'Existing files are backed up and restored if local rollback succeeds.',
-        'Host grants and remote projects may remain. Uploaded data requires separate deletion.',
+        'Remote projects may remain. Uploaded data requires separate deletion.',
     ],
     choices: [scanner ? 'Install and upload' : 'Install in Limited Mode', 'Back', 'Cancel'],
     default: 0,
@@ -61,6 +50,8 @@ export function renderScreen(screen, output, width = 80) {
             output.line(`    ${part}`);
     if (screen.lines.length)
         output.line();
+    output.line('  Use the Up/Down arrow keys and Enter.');
+    output.line();
     screen.choices.forEach((choice, index) => {
         const marker = index === screen.default ? '>' : ' ';
         output.line(`  ${marker} ${index + 1}. ${choice}`);
@@ -69,5 +60,5 @@ export function renderScreen(screen, output, width = 80) {
 }
 export * from './scanner/discover.js';
 export * from './scanner/picker.js';
-export { renderJourney } from './screens/journey.js';
+export { journeyAnswers, renderCustomize, renderJourney } from './screens/journey.js';
 //# sourceMappingURL=screens.js.map

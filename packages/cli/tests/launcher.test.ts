@@ -510,11 +510,16 @@ it.each(['status', 'doctor'])(
         });
         text = '';
         await runCli([command], deps);
-        expect(text).toContain(
-          `Launcher: ${ownership === 'ours' ? 'present and ours' : ownership === 'not_ours' ? 'present and not ours' : 'missing'}`
-        );
-        expect(text).toContain(`directory ${onPath ? 'on' : 'off'} current PATH`);
-        if (!onPath) expect(text).toContain('export PATH="$HOME/.local/bin:$PATH" to ~/.zshrc');
+        if (command === 'status') {
+          expect(text).not.toContain('Launcher:');
+          expect(text).not.toContain(f.path);
+        } else {
+          expect(text).toContain(
+            `Launcher: ${ownership === 'ours' ? 'present and ours' : ownership === 'not_ours' ? 'present and not ours' : 'missing'}`
+          );
+          expect(text).toContain(`directory ${onPath ? 'on' : 'off'} current PATH`);
+          if (!onPath) expect(text).toContain('export PATH="$HOME/.local/bin:$PATH" to ~/.zshrc');
+        }
       }
     }
   }

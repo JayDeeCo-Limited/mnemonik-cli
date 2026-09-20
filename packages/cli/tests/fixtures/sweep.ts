@@ -62,7 +62,6 @@ export async function makeSweepFixture(): Promise<SweepFixture> {
         version: 'sweep-1',
         artifactDigest: 'sweep-digest',
       });
-      adapter.grant = { id: `grant-${host}`, account: 'owner', scopes: ['mcp'] };
       return adapter;
     })
   );
@@ -107,7 +106,6 @@ export async function makeSweepFixture(): Promise<SweepFixture> {
     adapters,
     executor,
     ui: {
-      batch: async () => 'connect',
       waiting: () => {},
       timeout: async () => 'skip',
       roots: async () => ({

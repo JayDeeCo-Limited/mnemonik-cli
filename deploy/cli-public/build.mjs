@@ -78,6 +78,7 @@ pkg.repository = {
   url: 'git+https://github.com/JayDeeCo-Limited/mnemonik-cli.git',
 };
 pkg.version = JSON.parse(readFileSync('scanner-release.json')).version;
+for (const pin of Object.values(pkg.mnemonik.hosts)) pin.releaseVersion = pkg.version;
 pkg.dependencies = {};
 pkg.scripts = {};
 pkg.files = ['dist'];

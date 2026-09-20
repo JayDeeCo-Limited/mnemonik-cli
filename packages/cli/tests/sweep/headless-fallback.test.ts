@@ -59,7 +59,7 @@ function authFor(
 }
 
 describe('headless authentication fallback', () => {
-  it('uses device flow when Linux has no display and never invokes a browser command', async () => {
+  it('leaves editor sign-in to Codex when Linux has no display', async () => {
     const f = await fixture();
     const openBrowser = vi.fn(async () => {
       throw new Error('browser must not be invoked');
@@ -68,11 +68,15 @@ describe('headless authentication fallback', () => {
 
     expect(await f.run(['connect', 'codex'])).toBe(3);
     expect(openBrowser).not.toHaveBeenCalled();
-    expect(f.stdout.text).toContain('Code: BCDF-GHJK');
-    expect(f.stdout.text).toContain(DEVICE_WARNING);
+    expect(f.stdout.text).toContain(
+      'Codex will ask you to sign in to Mnemonik the first time you use it.'
+    );
+    expect(f.stderr.text).toBe('');
+    expect(f.stdout.text).not.toContain('Code: BCDF-GHJK');
+    expect(f.stdout.text).not.toContain(DEVICE_WARNING);
   });
 
-  it('falls back when the browser command exits non-zero', async () => {
+  it('does not open a browser for editor sign-in when a display is available', async () => {
     const f = await fixture();
     const openBrowser = vi.fn(async () => {
       throw new Error('xdg-open exited 1');
@@ -80,9 +84,13 @@ describe('headless authentication fallback', () => {
     f.cli.cliAuth = authFor(f, { display: true, openBrowser });
 
     expect(await f.run(['connect', 'codex'])).toBe(3);
-    expect(openBrowser).toHaveBeenCalledOnce();
-    expect(f.stdout.text).toContain('Code: BCDF-GHJK');
-    expect(f.stdout.text).toContain(DEVICE_WARNING);
+    expect(openBrowser).not.toHaveBeenCalled();
+    expect(f.stdout.text).toContain(
+      'Codex will ask you to sign in to Mnemonik the first time you use it.'
+    );
+    expect(f.stderr.text).toBe('');
+    expect(f.stdout.text).not.toContain('Code: BCDF-GHJK');
+    expect(f.stdout.text).not.toContain(DEVICE_WARNING);
   });
 
   it('names every missing non-interactive consent flag', async () => {
@@ -102,7 +110,7 @@ describe('headless authentication fallback', () => {
     };
 
     expect(await f.run(['install', '--non-interactive'])).toBe(3);
-    expect(f.stderr.text).toContain('--accept-scanner');
+    expect(f.stderr.text).toContain('--accept-indexing');
     f.stderr.clear();
     expect(await f.run(['install', '--non-interactive', '--accept-scanner'])).toBe(3);
     expect(f.stderr.text).toContain('--apply');

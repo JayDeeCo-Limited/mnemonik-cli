@@ -71,6 +71,10 @@ export class Output {
     this.stdout.write(`${redact(value, this.context)}\n`);
   }
 
+  write(value: string): void {
+    this.stdout.write(redact(value, this.context));
+  }
+
   /** Deliberate local-only identity display; never use for logs, JSON, or errors. */
   signedIn(email: string): void {
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/u.test(email)) throw new Error('account_identity_failed');

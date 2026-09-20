@@ -95,6 +95,11 @@ export function createFileHostAdapter(deps, host) {
             throw error;
         });
         const url = `${apiOrigin(deps.env)}/mcp`;
+        const installationHeader = target.scope === 'user' && target.installationId
+            ? { 'x-mnemonik-installation-id': target.installationId }
+            : undefined;
+        if (install && target.scope === 'user' && !installationHeader)
+            throw new Error('installation_required');
         let content;
         if (host.mcp.format === 'json') {
             const config = JSON.parse(raw || '{}');
@@ -109,19 +114,40 @@ export function createFileHostAdapter(deps, host) {
             const servers = config.mcpServers ?? {};
             const expected = { ...(host.mcp.type ? { type: host.mcp.type } : {}), url };
             const current = servers.mnemonik;
-            const exact = !!current &&
+            const connected = !!current &&
                 typeof current === 'object' &&
                 !Array.isArray(current) &&
-                Object.keys(current).length === Object.keys(expected).length &&
                 Object.entries(expected).every(([key, value]) => current[key] === value);
+            const currentHeaders = connected &&
+                current.headers &&
+                typeof current.headers === 'object' &&
+                !Array.isArray(current.headers)
+                ? current.headers
+                : {};
+            const exact = connected &&
+                (installationHeader
+                    ? currentHeaders['x-mnemonik-installation-id'] === target.installationId
+                    : !Object.hasOwn(currentHeaders, 'x-mnemonik-installation-id'));
             if (install === undefined)
                 return exact ? [{ path: file, content: Buffer.from(raw) }] : [];
             if (!install && !Object.hasOwn(servers, 'mnemonik'))
                 return [];
-            if (Object.hasOwn(servers, 'mnemonik') && !exact && !ownedTarget)
+            if (Object.hasOwn(servers, 'mnemonik') && !connected && !ownedTarget)
                 throw new Error('mcp_name_conflict');
-            if (install)
-                servers.mnemonik = expected;
+            if (install) {
+                const next = {
+                    ...(current && typeof current === 'object' && !Array.isArray(current) ? current : {}),
+                    ...expected,
+                };
+                const headers = { ...currentHeaders, ...installationHeader };
+                if (!installationHeader)
+                    delete headers['x-mnemonik-installation-id'];
+                if (Object.keys(headers).length)
+                    next.headers = headers;
+                else
+                    delete next.headers;
+                servers.mnemonik = next;
+            }
             else
                 delete servers.mnemonik;
             config.mcpServers = servers;
@@ -137,30 +163,62 @@ export function createFileHostAdapter(deps, host) {
                 /^\s*\[\[\s*["']?mcp_servers/m.test(raw))
                 throw new Error('unsupported_mcp_toml_layout');
             const table = /^\s*\[\s*(?:mcp_servers|"mcp_servers"|'mcp_servers')\s*\.\s*(?:mnemonik|"mnemonik"|'mnemonik')(?:\s*\.[^\]]+)?\s*\]\s*(?:#.*)?$/;
-            let owned = false;
-            let found = false;
-            let connected = false;
-            const kept = [];
-            for (const line of raw.match(/[^\n]*\n|[^\n]+$/g) ?? []) {
-                const text = line.trimEnd();
-                if (/^\s*\[/.test(text))
-                    owned = table.test(text);
-                if (owned) {
-                    found = true;
-                    connected ||= text.match(/^\s*url\s*=\s*["']([^"']+)["']\s*(?:#.*)?$/)?.[1] === url;
-                }
-                else
-                    kept.push(line);
-            }
+            const lines = raw.match(/[^\n]*\n|[^\n]+$/g) ?? [];
+            const start = lines.findIndex((line) => table.test(line.trimEnd()));
+            const end = start < 0
+                ? -1
+                : lines.findIndex((line, index) => index > start && /^\s*\[/.test(line.trimEnd()));
+            const stop = end < 0 ? lines.length : end;
+            const section = start < 0 ? [] : lines.slice(start, stop);
+            const urlIndex = section.findIndex((line) => /^\s*url\s*=/.test(line));
+            const connected = urlIndex >= 0 &&
+                section[urlIndex]?.trimEnd().match(/^\s*url\s*=\s*["']([^"']+)["']\s*(?:#.*)?$/)?.[1] ===
+                    url;
+            const headerKey = host.mcp.headerKey ?? 'http_headers';
+            const headerIndex = section.findIndex((line) => new RegExp(`^\\s*${headerKey}\\s*=`).test(line));
+            const installationPattern = /(?:["']x-mnemonik-installation-id["']|x-mnemonik-installation-id)\s*=\s*["']([^"']*)["']/;
+            const installedId = headerIndex >= 0 ? section[headerIndex]?.match(installationPattern)?.[1] : undefined;
+            const exact = connected &&
+                (installationHeader ? installedId === target.installationId : installedId === undefined);
             if (install === undefined)
-                return connected ? [{ path: file, content: Buffer.from(raw) }] : [];
-            if (!install && !found)
+                return exact ? [{ path: file, content: Buffer.from(raw) }] : [];
+            if (!install && start < 0)
                 return [];
-            if (found && !connected && !ownedTarget)
+            if (start >= 0 && !connected && !ownedTarget)
                 throw new Error('mcp_name_conflict');
-            content = kept.join('');
-            if (install)
-                content += `${content && !content.endsWith('\n') ? '\n' : ''}[mcp_servers.mnemonik]\nurl = "${url}"\n`;
+            if (!install)
+                content = [...lines.slice(0, start), ...lines.slice(stop)].join('');
+            else {
+                const next = start < 0 ? ['[mcp_servers.mnemonik]\n', `url = "${url}"\n`] : [...section];
+                const nextUrl = next.findIndex((line) => /^\s*url\s*=/.test(line));
+                if (nextUrl >= 0)
+                    next[nextUrl] = `url = "${url}"\n`;
+                const nextHeader = next.findIndex((line) => new RegExp(`^\\s*${headerKey}\\s*=`).test(line));
+                if (nextHeader >= 0) {
+                    const line = next[nextHeader] ?? '';
+                    if (!/^\s*\w+\s*=\s*\{.*\}\s*(?:#.*)?$/u.test(line.trimEnd()))
+                        throw new Error('unsupported_mcp_toml_layout');
+                    if (installationHeader) {
+                        next[nextHeader] = installationPattern.test(line)
+                            ? line.replace(installationPattern, (pair) => pair.replace(/["']([^"']*)["']\s*$/u, JSON.stringify(target.installationId)))
+                            : line.replace(/\}(\s*(?:#.*)?\r?\n?)$/u, (suffix, ending) => `, "x-mnemonik-installation-id" = ${JSON.stringify(target.installationId)} }${ending}`);
+                    }
+                    else if (installationPattern.test(line)) {
+                        next[nextHeader] = line
+                            .replace(/(?:,\s*)?(?:["']x-mnemonik-installation-id["']|x-mnemonik-installation-id)\s*=\s*["'][^"']*["']\s*,?/u, '')
+                            .replace(/\{\s*,/u, '{')
+                            .replace(/,\s*\}/u, ' }');
+                    }
+                }
+                else if (installationHeader) {
+                    const insert = Math.max(1, next.findIndex((line) => /^\s*url\s*=/.test(line)) + 1);
+                    next.splice(insert, 0, `${headerKey} = { "x-mnemonik-installation-id" = ${JSON.stringify(target.installationId)} }\n`);
+                }
+                content =
+                    start < 0
+                        ? `${raw}${raw && !raw.endsWith('\n') ? '\n' : ''}${next.join('')}`
+                        : [...lines.slice(0, start), ...next, ...lines.slice(stop)].join('');
+            }
         }
         return [{ path: file, content: Buffer.from(content) }];
     };
@@ -174,44 +232,11 @@ export function createFileHostAdapter(deps, host) {
             path(other) !== path(target) &&
             (await present(other)))
             otherScopes.push({ scope: other.scope, path: path(other) });
-        let authenticatedTools = false;
-        if (target.component === 'mcp' && host.nativeListing !== false) {
-            try {
-                const { stdout } = await execute(['mcp', 'list'], target);
-                // Native listing corroborates authentication; the CLI separately proves the live account grant.
-                // No qualified listing currently prints a server grant/account: do not invent one.
-                const origin = apiOrigin(deps.env).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-                const connected = new RegExp(String.raw `^\s*mnemonik(?:\s*:|\s+)\s*(?:${origin}/mcp(?:\s+\(HTTP\))?\s*-\s*)?[✓✔√]?\s*Connected\s*$`, 'i');
-                const lines = stripVTControlCharacters(stdout).split(/\r?\n/);
-                authenticatedTools = lines.some((line) => connected.test(line));
-                if (host.name === 'codex') {
-                    const oauth = new RegExp(String.raw `^\s*mnemonik\s+${origin}/mcp\s+-\s+enabled\s+OAuth\s*$`);
-                    authenticatedTools ||= stripVTControlCharacters(stdout)
-                        .split(/\r?\n/)
-                        .some((line) => oauth.test(line));
-                }
-                if (host.name === 'grok' && !authenticatedTools) {
-                    const { stdout: doctor } = await execute(['mcp', 'doctor', '--json'], target);
-                    const result = JSON.parse(doctor);
-                    authenticatedTools =
-                        Array.isArray(result.servers) &&
-                            result.servers.some((server) => server.name === 'mnemonik' &&
-                                server.transport === 'http' &&
-                                server.target === `${apiOrigin(deps.env)}/mcp` &&
-                                server.healthy === true &&
-                                Array.isArray(server.checks) &&
-                                server.checks.some((check) => check.label === 'handshake OK' && check.passed === true));
-                }
-            }
-            catch {
-                /* Missing CLI, timeout or unqualified output leaves authentication unproven. */
-            }
-        }
         return {
             resolvedPath: await binary.resolve().catch(() => undefined),
             ...(host.nativeListing === false ? { declarationPath: path(target) } : {}),
             declarationPresent: await present(target),
-            authenticatedTools,
+            authenticatedTools: false,
             otherScopes,
         };
     };

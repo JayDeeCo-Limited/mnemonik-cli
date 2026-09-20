@@ -32,7 +32,7 @@ it('a fixture that does not stub discovery sees no editors on the machine runnin
   expect(result.hosts).toEqual([]);
 });
 
-it('enableHostDiscovery restores the real lookups for a home and PATH the test owns', async () => {
+it('detects editor folders and ignores a binary-only PATH', async () => {
   await enableHostDiscovery();
   const home = await mkdtemp(join(tmpdir(), 'host-discovery-'));
   scratch.push(home);
@@ -45,6 +45,5 @@ it('enableHostDiscovery restores the real lookups for a home and PATH the test o
   const result = await runPreflight({ ...offline(home), home, env: { PATH: bin } });
   expect(result.hosts.map((host) => [host.name, host.path])).toEqual([
     ['Codex', join(home, '.codex', 'config.toml')],
-    ['Cursor', join(bin, 'cursor')],
   ]);
 });

@@ -11,7 +11,7 @@ import {
   resolveRepositoryRoot,
 } from '@mnemonik/shared';
 import { runIdentityFixtureSuite } from '../../shared/test-fixtures/identity/runner.mjs';
-import { renderPreflight, runPreflight } from '../src/preflight.js';
+import { nodeVersionHelp, renderPreflight, runPreflight } from '../src/preflight.js';
 import { enableHostDiscovery } from './setup/hostDiscovery.js';
 import { Output } from '../src/output.js';
 
@@ -29,7 +29,18 @@ runIdentityFixtureSuite(it, {
 });
 
 describe('preflight', () => {
-  it('detects installed editor binaries before any host config exists', async () => {
+  it.each([
+    ['darwin', 'Run: brew install node@24 && export PATH="$(brew --prefix node@24)/bin:$PATH"'],
+    ['linux', 'Install Node 24: https://nodejs.org/en/download/package-manager'],
+    ['win32', 'Install Node 24: https://nodejs.org/en/download'],
+  ] as const)('gives a two-line Node gate for %s', (platform, action) => {
+    expect(nodeVersionHelp('22.20.0', platform)).toEqual([
+      'Node 22.20.0 is installed. Mnemonik needs Node 24 or newer.',
+      action,
+    ]);
+  });
+
+  it('ignores installed editor binaries when no host folder or config exists', async () => {
     const execFile = vi.fn(async () => {
       throw new Error('preflight must not spawn');
     });
@@ -45,7 +56,7 @@ describe('preflight', () => {
       pathExists: async () => false,
       fetch: async () => Response.json({}),
     });
-    expect(result.hosts.map((host) => host.name)).toEqual(['Claude Code', 'Codex', 'Cursor']);
+    expect(result.hosts).toEqual([]);
     expect(execFile).not.toHaveBeenCalled();
   });
 
@@ -79,7 +90,7 @@ describe('preflight', () => {
     }
   });
 
-  it('detects launch host config paths and names Copilot as not offered without detecting it', async () => {
+  it('detects launch host folders at user and project scope without mentioning Copilot', async () => {
     // This test exercises the real file lookup against a home it owns; every
     // other test runs with discovery blinded by tests/setup/hostDiscovery.ts.
     await enableHostDiscovery();
@@ -89,13 +100,7 @@ describe('preflight', () => {
     dirs.push(base);
     const home = join(base, 'home');
     const root = join(base, 'repo');
-    const files = [
-      join(home, '.claude', 'settings.json'),
-      join(home, '.codex', 'config.toml'),
-      join(home, '.cursor', 'mcp.json'),
-      join(home, '.grok', 'config.toml'),
-      join(home, '.copilot', 'hooks', 'mnemonik-hooks.json'),
-    ];
+    const files = [join(home, '.claude', 'settings.json'), join(home, '.codex', 'config.toml')];
     await Promise.all(
       files.map(async (file) => {
         await mkdir(join(file, '..'), { recursive: true });
@@ -103,6 +108,8 @@ describe('preflight', () => {
       })
     );
     await mkdir(root, { recursive: true });
+    await mkdir(join(root, '.cursor'), { recursive: true });
+    await mkdir(join(root, '.grok'), { recursive: true });
     await exec('git', ['init', '--initial-branch=main'], {
       cwd: root,
       env: { ...process.env, GIT_CEILING_DIRECTORIES: base },
@@ -128,8 +135,7 @@ describe('preflight', () => {
     ]);
     let text = '';
     renderPreflight(result, new Output({ write: (chunk) => void (text += chunk) }));
-    expect(text).toContain('VS Code Copilot (not offered at launch)');
-    expect(text).not.toContain('VS Code Copilot (not supported yet)');
+    expect(text).not.toContain('VS Code Copilot');
   });
 
   it('does exactly one discovery GET and reports an unsupported Node', async () => {

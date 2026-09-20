@@ -30,7 +30,7 @@ it.each([
   ['READY', 0, undefined, undefined, true, true],
 ] as const)(
   'posts the terminal %s receipt with %s problems, platform and versions without a scanner plan',
-  async (state, count, apiResource, consoleUrl, foreign?: boolean, foreignOnPath?: boolean) => {
+  async (state, count, apiResource, _consoleUrl, foreign?: boolean, foreignOnPath?: boolean) => {
     if (apiResource) vi.stubEnv('MNEMONIK_API_RESOURCE', apiResource);
     const home = await mkdtemp(join(tmpdir(), 'joined-completion-'));
     homes.push(home);
@@ -62,9 +62,8 @@ it.each([
       ['json', true],
       ['without-scanner', true],
       ['accept-limited', true],
-      ['integration-scope', 'user'],
     ]);
-    if (state === 'LIMITED' || foreign) flags.delete('json');
+    if (state === 'READY' || state === 'LIMITED' || foreign) flags.delete('json');
     let text = '';
     const code = await joinedInstall(
       flags,
@@ -100,23 +99,16 @@ it.each([
     if (foreign) {
       expect(await readFile(launcher, 'utf8')).toBe('#!/bin/sh\necho foreign\n');
       expect(text).toContain('Done, with one thing left.');
-      expect(text).toContain('Installation: Setup needs one action.');
-      expect(text).toContain('Launcher: present and not ours;');
       expect(text).toContain('~/.local/bin/mnemonik');
       expect(text).toContain('Move the existing');
-      expect(text).toContain('Status and devices:');
-      expect(text).toContain('In this terminal: npx -y @mnemonik/cli@latest status');
-      expect(text).not.toContain('On this machine: mnemonik status');
+      expect(text).not.toContain('Launcher:');
     } else if (state === 'READY' || state === 'LIMITED') {
       expect(await readFile(launcher, 'utf8')).toContain('runtimes/bootstrap/dist/bin.js');
       expect((await stat(launcher)).mode & 0o777).toBe(0o755);
     }
     if (state === 'LIMITED') {
-      expect(text).toContain(
-        onPath ? 'On this machine: mnemonik status' : 'npx -y @mnemonik/cli@latest status'
-      );
-      if (onPath) expect(text).not.toContain('In this terminal:');
-      else expect(text).toContain('new terminal after that');
+      expect(text).toContain('1. mnemonik status');
+      if (!onPath) expect(text).toContain('new terminal after that');
     }
     expect(fetcher).toHaveBeenCalledTimes(2);
     expect(String(fetcher.mock.calls[1]![0])).toContain(
@@ -136,11 +128,14 @@ it.each([
         expect.stringContaining('Move the existing'),
       ]);
     }
+    if (!flags.has('json'))
+      expect(
+        text.match(/Your editors will ask you to sign in to Mnemonik the first time you use it\./g)
+      ).toHaveLength(1);
     if (state === 'LIMITED') {
       expect(text).toContain(count ? `Done, with ${count} things left.` : '  Done.\n');
-      expect(text).toContain(`Status and devices: ${consoleUrl}`);
       expect(body.readiness.installation.reasons).toEqual(reasons);
-      for (const reason of reasons) expect(text).toContain(reason);
+      for (const reason of reasons) expect(text).not.toContain(reason);
     }
   }
 );

@@ -34,10 +34,12 @@ export interface PreflightDependencies {
     pathExists?: (path: string) => Promise<boolean>;
     discoveryUrl?: string;
     resource?: string;
+    /** Retained for injected callers; editor discovery no longer executes binaries. */
     execFile?: AdapterDependencies['execFile'];
     binaryExists?: AdapterDependencies['binaryExists'];
     env?: NodeJS.ProcessEnv;
 }
+export declare function nodeVersionHelp(version: string, platform: NodeJS.Platform): [string, string];
 export declare function runPreflight(deps?: PreflightDependencies): Promise<PreflightResult>;
 export declare function renderPreflight(result: PreflightResult, output: Output): void;
 //# sourceMappingURL=preflight.d.ts.map

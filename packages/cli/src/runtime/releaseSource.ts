@@ -4,6 +4,7 @@ import { readFile, realpath } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
 import { stateDirectory } from '@mnemonik/local-setup';
 import type { ReadinessDocument } from '@mnemonik/shared';
+import { RELEASE_MINISIGN_PUBLIC_KEY, verifyMinisign } from '@mnemonik/shared/hook-runtime';
 import { dirname, join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { unpack } from './bootstrap.js';
@@ -20,6 +21,19 @@ export interface ReleaseManifest {
   version: string;
   digestsSha256: string;
   platforms: Record<string, Manifest>;
+}
+export const releasePackageNames = [
+  '@mnemonik/cli',
+  '@mnemonik/claude-code-hooks',
+  '@mnemonik/codex-hooks',
+  '@mnemonik/copilot-hooks',
+  '@mnemonik/cursor-hooks',
+  '@mnemonik/grok-hooks',
+] as const;
+export interface SignedReleaseManifest {
+  schemaVersion: 1;
+  version: string;
+  packages: Record<string, { version: string; integrity: string }>;
 }
 type Fetch = typeof fetch;
 const releaseRoot = 'https://github.com/JayDeeCo-Limited/mnemonik-cli/releases/download/';
@@ -147,8 +161,68 @@ export async function releaseBytes(address: string, fetcher: Fetch = fetch): Pro
     response = await fetcher(next, options);
   }
   if (response.status >= 300 && response.status < 400) throw new RuntimeError('permission');
-  if (!response.ok) throw new RuntimeError('manifest_missing');
+  if (!response.ok)
+    throw new RuntimeError(response.status === 404 ? 'manifest_missing' : 'permission');
   return Buffer.from(await response.arrayBuffer());
+}
+
+export async function signedReleaseManifest(
+  version: string,
+  fetcher: Fetch = fetch,
+  identity = RELEASE_MINISIGN_PUBLIC_KEY
+): Promise<SignedReleaseManifest> {
+  if (!/^\d+\.\d+\.\d+(?:-[\w.-]+)?$/.test(version)) throw new RuntimeError('unsigned');
+  const base = `${releaseRoot}scanner-v${version}/release-manifest.json`;
+  let bytes: Buffer;
+  try {
+    bytes = await releaseBytes(base, fetcher);
+  } catch (error) {
+    if (
+      (error instanceof RuntimeError && error.reason === 'manifest_missing') ||
+      ((error as NodeJS.ErrnoException).code === 'ENOENT' && process.env.MNEMONIK_DEV_RELEASE_DIR)
+    )
+      throw new RuntimeError('unsigned');
+    throw error;
+  }
+  let signature: Buffer;
+  try {
+    signature = await releaseBytes(base + '.minisig', fetcher);
+    verifyMinisign(bytes, signature.toString(), identity);
+  } catch {
+    throw new RuntimeError('unsigned');
+  }
+  let manifest: SignedReleaseManifest;
+  try {
+    manifest = JSON.parse(bytes.toString()) as SignedReleaseManifest;
+  } catch {
+    throw new RuntimeError('unsigned');
+  }
+  if (
+    !manifest ||
+    typeof manifest !== 'object' ||
+    Array.isArray(manifest) ||
+    !manifest.packages ||
+    typeof manifest.packages !== 'object' ||
+    Array.isArray(manifest.packages)
+  )
+    throw new RuntimeError('unsigned');
+  const names = Object.keys(manifest.packages).sort();
+  if (
+    manifest.schemaVersion !== 1 ||
+    manifest.version !== version ||
+    names.join() !== [...releasePackageNames].sort().join() ||
+    names.some((name) => {
+      const entry = manifest.packages[name];
+      return (
+        !entry ||
+        !/^\d+\.\d+\.\d+(?:-[\w.-]+)?$/.test(entry.version) ||
+        !/^(sha512|sha256)-[A-Za-z0-9+/=]+$/.test(entry.integrity)
+      );
+    }) ||
+    manifest.packages['@mnemonik/cli']?.version !== version
+  )
+    throw new RuntimeError('unsigned');
+  return manifest;
 }
 
 export async function scannerReleaseSource(

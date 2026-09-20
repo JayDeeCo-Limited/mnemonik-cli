@@ -6,7 +6,7 @@ import { atomicWrite, stateDirectory, withLock } from '@mnemonik/local-setup';
 import type { HostCommand, HostSelection } from './hosts.js';
 import type { HostRun } from './ownership.js';
 import type { AdapterWriter, FileChange } from '@mnemonik/shared';
-import type { HostName, Grant } from './adapters.js';
+import type { HostName } from './adapters.js';
 
 export const MUTATION_KINDS = [
   'journal_created',
@@ -15,9 +15,7 @@ export const MUTATION_KINDS = [
   'stage_written',
   'staged',
   'host_intent',
-  'host_launched',
   'host_observed',
-  'host_skipped',
   'roots_confirmed',
   'consent_recorded',
   'project_stage_intent',
@@ -38,7 +36,6 @@ export const MUTATION_KINDS = [
   'project_restored',
   'restored',
   'credential_revoked',
-  'host_revoked',
   'compensation_finished',
   'reconciled',
 ] as const;
@@ -128,12 +125,6 @@ export interface JournalData {
   roots: string[];
   declaredTargets: string[];
   targets: Target[];
-  approvals: Partial<
-    Record<
-      HostName,
-      { intent: { attempt: number; targets: string[] }; observed?: Grant; skipped?: boolean }
-    >
-  >;
   consent?: Consent;
   credentials: Array<{
     reference: string;
@@ -399,7 +390,6 @@ export async function withInstall<T>(
         ...input,
         declaredTargets: [],
         targets: [],
-        approvals: {},
         projects: [],
         services: [],
         mutations: [],

@@ -25,12 +25,15 @@ import { Output } from '../src/output.js';
 import { parseScannerSelection } from '../../../src/server/scannerDisclosure.js';
 import {
   DIRECTORY_LIMIT,
+  REPOSITORY_LIMIT,
   classifyRepository,
   discoverRepositories,
+  scannerCandidates,
 } from '../src/scanner/discover.js';
 import {
   consentDraft,
   renderScannerStatus,
+  runScannerBoundaryPicker,
   reviewScannerProjects,
   runScannerPicker,
   SCANNER_SELECTION_LIMIT,
@@ -79,6 +82,43 @@ afterEach(async () => {
 });
 
 describe('repository discovery', () => {
+  it('turns git and identity folders into candidates while skipping dependency and dot folders', async () => {
+    const home = await temporaryDirectory();
+    const cwd = join(home, 'empty');
+    const boundary = join(home, 'Projects');
+    const app = join(boundary, 'app');
+    const notes = join(boundary, 'notes');
+    await fs.mkdir(cwd);
+    await git(app);
+    await fs.mkdir(notes);
+    await identity(notes, uuid('1'));
+    await git(join(boundary, 'node_modules', 'dependency'));
+    await git(join(boundary, '.hidden', 'private'));
+
+    const discovered = await scannerCandidates(boundary);
+    expect(discovered.candidates).toEqual([
+      { path: app, name: 'app', kind: 'git' },
+      { path: notes, name: 'notes', kind: 'folder' },
+    ]);
+
+    const stream = capture();
+    const picked = await runScannerBoundaryPicker({
+      input: Readable.from('\n'),
+      output: new Output(stream, undefined, { home }),
+      currentProject: cwd,
+      currentFolder: cwd,
+      home,
+      protectedPaths: [],
+    });
+    expect(picked).toMatchObject({
+      boundary,
+      roots: [],
+      exclusions: [],
+      candidates: discovered.candidates,
+    });
+    expect(stream.text).toBe('Where do your projects live? [~/Projects]\n');
+  });
+
   it('finds real repositories through depth 3, nested roots separately, and never follows links or reads source', async () => {
     const parent = await temporaryDirectory();
     const outside = await temporaryDirectory();
@@ -150,10 +190,11 @@ describe('repository discovery', () => {
     expect(result).toMatchObject({ status: 'list_truncated', directoriesVisited: 10 });
   });
 
-  it('stops after 32 candidate repositories without reading the 33rd', async () => {
+  it('stops after 200 candidate repositories without reading the 201st', async () => {
     const parent = await temporaryDirectory();
-    for (let index = 0; index < 33; index++)
-      await fs.mkdir(join(parent, `repo-${String(index).padStart(2, '0')}`, '.git'), {
+    expect(REPOSITORY_LIMIT).toBe(200);
+    for (let index = 0; index < 201; index++)
+      await fs.mkdir(join(parent, `repo-${String(index).padStart(3, '0')}`, '.git'), {
         recursive: true,
       });
     const reads: string[] = [];
@@ -177,9 +218,9 @@ describe('repository discovery', () => {
       readRemotes: async () => [],
     });
 
-    expect(result.repositories).toHaveLength(32);
+    expect(result.repositories).toHaveLength(200);
     expect(result.truncated).toBe(true);
-    expect(reads).not.toContain(join(parent, 'repo-32'));
+    expect(reads).not.toContain(join(parent, 'repo-200'));
   });
 
   it.runIf(process.platform !== 'win32')(

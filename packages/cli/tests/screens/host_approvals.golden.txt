@@ -1,9 +1,0 @@
-  Connect your editors
-
-  - Approve Mnemonik in Claude Code, your default profile
-  - Approve Mnemonik in Cursor, your default profile
-  - Approve Mnemonik in Codex, your default profile
-
-  > Connect them
-    Cancel
-

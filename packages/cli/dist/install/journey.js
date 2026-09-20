@@ -1,40 +1,29 @@
-import { access, readFile } from 'node:fs/promises';
-import { join, relative, isAbsolute } from 'node:path';
+import { appendFile, mkdir, readFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { setTimeout as delay } from 'node:timers/promises';
 import { apiOrigin, remainingReadinessCount, serializeReadiness, } from '@mnemonik/shared';
 import { recordPath, stateDirectory } from '@mnemonik/local-setup';
-import { runPreflight } from '../preflight.js';
-import { createRealProjectRuntime } from '../project.js';
-import { discoverRepositories } from '../scanner/discover.js';
+import { nodeVersionHelp, runPreflight } from '../preflight.js';
+import { connectedProjectsMessage, createRealProjectRuntime, projectLimitMessage, } from '../project.js';
+import { classifyRepository } from '../scanner/discover.js';
 import { prepareScanner, restoreScannerInstall } from '../scanner/enable.js';
 import { ScannerServiceLimited } from '../scanner/service.js';
-import { collectStatusDocument, renderStatusSummaries } from '../status.js';
+import { collectStatusDocument } from '../status.js';
 import { devReadiness } from '../runtime/releaseSource.js';
-import { renderJourney, journeyAnswers } from '../screens/journey.js';
+import { completedStep, completedLine, renderCustomize, renderJourney, journeyAnswers, } from '../screens/journey.js';
 import { interrupted } from './journal.js';
-import { runHosts, hostNotConnectedCondition, hookStatusConditions, } from './hosts.js';
+import { runHosts, hookStatusConditions, } from './hosts.js';
 import { compensate, revokeInstallComponent } from './transaction.js';
 import * as ownership from './ownership.js';
 import { ensureLauncher, launcherPathAction, LauncherError } from '../launcher.js';
 const labels = { 'claude-code': 'Claude Code', codex: 'Codex', cursor: 'Cursor', grok: 'Grok' };
-const launchHosts = ['claude-code', 'codex', 'cursor'];
-const notOfferedHosts = ['grok', 'vscode-copilot'];
+const launchHosts = ['claude-code', 'codex', 'cursor', 'grok'];
+const notOfferedHosts = ['vscode-copilot'];
 export function hostReadinessConditions(results, scanner) {
     return results
         .filter((r) => r.status !== 'READY')
         .map((r) => {
-        const host = r.target.split(':')[0];
-        const notConnected = hostNotConnectedCondition(host);
-        if (r.reason === notConnected.reason)
-            return notConnected;
-        if (r.reason === 'login_pending') {
-            return {
-                kind: 'login_pending',
-                reason: `${labels[host]} is still connecting. Finish the sign-in in the app, then run mnemonik status.`,
-                action: 'mnemonik status',
-            };
-        }
         return {
             kind: scanner ? 'host_skipped' : 'host_trust_pending',
             reason: scanner ? `${r.target}: ${r.reason}` : r.reason,
@@ -74,26 +63,25 @@ export async function waitForInstallation(check, timeout, clock = {}) {
     }
 }
 export async function joinedInstall(flags, deps, output, authorize, management) {
+    if (flags.has('accept-scanner'))
+        flags.set('accept-indexing', true);
     const json = flags.has('json');
     const automatic = json || flags.has('non-interactive');
     let components = String(flags.get('components') ?? (flags.has('without-scanner') ? 'hooks,mcp' : 'hooks,mcp,scanner')).split(',');
     if (flags.has('without-scanner'))
         components = components.filter((c) => c !== 'scanner');
     let scanner = components.includes('scanner');
-    let scope = String(flags.get('integration-scope') ?? 'user');
     let names = flags.has('hosts') ? String(flags.get('hosts')).split(',') : [];
     if (components.some((c) => !['hooks', 'mcp', 'scanner'].includes(c)) ||
-        names.some((h) => !launchHosts.includes(h)) ||
-        !['user', 'project'].includes(scope)) {
-        output.error(`Invalid hosts, scope or components. Launch hosts: ${launchHosts.join(', ')}. Not offered at launch: ${notOfferedHosts.join(', ')}.`);
+        names.some((h) => !launchHosts.includes(h))) {
+        output.error(`Invalid hosts or components. Launch hosts: ${launchHosts.join(', ')}. Not offered at launch: ${notOfferedHosts.join(', ')}.`);
         return 2;
     }
     if (automatic || flags.has('hosts') || flags.has('components')) {
         const required = [
-            scanner ? 'accept-scanner' : 'accept-limited',
+            scanner ? 'accept-indexing' : 'accept-limited',
             'apply',
             ...(automatic && scanner ? ['scan-roots'] : []),
-            ...(names.length ? ['integration-scope'] : []),
         ];
         for (const flag of required)
             if (!flags.has(flag)) {
@@ -131,7 +119,6 @@ export async function joinedInstall(flags, deps, output, authorize, management) 
         components = previous.data.components;
         scanner = components.includes('scanner');
         names = [...new Set(previous.data.hostRequest?.selections.map((s) => s.host) ?? [])];
-        scope = previous.data.hostRequest?.selections[0]?.scope ?? scope;
     }
     const preflight = await runPreflight({
         cwd,
@@ -140,19 +127,37 @@ export async function joinedInstall(flags, deps, output, authorize, management) 
         ...deps.preflight,
     });
     const root = preflight.project.root ?? cwd;
-    let roots = String(flags.get('scan-roots') ?? (previous?.data.roots.join(',') || root))
+    const logPath = join(stateDir, 'install.log');
+    const log = async (detail) => {
+        await mkdir(stateDir, { recursive: true, mode: 0o700 });
+        await appendFile(logPath, `${JSON.stringify({ at: new Date().toISOString(), detail })}\n`, {
+            mode: 0o600,
+        });
+    };
+    let roots = String(flags.get('scan-roots') ?? previous?.data.roots.join(',') ?? '')
         .split(',')
         .filter(Boolean);
     output.setContext({ home, projectRoot: root });
     if (!names.length)
         names = preflight.hosts
-            .filter((h) => h.supported && h.name !== 'Grok')
+            .filter((h) => h.supported)
             .map((h) => Object.keys(labels).find((key) => labels[key] === h.name) ?? '')
             .filter(Boolean);
-    const answers = automatic ? undefined : journeyAnswers(deps.input ?? process.stdin);
+    const answers = automatic ? undefined : journeyAnswers(deps.input ?? process.stdin, output);
+    const interactive = Boolean((deps.input ?? process.stdin).isTTY);
+    const replaceScreen = (lines, replacement) => {
+        if (!interactive)
+            return;
+        output.write(`\u001b[${lines}A\r\u001b[J`);
+        if (replacement)
+            output.line(replacement);
+    };
     const choose = async (title, choices) => {
         output.line(`  ${title}`);
+        output.line('  Use the Up/Down arrow keys and Enter.');
+        output.line();
         choices.forEach((c, i) => output.line(`  ${i === 0 ? '>' : ' '} ${c}`));
+        output.line();
         return answers ? answers.choose(choices) : 'Skip';
     };
     let prepared;
@@ -228,53 +233,68 @@ export async function joinedInstall(flags, deps, output, authorize, management) 
             return restored.journal.phase === 'rolled_back' ? 130 : 1;
         }
         if (!previous && !automatic && !flags.has('hosts') && !flags.has('components')) {
-            renderJourney('recommended', output, {
-                hosts: names.map((h) => labels[h]),
-                project: root,
-                node: preflight.node.version,
-                os: preflight.os,
-            });
-            for (const host of preflight.hosts.filter((h) => !h.supported || h.name === 'Grok'))
-                output.line(`  ${host.name} (not offered at launch)`);
-            if (!deps.preflight &&
-                (await access(join(home, '.vscode')).then(() => true, () => false)))
-                output.line('  VS Code Copilot (not offered at launch)');
-            const choice = flags.has('customize')
-                ? 'Customize'
-                : await answers?.choose(['Recommended', 'Customize']);
-            if (choice === 'Cancel')
-                return 130;
-            if (choice === 'Customize') {
-                output.line('  Customize settings (press Enter to keep each value)');
-                output.line(`  Components: ${components.join(',')}`);
-                components = ((await answers?.text()) || components.join(',')).split(',');
-                output.line(`  Editors: ${names.join(',')}`);
-                names = ((await answers?.text()) || names.join(',')).split(',');
-                output.line(`  Scope: ${scope} (user or project)`);
-                scope = (await answers?.text()) || scope;
-                output.line(`  Roots: ${roots.join(',')}`);
-                roots = ((await answers?.text()) || roots.join(',')).split(',');
-                if (components.some((c) => !['hooks', 'mcp', 'scanner'].includes(c)) ||
-                    names.some((h) => !launchHosts.includes(h)) ||
-                    !['user', 'project'].includes(scope))
-                    throw new Error('invalid_settings');
-                scanner = components.includes('scanner');
+            for (;;) {
+                const recommendedLines = renderJourney('recommended', output, {
+                    hosts: names.map((h) => labels[h]),
+                    project: root,
+                    node: preflight.node.version,
+                    os: preflight.os,
+                });
+                const choice = flags.has('customize')
+                    ? 'Customize'
+                    : await answers?.choose(['Recommended', 'Customize']);
+                if (choice === 'Cancel')
+                    return 130;
+                if (choice !== 'Customize') {
+                    replaceScreen(recommendedLines, completedStep(1, 'Recommended setup selected'));
+                    break;
+                }
+                const items = [
+                    ...names.map((name) => ({
+                        value: name,
+                        label: labels[name],
+                        checked: true,
+                    })),
+                    { value: 'scanner', label: 'Indexing of your projects', checked: scanner },
+                ];
+                replaceScreen(recommendedLines);
+                const customizeLines = renderCustomize(items, output);
+                const customized = await answers?.customize(items);
+                if (customized === 'Cancel')
+                    return 130;
+                if (customized === 'Back') {
+                    replaceScreen(customizeLines);
+                    if (flags.has('customize'))
+                        return 130;
+                    continue;
+                }
+                if (customized) {
+                    names = customized.selected.filter((item) => item !== 'scanner');
+                    scanner = customized.selected.includes('scanner');
+                    components = scanner
+                        ? [...new Set([...components, 'scanner'])]
+                        : components.filter((component) => component !== 'scanner');
+                }
+                replaceScreen(customizeLines, completedStep(1, 'Custom setup selected'));
+                break;
             }
         }
         if (preflight.status !== 'ready') {
             if (!preflight.node.supported)
-                output.error(`Node ${preflight.node.version} found; Node 24 or newer is required.`);
+                for (const line of nodeVersionHelp(preflight.node.version, deps.preflight?.platform ?? process.platform))
+                    output.error(line);
             if (!preflight.network.reachable)
                 output.error(`Discovery ${preflight.network.discoveryUrl}: ${preflight.network.detail ?? 'unavailable'}`);
             throw new Error('preflight_failed');
         }
         if (!automatic && !flags.has('apply')) {
             renderJourney('account', output);
-            renderJourney('cli_approval', output);
         }
         for (;;) {
             try {
                 await authorize();
+                if (!automatic)
+                    output.line(completedLine('Signed in'));
                 break;
             }
             catch (error) {
@@ -336,24 +356,22 @@ export async function joinedInstall(flags, deps, output, authorize, management) 
             .map((component) => ({
             host: host,
             component: component,
-            scope: scope,
+            scope: 'user',
             home,
             projectRoot: root,
         })));
-        if (!previous && !automatic && !flags.has('apply') && selections.length) {
-            renderJourney('host_approvals', output, {
-                hosts: names.map((h) => labels[h]),
-            });
-            if ((await answers?.choose(['Connect them', 'Cancel'])) !== 'Connect them')
-                return 130;
-        }
+        if (!automatic)
+            output.line(completedStep(3, 'Configure editors'));
         const afterHosts = async (journal, results, refreshHosts) => {
+            if (!automatic)
+                output.line(completedLine(`${names.length} ${names.length === 1 ? 'editor' : 'editors'} configured`));
             journal.data.components = components;
             journal.data.roots = roots;
             const projectConditions = [];
             const projectReadiness = [];
             const finish = async (scannerPlan) => {
                 prepared = scannerPlan;
+                let limitMessage;
                 if (scannerPlan) {
                     if (!executor) {
                         const runtime = await createRealProjectRuntime({
@@ -363,57 +381,59 @@ export async function joinedInstall(flags, deps, output, authorize, management) 
                         executor = runtime.executor;
                         projectTransport ??= runtime.transport;
                     }
-                    for (const selectedRoot of scannerPlan.roots) {
-                        const discovered = await discoverRepositories(selectedRoot);
-                        for (const repo of discovered.repositories.filter((r) => !scannerPlan.exclusions.some((e) => r.path === e ||
-                            (!relative(e, r.path).startsWith('..') && !isAbsolute(relative(e, r.path)))))) {
-                            const options = {
-                                cwd: repo.path,
-                                allowCreate: true,
-                                allowNestedInherit: false,
-                                ...(repo.nonGitSelected ? { nonGitSelected: true } : {}),
+                    const connectedRoots = [];
+                    for (const [rootIndex, selectedRoot] of scannerPlan.roots.entries()) {
+                        const repo = await classifyRepository(selectedRoot);
+                        const options = {
+                            cwd: repo.path,
+                            allowCreate: true,
+                            allowNestedInherit: false,
+                            ...(repo.nonGitSelected ? { nonGitSelected: true } : {}),
+                        };
+                        const target = await journal.plan(join(repo.path, '.mnemonik.json'), null, {
+                            kind: 'project',
+                        });
+                        await journal.event('project_stage_intent', repo.path);
+                        const staged = await executor.stage(options);
+                        if (staged.status !== 'staged') {
+                            limitMessage = projectLimitMessage(staged, scannerPlan.roots.slice(rootIndex))?.join('\n');
+                            await journal.restore(target);
+                            if (limitMessage)
+                                break;
+                            const condition = {
+                                kind: 'project_identity_choice_pending',
+                                reason: `project_setup_required: ${repo.path}`,
+                                action: `mnemonik project init "${repo.path}"`,
                             };
-                            const target = await journal.plan(join(repo.path, '.mnemonik.json'), null, {
-                                kind: 'project',
-                            });
-                            await journal.event('project_stage_intent', repo.path);
-                            const staged = await executor.stage(options);
-                            if (staged.status !== 'staged') {
-                                const condition = {
-                                    kind: 'project_identity_choice_pending',
-                                    reason: `project_setup_required: ${repo.path}`,
-                                    action: `mnemonik project init "${repo.path}"`,
-                                };
-                                projectConditions.push(condition);
-                                projectReadiness.push(...(serializeReadiness({
-                                    installation: { conditions: [] },
-                                    projects: [{ identityFile: target.path, summary: { conditions: [condition] } }],
-                                }).projects ?? []));
-                                await journal.restore(target);
-                                continue;
-                            }
-                            if (!journal.data.projects.some((p) => p.root === repo.path))
-                                journal.data.projects.push({
-                                    root: repo.path,
-                                    nonGitSelected: repo.nonGitSelected,
-                                });
-                            const record = JSON.parse(await readFile(recordPath(repo.path, deps.projectStateDir ?? stateDir), 'utf8'));
-                            if (record.staged)
-                                await journal.propose(target, Buffer.from(record.staged.content));
-                            await journal.stage(target);
+                            projectConditions.push(condition);
+                            projectReadiness.push(...(serializeReadiness({
+                                installation: { conditions: [] },
+                                projects: [{ identityFile: target.path, summary: { conditions: [condition] } }],
+                            }).projects ?? []));
+                            continue;
                         }
+                        connectedRoots.push(repo.path);
+                        if (!journal.data.projects.some((p) => p.root === repo.path))
+                            journal.data.projects.push({
+                                root: repo.path,
+                                nonGitSelected: repo.nonGitSelected,
+                            });
+                        const record = JSON.parse(await readFile(recordPath(repo.path, deps.projectStateDir ?? stateDir), 'utf8'));
+                        if (record.staged)
+                            await journal.propose(target, Buffer.from(record.staged.content));
+                        await journal.stage(target);
                     }
+                    scannerPlan.roots.splice(0, scannerPlan.roots.length, ...connectedRoots);
+                    roots = scannerPlan.roots;
+                    journal.data.roots = roots;
                 }
                 if (!automatic && !flags.has('apply')) {
                     for (;;) {
-                        renderJourney('apply', output, {
-                            connected: results.every((r) => r.status === 'READY'),
-                            files: [
-                                ...new Set(journal.data.targets.filter((t) => t.status !== 'restored').map((t) => t.path)),
-                                ...(scannerPlan?.files ?? []),
-                            ],
+                        const applyLines = renderJourney('apply', output, {
+                            files: [],
                         });
                         const choice = await answers?.choose(['Install and upload', 'Back', 'Cancel']);
+                        replaceScreen(applyLines, choice === 'Install and upload' ? completedStep(5, 'Finish') : undefined);
                         if (choice === 'Back') {
                             restart = true;
                             throw new Error('install_back');
@@ -444,16 +464,21 @@ export async function joinedInstall(flags, deps, output, authorize, management) 
                 let scannerDocument;
                 if (scannerPlan) {
                     try {
-                        scannerDocument = await scannerPlan.apply(journal);
-                        if (!automatic)
-                            output.line('  ✓ Scanner connected');
+                        scannerDocument = await scannerPlan.apply(journal, scannerPlan.roots);
+                        if (!json) {
+                            if (scannerPlan.roots.length)
+                                output.line(connectedProjectsMessage(scannerPlan.roots));
+                            if (limitMessage)
+                                for (const line of limitMessage.split('\n'))
+                                    output.line(line);
+                        }
                     }
                     catch (error) {
                         if (!(error instanceof ScannerServiceLimited))
                             throw error;
                         await scannerPlan.rollback(journal);
-                        journal.data.reports.push(`Scanner was skipped (${error.reason}). Run mnemonik scanner enable to try again.`);
-                        if (!automatic && process.platform === 'win32')
+                        journal.data.reports.push(`Background indexing was skipped (${error.reason}). Run mnemonik install to try again.`);
+                        if (!automatic && preflight.os === 'Windows')
                             renderJourney('windows', output, { reason: error.message });
                     }
                 }
@@ -465,22 +490,20 @@ export async function joinedInstall(flags, deps, output, authorize, management) 
                                 ...hostReadinessConditions(results, false),
                                 {
                                     kind: 'scanner_omitted',
-                                    reason: 'Scanner was omitted.',
-                                    action: 'mnemonik scanner enable',
+                                    reason: 'Background indexing was omitted.',
+                                    action: 'mnemonik install',
                                 },
                             ],
                         },
                     }));
                     return;
                 }
-                if (!automatic)
-                    output.line('  Checking your installation, up to 2 minutes.');
                 const conditions = [...hostReadinessConditions(results, true), ...projectConditions];
                 if (!scannerDocument)
                     conditions.push({
                         kind: 'scanner_omitted',
-                        reason: 'Scanner was skipped.',
-                        action: 'mnemonik scanner enable',
+                        reason: 'Background indexing was skipped.',
+                        action: 'mnemonik install',
                     });
                 const check = async () => collectStatusDocument({
                     preflight: {
@@ -495,7 +518,6 @@ export async function joinedInstall(flags, deps, output, authorize, management) 
                     getCliBearer: managed.getCliBearer,
                     transport: projectTransport,
                     configuredHosts: names,
-                    grants: managed.grants,
                     projectHookConditions: await hookStatusConditions(managed, components.includes('hooks')
                         ? names.filter((h) => results.some((r) => r.status === 'READY' && r.target.startsWith(`${h}:hooks:`)))
                         : []),
@@ -517,8 +539,6 @@ export async function joinedInstall(flags, deps, output, authorize, management) 
                             actions: [...document.installation.actions, 'mnemonik doctor'],
                         },
                     };
-                if (!automatic && document.installation.state === 'READY')
-                    output.line('  ✓ Checks passed');
                 document = devReadiness({
                     ...document,
                     ...(scannerDocument?.scanner ? { scanner: scannerDocument.scanner } : {}),
@@ -538,21 +558,25 @@ export async function joinedInstall(flags, deps, output, authorize, management) 
                         input: deps.input ?? process.stdin,
                         output,
                         nonInteractive: automatic,
-                        roots,
+                        ...(roots.length ? { roots } : {}),
+                        home,
                         noBrowser: flags.has('no-browser'),
+                        approvalAnnounced: true,
                         exclusions: String(flags.get('exclusions') ?? '')
                             .split(',')
                             .filter(Boolean),
                         ...deps.scannerService,
                         ...deps.scannerEnable,
+                        projectExecutor: executor,
+                        projectStateDir: deps.projectStateDir ?? stateDir,
                         journal,
                         waiting: (phase) => {
                             if (!automatic)
                                 output.line(phase === 'service'
-                                    ? '  Waiting for the scanner service to start, up to 2 minutes.'
-                                    : '  Waiting for the first scanner heartbeat, up to 1 minute.');
+                                    ? '  Waiting for background indexing to start, up to 2 minutes.'
+                                    : '  Waiting for indexing to begin, up to 1 minute.');
                         },
-                        timeout: async () => (await choose('Scanner did not connect.', ['Retry', 'Skip'])) === 'Retry'
+                        timeout: async () => (await choose('Background indexing did not start.', ['Retry', 'Skip'])) === 'Retry'
                             ? 'retry'
                             : 'skip',
                     }, finish);
@@ -592,8 +616,8 @@ export async function joinedInstall(flags, deps, output, authorize, management) 
                                 ...projectConditions,
                                 {
                                     kind: 'scanner_not_verified',
-                                    reason: `Scanner could not be installed: ${reason}`,
-                                    action: 'mnemonik scanner enable',
+                                    reason: `Background indexing could not be started: ${reason}`,
+                                    action: 'mnemonik install',
                                 },
                             ],
                         },
@@ -608,20 +632,13 @@ export async function joinedInstall(flags, deps, output, authorize, management) 
         const result = await runHosts('install', selections, {
             ...managed,
             noBrowser: flags.has('no-browser'),
-            approveHost: managed.approveHost ?? (async () => true),
             apply: true,
             afterHosts,
             rollbackInstall,
             installPlan: { components, roots },
             recovery: async () => 'resume',
             instruction: automatic ? undefined : (text) => output.line(text),
-            timeout: managed.timeout ??
-                (automatic
-                    ? undefined
-                    : async (host) => (await choose(`${host} has not connected yet.`, ['Retry', 'Skip'])) === 'Retry'
-                        ? 'retry'
-                        : 'skip'),
-        }, flags.has('integration-scope'));
+        }, false);
         if (restart && result.journal.phase === 'rolled_back') {
             answers?.close();
             output.line('  Restored this run. Review your settings again.');
@@ -654,6 +671,7 @@ export async function joinedInstall(flags, deps, output, authorize, management) 
                 actions: [...final.installation.actions, launcherError.launcher.action],
             };
         final = await reportFinal({ ...final, ...(launcher ? { launcher } : {}) });
+        await log({ preflight, journal: result.journal, targets: result.results, readiness: final });
         if (json)
             output.json({
                 ...final,
@@ -664,13 +682,8 @@ export async function joinedInstall(flags, deps, output, authorize, management) 
                 phase: result.journal.phase,
             });
         else {
-            renderStatusSummaries(final, output);
-            for (const target of result.results)
-                output.line(`${target.target}: ${target.status} (${target.reason}${target.detail ? `: ${target.detail}` : ''})`);
             if (result.journal.state === 'FAILED') {
-                output.line(`  Installation failed. Local rollback: ${result.journal.phase}.`);
-                for (const line of result.reports)
-                    output.line(`  ${line}`);
+                output.line(`  Installation failed. Details: ${logPath}`);
             }
             else if (final.installation.state === 'READY')
                 renderJourney('done', output, {
@@ -680,16 +693,10 @@ export async function joinedInstall(flags, deps, output, authorize, management) 
             else
                 renderJourney('skipped', output, {
                     remaining: remainingReadinessCount(final.installation),
-                    skipped: [...final.installation.reasons, ...final.installation.actions].join(' '),
+                    skipped: [...new Set(final.installation.actions)].join('\n') || 'mnemonik status',
                 });
-            output.line(`  Status and devices: ${apiOrigin().replace('://api.mnemonik.dev', '://app.mnemonik.ai').replace('://mnemonik-api.', '://mnemonik-app.')}/settings/devices`);
-            if (!launcherError && launcher?.onPath)
-                output.line('  On this machine: mnemonik status');
-            else {
-                if (launcher && !launcher.onPath)
-                    output.line(`  ${launcherPathAction(launcherOptions)}`);
-                output.line('  In this terminal: npx -y @mnemonik/cli@latest status');
-            }
+            if (launcherError || (launcher && !launcher.onPath))
+                output.line(`  ${launcher ? launcherPathAction(launcherOptions) : 'Run npx -y @mnemonik/cli@latest status'}`);
         }
         return result.journal.state === 'FAILED'
             ? 1
@@ -701,6 +708,10 @@ export async function joinedInstall(flags, deps, output, authorize, management) 
     }
     catch (error) {
         const reason = error instanceof Error ? error.message : 'install_failed';
+        if (reason === 'install_cancelled') {
+            output.line('  Installation cancelled.');
+            return 130;
+        }
         await reportFinal(serializeReadiness({
             installation: {
                 state: 'ACTION_REQUIRED',
@@ -714,8 +725,10 @@ export async function joinedInstall(flags, deps, output, authorize, management) 
                 reason,
                 ...(error instanceof LauncherError ? { launcher: error.launcher } : {}),
             });
-        else
-            output.error(reason);
+        else {
+            await log({ error: reason }).catch(() => undefined);
+            output.error(`Installation stopped. Details: ${logPath}`);
+        }
         return 3;
     }
     finally {

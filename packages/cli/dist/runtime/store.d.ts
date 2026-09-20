@@ -16,6 +16,7 @@ export declare function updateRuntime(update: RuntimeUpdate): Promise<Verified>;
 export interface HostPackagePin {
     package: string;
     version: string;
+    releaseVersion?: string;
     closure: Array<{
         name: string;
         version: string;
@@ -26,5 +27,5 @@ export interface HostPackagePin {
 export interface HostReleaseMap {
     hosts: Record<HostArtifact, HostPackagePin>;
 }
-export declare function hostNpmSource(host: HostArtifact, pin: HostPackagePin, fetcher?: typeof fetch): Promise<RuntimeSource>;
+export declare function hostNpmSource(host: HostArtifact, pin: HostPackagePin, fetcher?: typeof fetch, releaseKey?: string): Promise<RuntimeSource>;
 //# sourceMappingURL=store.d.ts.map

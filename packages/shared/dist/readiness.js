@@ -9,8 +9,6 @@ const stateFor = {
     scanner_not_verified: 'LIMITED',
     hook_not_verified: 'LIMITED',
     hooks_missing: 'ACTION_REQUIRED',
-    host_grant_unbound: 'LIMITED',
-    host_not_connected: 'LIMITED',
     scanner_omitted: 'LIMITED',
     project_uncovered: 'LIMITED',
     host_skipped: 'LIMITED',
@@ -26,8 +24,6 @@ const rank = {
     FAILED: 3,
 };
 function defaultAction(condition) {
-    if (condition.kind === 'host_skipped' && condition.component)
-        return `Connect it later: mnemonik connect ${condition.component}`;
     if (condition.kind === 'windows_task_creation_failed')
         return 'Run mnemonik scanner enable to try again.';
     return condition.action;
@@ -56,7 +52,7 @@ export function remainingReadinessCount(summary) {
 }
 export function describeReadiness(summary) {
     if (summary.state === 'READY')
-        return 'Done. Your editors will use Mnemonik on their next session.';
+        return 'Done.';
     const count = remainingReadinessCount(summary);
     const opening = summary.state === 'FAILED'
         ? 'Setup failed.'

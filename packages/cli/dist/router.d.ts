@@ -13,8 +13,12 @@ import { type ScannerPickerResult } from './scanner/picker.js';
 import { type InstallDependencies } from './install/transaction.js';
 import { type StatusDocumentInput } from './status.js';
 import { type DiagnosticsDependencies } from './diagnostics.js';
+export declare const connectFolderPrompt: (name: string) => string;
+export declare const removeFolderPrompt: (name: string) => string;
+export declare const connectedFolderLine: (name: string) => string;
+export declare const removedFolderLine: (name: string) => string;
 export declare function maintenanceExitCode(results: readonly Pick<HostResult, 'status'>[]): number;
-export declare const help = "Usage: mnemonik <command> [options]\n\nCommands:\n  install\n  status\n  connect <claude-code|codex|cursor|grok>\n  project <init|setup|status|link|ensure>\n  scanner <enable|start|stop|pause|resume|status|export-preview>\n  roots <add|remove|list>\n  data delete --project <id>\n  diagnostics <preview|send>\n  doctor\n  repair\n  update\n  uninstall\n  auth login\n  auth status\n  auth logout [--host <host>] [--confirm]\n  logout\n\nGlobal options: --json --non-interactive --no-browser --help --version\nInstall consent: --accept-scanner --without-scanner --accept-limited --apply";
+export declare const help = "Usage: mnemonik <command> [options]\n\nCommands:\n  install\n  status\n  connect <claude-code|codex|cursor|grok>\n  project <init|setup|status|link|ensure>\n  add <folder>\n  remove <folder>\n  data delete --project <id>\n  diagnostics <preview|send>\n  doctor\n  repair\n  update\n  uninstall\n  auth login\n  auth status\n  auth logout [--host <host>] [--confirm]\n  logout\n\nGlobal options: --json --non-interactive --no-browser --help --version\nInstall consent: --accept-indexing --accept-limited --apply";
 export interface CliDependencies {
     launcher?: LauncherOptions;
     install?: InstallDependencies;

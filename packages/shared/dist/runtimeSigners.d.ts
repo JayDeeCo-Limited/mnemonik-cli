@@ -11,6 +11,9 @@ export type Signer = {
 };
 export type Execute = (file: string, args: string[], input?: string) => Promise<unknown>;
 export declare const execute: Execute;
+/** Pinned release identity; a downloaded manifest can never replace its own trust anchor. */
+export declare const RELEASE_MINISIGN_PUBLIC_KEY = "RWSBYwgbjz0qKB4/ToA3dywBiAlQeBjoQpib4OHdjP2nDbpQnOVqpPm0";
+export declare function verifyMinisign(message: Buffer, signatureText: string, identity?: string): void;
 /** Release tooling supplies the real identity and artifacts. These checks do not sign anything. */
 export declare function verifySigner(path: string, signer: Signer, run?: Execute): Promise<void>;
 /** Windows stat mode/uid are not ACL evidence. */

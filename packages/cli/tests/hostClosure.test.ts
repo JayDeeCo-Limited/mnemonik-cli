@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process';
+import { generateKeyPairSync, randomBytes, sign } from 'node:crypto';
 import { cp, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
@@ -13,6 +14,29 @@ import { packedHosts } from './fixtures/hostRuntime.js';
 
 const repo = resolve('../..');
 const exactVersion = /^\d+\.\d+\.\d+(?:-[\w.-]+)?$/;
+const signingKey = () => {
+  const pair = generateKeyPairSync('ed25519');
+  const keyId = randomBytes(8);
+  const publicKey = pair.publicKey.export({ format: 'der', type: 'spki' }).subarray(-32);
+  return {
+    identity: Buffer.concat([Buffer.from('Ed'), keyId, publicKey]).toString('base64'),
+    sign(message: Buffer) {
+      const trustedComment = 'fixture release';
+      const fileSignature = sign(null, message, pair.privateKey);
+      return [
+        'untrusted comment: fixture signature',
+        Buffer.concat([Buffer.from('Ed'), keyId, fileSignature]).toString('base64'),
+        `trusted comment: ${trustedComment}`,
+        sign(
+          null,
+          Buffer.concat([fileSignature, Buffer.from(trustedComment)]),
+          pair.privateKey
+        ).toString('base64'),
+        '',
+      ].join('\n');
+    },
+  };
+};
 
 describe('release-pinned host closures', () => {
   let fixture: Awaited<ReturnType<typeof packedHosts>>;
@@ -151,6 +175,40 @@ describe('release-pinned host closures', () => {
       await rm(state, { recursive: true, force: true });
     }
   }, 15_000);
+
+  it('checks the hook package against its signed release entry before registry access', async () => {
+    const key = signingKey();
+    const pin = { ...structuredClone(fixture.pins.codex), releaseVersion: '1.2.3' };
+    const packages = Object.fromEntries(
+      [
+        '@mnemonik/cli',
+        '@mnemonik/claude-code-hooks',
+        '@mnemonik/codex-hooks',
+        '@mnemonik/copilot-hooks',
+        '@mnemonik/cursor-hooks',
+        '@mnemonik/grok-hooks',
+      ].map((name) => [name, { version: '1.2.3', integrity: 'sha512-Zml4dHVyZQ==' }])
+    );
+    const manifest = Buffer.from(
+      JSON.stringify({ schemaVersion: 1, version: pin.releaseVersion, packages })
+    );
+    fixture.requests.length = 0;
+    await expect(
+      hostNpmSource(
+        'codex',
+        pin,
+        async (input, init) => {
+          const address = String(input);
+          if (address.endsWith('/release-manifest.json')) return new Response(manifest);
+          if (address.endsWith('/release-manifest.json.minisig'))
+            return new Response(key.sign(manifest));
+          return fixture.fetcher(input, init);
+        },
+        key.identity
+      )
+    ).rejects.toMatchObject({ reason: 'digest_mismatch' });
+    expect(fixture.requests).toEqual([]);
+  });
 
   it('names a missing exact entry and never requests a range version', async () => {
     const missing = fixture.pins.codex.closure[1]!;

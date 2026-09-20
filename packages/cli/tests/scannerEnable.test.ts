@@ -12,7 +12,12 @@ import { join } from 'node:path';
 import { Readable } from 'node:stream';
 import { createCredentialAdapter } from '@mnemonik/credentials';
 import { RuntimeReader } from '@mnemonik/shared/hook-runtime';
-import { enableScanner, prepareScanner, type EnableOptions } from '../src/scanner/enable.js';
+import {
+  enableScanner,
+  prepareScanner,
+  updateScannerRoots,
+  type EnableOptions,
+} from '../src/scanner/enable.js';
 import { scannerService } from '../src/scanner/service.js';
 import { controlScanner, scannerReceipt } from '../src/scanner/control.js';
 import { updateScanner } from '../src/scanner/update.js';
@@ -33,7 +38,7 @@ const read=(name,fallback)=>{try{return JSON.parse(fs.readFileSync(path.join(p,n
 const write=(name,data)=>{const target=path.join(p,name),stage=target+'.'+process.pid+'.tmp';fs.writeFileSync(stage,JSON.stringify(data),{mode:0o600});fs.renameSync(stage,target)};
 const alive=()=>{let pid=read('supervisor.json',{}).pid;try{process.kill(pid,0);return pid}catch{return null}};
 if(process.argv[2]==='run') {
- const snapshot={version:'fixture',roots:[],exclusions:[],lifecycle:{state:'running',pid:process.pid,pauseIntervals:[]},heartbeat:{lastSuccess:Date.now()},transfers:{sinceStart:{files:0,bytes:0},sinceInstall:{files:0,bytes:0}}};
+ const snapshot={version:'fixture',roots:[],exclusions:[],lifecycle:{state:'running',pid:process.pid,controlId:read('control.json',{}).id,pauseIntervals:[]},heartbeat:{lastSuccess:Date.now()},transfers:{sinceStart:{files:0,bytes:0},sinceInstall:{files:0,bytes:0}}};
  const state=read('state.json',{});state.config=Object.fromEntries(Object.entries(state.config||{}).sort());write('state.json',state);
  const tick=()=>write('status.json',{recordedAt:Date.now(),snapshot});
  if(!fs.readFileSync(__filename,'utf8').endsWith('// MISS_HEARTBEAT')) tick();
@@ -115,6 +120,31 @@ beforeEach(async () => {
     authorize: async () => {
       events.push('auth');
       return 'cli-token';
+    },
+    projectExecutor: {
+      resolveProjectIdentity: (cwd) => resolveProjectIdentity(cwd, { allowNestedInherit: false }),
+      ensureProject: async ({ cwd }) => ({
+        status: 'done',
+        operationId: '11111111-1111-4111-8111-111111111111',
+        root: cwd,
+        projectId: '22222222-2222-4222-8222-222222222222',
+        permissionStatus: 'private',
+      }),
+      stage: async () => ({
+        status: 'ACTION_REQUIRED',
+        state: 'unused',
+        allowedActions: [],
+      }),
+      apply: async () => ({
+        status: 'ACTION_REQUIRED',
+        state: 'unused',
+        allowedActions: [],
+      }),
+      rollback: async () => ({
+        status: 'ACTION_REQUIRED',
+        state: 'unused',
+        allowedActions: [],
+      }),
     },
     fetch: vi.fn(async (url, init) => {
       const path = new URL(String(url)).pathname;
@@ -210,6 +240,193 @@ it('fresh enable verifies runtime, stores browser consent and credential, starts
     reason: 'unsigned',
   });
 });
+it('sends boundary candidates and configures only the approved subset', async () => {
+  const git = promisify(execFile);
+  const boundary = join(home, 'Projects');
+  const app = join(boundary, 'app');
+  const notes = join(boundary, 'notes');
+  await git('git', ['init', '--quiet', app]);
+  await mkdir(notes);
+  const identity = `${JSON.stringify({
+    schemaVersion: 1,
+    projectId: '33333333-3333-4333-8333-333333333333',
+    projectName: 'notes',
+  })}\n`;
+  await writeFile(join(notes, '.mnemonik.json'), identity);
+  options.cwd = boundary;
+  options.home = home;
+  options.input = Readable.from('\n');
+  options.nonInteractive = false;
+  options.roots = undefined;
+  const authorize = vi.fn(async (selection) => {
+    if (selection) consent = { ...consent, roots: [app], exclusions: [] };
+    return 'cli-token';
+  });
+  options.authorize = authorize;
+
+  await enableScanner(options);
+
+  expect(authorize).toHaveBeenCalledWith(
+    {
+      roots: [],
+      exclusions: [],
+      boundary,
+      candidates: [
+        { path: app, name: 'app', kind: 'git' },
+        { path: notes, name: 'notes', kind: 'folder' },
+      ],
+    },
+    '11111111-1111-4111-8111-111111111111'
+  );
+  expect(JSON.parse(await readFile(join(state, 'scanner/state.json'), 'utf8'))).toMatchObject({
+    boundary,
+    config: { roots: [app] },
+  });
+  expect(await readFile(join(notes, '.mnemonik.json'), 'utf8')).toBe(identity);
+});
+it('says it will wait for scanner consent for the full approval lifetime', async () => {
+  let text = '';
+  options.output = new Output({ write: (chunk) => void (text += chunk) });
+  options.nonInteractive = false;
+  options.input = Readable.from('\n');
+  options.roots = [consent.roots[0]!];
+  consent.roots = [join(home, 'different')];
+  options.authorize = async (selection) => {
+    if (selection) consent.roots = [options.roots![0]!];
+    return 'cli-token';
+  };
+
+  await enableScanner(options);
+
+  expect(text).toContain('Waiting for approval in your browser, up to 10 minutes.');
+});
+it('atomically adopts the current-consent root update', async () => {
+  await enableScanner(options);
+  const added = join(home, 'added');
+  await mkdir(added);
+  const request = vi.fn(
+    async (_url: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+      expect(JSON.parse(String(init?.body))).toEqual({ add: [added], remove: [] });
+      return Response.json({
+        consent: { ...consent, roots: [...consent.roots, added] },
+        disclosure: { version: consent.disclosureVersion, statements: [] },
+      });
+    }
+  );
+
+  await expect(
+    updateScannerRoots({
+      stateDir: state,
+      bearer: 'cli-token',
+      add: [added],
+      remove: [],
+      fetch: request as typeof fetch,
+    })
+  ).resolves.toMatchObject({ status: 'updated' });
+  const saved = JSON.parse(await readFile(join(state, 'scanner/state.json'), 'utf8'));
+  expect(saved.config.roots).toEqual([...consent.roots, added]);
+  expect(saved.consent.roots).toEqual([...consent.roots, added]);
+  expect(request).toHaveBeenCalledOnce();
+});
+it('creates every approved project once across repeated enables', async () => {
+  const git = promisify(execFile);
+  const app = join(home, 'app');
+  const shop = join(home, 'shop');
+  await git('git', ['init', '--quiet', app]);
+  await git('git', ['init', '--quiet', shop]);
+  consent.roots = [app, shop];
+  options.roots = [app, shop];
+  const ids = new Map([
+    [app, '44444444-4444-4444-8444-444444444444'],
+    [shop, '55555555-5555-4555-8555-555555555555'],
+  ]);
+  const pathByHash = new Map(
+    [...ids].map(([path]) => [createHash('sha256').update(path).digest('hex'), path])
+  );
+  const transport = {
+    issueSetupRequest: vi.fn(async (input: { projectId?: string }) =>
+      input.projectId
+        ? { status: 'complete' as const, projectId: input.projectId, displayName: 'existing' }
+        : {
+            status: 'project_setup_required' as const,
+            state: 'missing',
+            allowedActions: ['create', 'cancel'],
+            requestId: randomBytes(16).toString('hex'),
+          }
+    ),
+    consumeSetupRequest: vi.fn(async (input: { deviceRootContext: { hash: string } }) => {
+      const path = pathByHash.get(input.deviceRootContext.hash)!;
+      return {
+        status: 'complete' as const,
+        projectId: ids.get(path)!,
+        displayName: path.split('/').at(-1)!,
+      };
+    }),
+  };
+  const setup = createProjectSetupExecutor({
+    resolver: { resolveProjectIdentity },
+    transport,
+    scopeKey: 'user:device',
+    bindContext: async (root) => ({
+      deviceRootContext: {
+        algorithmVersion: 1,
+        hash: createHash('sha256').update(root).digest('hex'),
+      },
+      repositoryFingerprint: null,
+    }),
+    stateDir: state,
+  });
+  options.projectExecutor = {
+    resolveProjectIdentity: (cwd) => resolveProjectIdentity(cwd, { allowNestedInherit: false }),
+    ...setup,
+  };
+
+  await enableScanner(options);
+  allowInstalledCredential = true;
+  await enableScanner(options);
+
+  expect(transport.consumeSetupRequest).toHaveBeenCalledTimes(2);
+  expect(JSON.parse(await readFile(join(app, '.mnemonik.json'), 'utf8')).projectId).toBe(
+    ids.get(app)
+  );
+  expect(JSON.parse(await readFile(join(shop, '.mnemonik.json'), 'utf8')).projectId).toBe(
+    ids.get(shop)
+  );
+});
+it('configures only roots whose projects survive a plan limit', async () => {
+  const app = join(home, 'app');
+  const shop = join(home, 'shop');
+  await Promise.all([mkdir(app), mkdir(shop)]);
+  consent.roots = [app, shop];
+  options.roots = [app, shop];
+  const executor = options.projectExecutor;
+  if (!executor) throw new Error('missing project executor');
+  executor.ensureProject = vi.fn(async ({ cwd }) =>
+    cwd === shop
+      ? {
+          status: 'ACTION_REQUIRED' as const,
+          state: 'project_limit_reached',
+          allowedActions: ['upgrade', 'cancel'],
+          used: 1,
+          limit: 1,
+          tier: 'free',
+          existingProjectNames: ['app'],
+        }
+      : {
+          status: 'done' as const,
+          operationId: '11111111-1111-4111-8111-111111111111',
+          root: cwd,
+          projectId: '22222222-2222-4222-8222-222222222222',
+          permissionStatus: 'private' as const,
+        }
+  );
+
+  await enableScanner(options);
+
+  const saved = JSON.parse(await readFile(join(state, 'scanner/state.json'), 'utf8'));
+  expect(saved.config.roots).toEqual([app]);
+  expect(saved.consent.roots).toEqual([app, shop]);
+});
 it.each(['ownership', 'cli-grant', 'missing'])(
   'retries failed consent using %s installation evidence',
   async (evidence) => {
@@ -270,6 +487,37 @@ it.each(['ownership', 'cli-grant', 'missing'])(
       );
   }
 );
+it('a git repository that contains other repositories is a valid root; a plain folder of repositories is refused by name', async () => {
+  const git = promisify(execFile);
+  const repository = join(home, 'workspace-repo');
+  await git('git', ['init', '--quiet', repository]);
+  await git('git', ['init', '--quiet', join(repository, 'tool-a')]);
+  await git('git', ['init', '--quiet', join(repository, 'tool-b')]);
+  consent.roots = [repository];
+  options.roots = [repository];
+  const result = await enableScanner(options);
+  expect(result.installation.state).toBe('LIMITED');
+  expect(JSON.parse(await readFile(join(state, 'scanner/state.json'), 'utf8'))).toMatchObject({
+    config: { roots: [repository] },
+  });
+
+  const container = join(home, 'workspace-plain');
+  await git('git', ['init', '--quiet', join(container, 'tool-a')]);
+  await git('git', ['init', '--quiet', join(container, 'tool-b')]);
+  let errors = '';
+  options.output = new Output(
+    { write() {} },
+    {
+      write(text: string) {
+        errors += text;
+      },
+    }
+  );
+  options.roots = [container];
+  await expect(enableScanner(options)).rejects.toThrow('broad_workspace_parent');
+  expect(errors).toContain(container);
+});
+
 it('good update swaps; tamper never becomes current; missed heartbeat restores verified previous', async () => {
   await enableScanner(options);
   await updateScanner({ stateDir: state, store }, () => source('2.0.0'));
@@ -603,7 +851,7 @@ it.each(['success', 'failure', 'existing-identity', 'skip'])(
       expect(report.installation.state).toBe('LIMITED');
       expect(await bytesAt(identity)).not.toBeNull();
       if (ending === 'skip') {
-        expect(report.reports.join(' ')).toContain('Scanner was skipped');
+        expect(report.reports.join(' ')).toContain('Background indexing was skipped');
         expect(await bytesAt(join(state, 'scanner/state.json'))).toBeNull();
       } else
         expect(report.projects[0].summary).toEqual({
@@ -621,6 +869,7 @@ it.each([false, true])(
   async (existing) => {
     if (existing) await enableScanner(options);
     const path = join(state, 'scanner/state.json');
+    const originalPid = existing ? (await scannerReceipt(state))!.snapshot.lifecycle.pid : null;
     const before = await bytesAt(path);
     const pointer = await bytesAt(store.pointerPath('scanner'));
     await withInstall(
@@ -664,6 +913,16 @@ it.each([false, true])(
             }
           )
         ).rejects.toThrow(existing ? 'scanner_step_failed' : 'report_failed_after_heartbeat');
+        if (existing) {
+          const control = JSON.parse(
+            await readFile(join(state, 'scanner/control.json'), 'utf8')
+          ) as { id: string };
+          await vi.waitFor(async () => {
+            const receipt = await scannerReceipt(state);
+            expect(receipt?.snapshot.lifecycle.pid).not.toBe(originalPid);
+            expect(receipt?.snapshot.lifecycle.controlId).toBe(control.id);
+          });
+        }
         expect(await bytesAt(path)).toEqual(before);
         expect(await bytesAt(store.pointerPath('scanner'))).toEqual(pointer);
         if (existing) expect(JSON.parse((await bytesAt(path))!.toString()).paused).toBe(false);

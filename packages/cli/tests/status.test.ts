@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import type { ReadinessCondition } from '@mnemonik/shared';
 import { buildStatusDocument, renderStatusSummaries } from '../src/status.js';
 
 const project = {
@@ -25,8 +26,8 @@ describe('installation and project status', () => {
       identityFile: null,
       summary: {
         state: 'LIMITED',
-        reasons: ['/work/acme is outside approved scanner roots.'],
-        actions: ['mnemonik roots add /work/acme'],
+        reasons: ['This project is not connected.'],
+        actions: ['mnemonik add /work/acme'],
       },
     });
   });
@@ -45,8 +46,8 @@ describe('installation and project status', () => {
     expect(document.installation.state).toBe('LIMITED');
     expect(document.projects?.[0]?.summary).toEqual({
       state: 'LIMITED',
-      reasons: ['Scanner was deliberately omitted for this installation.'],
-      actions: ['Run mnemonik scanner enable to add this project.'],
+      reasons: ['Background indexing was deliberately omitted for this installation.'],
+      actions: ['mnemonik add /work/acme'],
     });
   });
 
@@ -77,8 +78,9 @@ describe('installation and project status', () => {
     });
     renderStatusSummaries(withProject, output);
     expect(lines).toEqual([
-      'Installation: Done. Your editors will use Mnemonik on their next session.',
-      'This project: Done. Your editors will use Mnemonik on their next session.',
+      'Mnemonik is installed and working.',
+      'Connected: work',
+      'This project: Done.',
     ]);
 
     lines.length = 0;
@@ -91,163 +93,87 @@ describe('installation and project status', () => {
       output
     );
     expect(lines).toEqual([
-      'Installation: Done, with 2 things left. scanner_not_verified. hook_not_verified. run mnemonik status after the scanner service starts run mnemonik status after the codex hook starts',
+      'Installation: Needs attention.',
+      'The scanner has not checked in yet.',
+      'Run mnemonik status on this machine after the scanner starts.',
+      'Mnemonik has not received context from an editor hook yet.',
+      'Start a new editor session, then run mnemonik status.',
     ]);
   });
 });
 
-it('distinguishes an unbound host from a bound host that has not connected', async () => {
-  const { mkdtemp, writeFile, rm } = await import('node:fs/promises');
-  const { tmpdir } = await import('node:os');
-  const { join } = await import('node:path');
-  const { Readable } = await import('node:stream');
-  const { collectStatusDocument } = await import('../src/status.js');
-  const { grantTransport } = await import('../src/auth/status.js');
-  const stateDir = await mkdtemp(join(tmpdir(), 'host-status-'));
-  try {
-    await writeFile(
-      join(stateDir, 'host-ownership.json'),
-      JSON.stringify({
-        schemaVersion: 1,
-        generation: 0,
-        targets: [
-          {
-            id: 'target',
-            host: 'codex',
-            component: 'mcp',
-            profilePath: '/unused',
-            files: [],
-            grant: { id: 'host', account: 'owner' },
-          },
-        ],
-      })
-    );
-    let deviceInstallationId: string | null = null;
-    let activatedAt: string | null = new Date().toISOString();
-    let includeHostGrant = false;
-    let renewed = false;
-    let renewedInstallation: string | null = null;
-    const grants = grantTransport(
-      async () => 'token',
-      async (_url, init) => {
-        if (init?.method === 'POST') {
-          renewedInstallation = 'machine-a';
-          return Response.json({ id: 'renewed', deviceInstallationId: 'machine-a' });
-        }
-        return Response.json({
-          account: 'owner',
-          deviceInstallationId: 'machine-a',
-          grants: [
-            ...(includeHostGrant
-              ? [
-                  {
-                    id: 'host',
-                    clientId: 'https://chatgpt.com/oauth/codex/client.json',
-                    clientName: null,
-                    softwareId: null,
-                    scopes: ['mcp:use'],
-                    resource: 'https://api.mnemonik.dev/mcp',
-                    createdAt: new Date().toISOString(),
-                    activatedAt,
-                    lastUsedAt: null,
-                    deviceInstallationId,
-                  },
-                ]
-              : []),
-            ...(renewed
-              ? [
-                  {
-                    id: 'cli',
-                    clientId: 'cli',
-                    clientName: null,
-                    softwareId: null,
-                    scopes: ['install:manage', 'components:manage'],
-                    resource: 'https://api.mnemonik.dev/',
-                    createdAt: '2026-01-01T00:00:00Z',
-                    activatedAt: null,
-                    lastUsedAt: null,
-                    deviceInstallationId: 'machine-a',
-                  },
-                  {
-                    id: 'renewed',
-                    clientId: 'https://chatgpt.com/oauth/codex/client.json',
-                    clientName: null,
-                    softwareId: null,
-                    scopes: ['mcp:use'],
-                    resource: 'https://api.mnemonik.dev/mcp',
-                    createdAt: new Date().toISOString(),
-                    activatedAt: new Date().toISOString(),
-                    lastUsedAt: null,
-                    deviceInstallationId: renewedInstallation,
-                  },
-                ]
-              : []),
-          ],
-        });
-      }
-    );
-    const collect = () =>
-      collectStatusDocument({
-        stateDir,
-        grants,
-        cwd: stateDir,
-        input: Readable.from(''),
-        preflight: {
-          status: 'ready',
-          node: { supported: true, version: '24' },
-          os: 'Linux',
-          hosts: [],
-          project: { resolution: 'absent' },
-          network: { reachable: true, discoveryUrl: '' },
-        },
-        scannerStatus: async () => ({ roots: [], exclusions: [], repositories: [] }),
-        projectHookConditions: [],
-      });
-    expect((await collect()).installation).toEqual({
-      state: 'LIMITED',
-      reasons: ['codex: host_grant_unbound'],
-      actions: ['mnemonik connect codex'],
-    });
-    includeHostGrant = true;
-    deviceInstallationId = 'machine-b';
-    expect((await collect()).installation.state).toBe('LIMITED');
-    deviceInstallationId = 'machine-a';
-    activatedAt = null;
-    const notConnected = await collect();
-    expect(notConnected.installation).toEqual({
-      state: 'LIMITED',
-      reasons: ['codex: signed in, not connected yet'],
-      actions: ['open Codex and start a session, then run mnemonik status'],
-    });
-    const lines: string[] = [];
-    renderStatusSummaries(notConnected, { line: (line = '') => lines.push(line) });
-    expect(lines).toContain('codex: signed in, not connected yet');
-    expect(lines.join('\n')).not.toContain('mnemonik connect codex');
-    activatedAt = new Date().toISOString();
-    const bound = await collect();
-    expect(bound.installation.state).toBe('READY');
-    expect(bound.devicesAndGrants?.[0]?.device).toBe('connected to this machine');
-    renewed = true;
-    const relinked = await collect();
-    expect(renewedInstallation).toBe('machine-a');
-    expect(relinked.devicesAndGrants?.find((g) => g.id === 'renewed')?.device).toBe(
-      'connected to this machine'
-    );
-  } finally {
-    await rm(stateDir, { recursive: true, force: true });
-  }
+it('hides launcher paths, credential diagnostics and readiness reason codes', () => {
+  const lines: string[] = [];
+  const document = buildStatusDocument({
+    installationConditions: [
+      { kind: 'login_pending', reason: 'host_grant_unbound' },
+      {
+        kind: 'future_readiness_code' as ReadinessCondition['kind'],
+        reason: 'future_readiness_code',
+      },
+    ],
+    scannerStatus: { roots: [], exclusions: [], repositories: [] },
+    projectHookConditions: [],
+  });
+  renderStatusSummaries(
+    {
+      ...document,
+      cliCredential: {
+        store: 'file',
+        present: true,
+        diagnostics: ['os_store_unavailable'],
+      },
+      launcher: {
+        path: '/home/dev/.local/bin/mnemonik',
+        directory: '/home/dev/.local/bin',
+        ownership: 'not_ours',
+        onPath: false,
+        action:
+          'Move the existing /home/dev/.local/bin/mnemonik aside yourself, then run npx -y @mnemonik/cli@latest install.',
+      },
+    },
+    { line: (line = '') => lines.push(line) }
+  );
+
+  expect(lines).toContain('An editor is signed out of Mnemonik on this machine.');
+  expect(lines).toContain('Sign in to Mnemonik from that editor to restore context.');
+  expect(lines).toContain('This machine needs attention before Mnemonik can work fully.');
+  expect(document.installation.reasons).toEqual(['host_grant_unbound', 'future_readiness_code']);
+  expect(lines.join('\n')).not.toMatch(
+    /\/home\/dev|CLI credential|Launcher:|host_grant_unbound|future_readiness_code|os_store_unavailable/u
+  );
 });
 
-it('reports a host skipped at install as still connecting, not unbound', async () => {
+it('keeps a plain host-specific next step', () => {
+  const lines: string[] = [];
+  const action =
+    'Run the codex command in a terminal and use its hook trust prompt to allow the Mnemonik hooks; then quit and reopen Codex.';
+  renderStatusSummaries(
+    buildStatusDocument({
+      installationConditions: [
+        { kind: 'host_trust_pending', reason: 'codex_trust_pending', action },
+      ],
+      scannerStatus: { roots: [], exclusions: [], repositories: [] },
+      projectHookConditions: [],
+    }),
+    { line: (line = '') => lines.push(line) }
+  );
+
+  expect(lines).toEqual([
+    'Installation: Needs attention.',
+    'Codex needs permission to use the Mnemonik hooks.',
+    action,
+  ]);
+});
+
+it('keeps installed hooks READY before an editor has signed in', async () => {
   const { mkdtemp, writeFile, rm } = await import('node:fs/promises');
   const { tmpdir } = await import('node:os');
   const { join } = await import('node:path');
   const { Readable } = await import('node:stream');
   const { collectStatusDocument } = await import('../src/status.js');
-  const { grantTransport } = await import('../src/auth/status.js');
-  const stateDir = await mkdtemp(join(tmpdir(), 'skipped-host-status-'));
+  const stateDir = await mkdtemp(join(tmpdir(), 'unsigned-editor-status-'));
   try {
-    // Skip keeps the URL-only MCP declaration and records no grant for the target.
     await writeFile(
       join(stateDir, 'host-ownership.json'),
       JSON.stringify({
@@ -255,19 +181,20 @@ it('reports a host skipped at install as still connecting, not unbound', async (
         generation: 0,
         targets: [
           {
-            id: 'target',
-            host: 'cursor',
-            component: 'mcp',
+            id: 'codex-hooks',
+            host: 'codex',
+            component: 'hooks',
             profilePath: '/unused',
             files: [],
           },
         ],
       })
     );
-    const grants = grantTransport(
-      async () => 'token',
-      async () => Response.json({ account: 'owner', deviceInstallationId: 'machine-a', grants: [] })
-    );
+    const grants = {
+      list: async () => {
+        throw new Error('editor grants must not be read');
+      },
+    };
     const document = await collectStatusDocument({
       stateDir,
       grants,
@@ -284,17 +211,48 @@ it('reports a host skipped at install as still connecting, not unbound', async (
       scannerStatus: async () => ({ roots: [], exclusions: [], repositories: [] }),
       projectHookConditions: [],
     });
-    expect(document.installation).toEqual({
-      state: 'ACTION_REQUIRED',
-      reasons: [
-        'Cursor is still connecting. Finish the sign-in in the app, then run mnemonik status.',
-      ],
-      actions: ['mnemonik status'],
-    });
+    expect(document.installation).toEqual({ state: 'READY', reasons: [], actions: [] });
     const lines: string[] = [];
     renderStatusSummaries(document, { line: (line = '') => lines.push(line) });
-    expect(lines.join('\n')).not.toContain('host_grant_unbound');
-    expect(lines.join('\n')).not.toContain('mnemonik connect cursor');
+    expect(lines.join('\n').toLowerCase()).not.toMatch(/unbound|reconnect|connect/);
+  } finally {
+    await rm(stateDir, { recursive: true, force: true });
+  }
+});
+
+it('lists connected folder names without searching the discovery folder', async () => {
+  const { mkdtemp, rm } = await import('node:fs/promises');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { Readable } = await import('node:stream');
+  const { collectStatusDocument } = await import('../src/status.js');
+  const stateDir = await mkdtemp(join(tmpdir(), 'connected-projects-status-'));
+  try {
+    const roots = Array.from({ length: 10 }, (_, index) =>
+      join(stateDir, `repo-${String(index + 1).padStart(3, '0')}`)
+    );
+    const document = await collectStatusDocument({
+      stateDir,
+      cwd: stateDir,
+      input: Readable.from(''),
+      scannerStatus: async () => ({ roots, exclusions: [], repositories: [] }),
+      preflight: {
+        status: 'ready',
+        node: { supported: true, version: '24' },
+        os: 'Linux',
+        hosts: [],
+        project: { resolution: 'absent' },
+        network: { reachable: true, discoveryUrl: '' },
+      },
+      projectHookConditions: [],
+    });
+    expect(document).not.toHaveProperty('foundRepositories');
+    const lines: string[] = [];
+    renderStatusSummaries(document, { line: (line = '') => lines.push(line) });
+    expect(lines).toContain(
+      'Connected: repo-001, repo-002, repo-003, repo-004, repo-005, repo-006, repo-007, repo-008, and 2 more'
+    );
+    expect(lines.join('\n')).not.toContain(stateDir);
   } finally {
     await rm(stateDir, { recursive: true, force: true });
   }

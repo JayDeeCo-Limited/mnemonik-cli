@@ -1,3 +1,1 @@
-  Review scanner disclosure and roots in your browser.
-  Waiting for you to approve the selected roots before Apply.
-
+Step 4 of 5: Connect repositories

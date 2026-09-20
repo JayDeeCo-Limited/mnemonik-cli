@@ -3,6 +3,7 @@ import { type Evidence, type SetupTransport, type EnsureOptions, type SetupResul
 import { type Fault } from './storage.js';
 export * from './contracts.js';
 export * from './windowsPath.js';
+export * from './automaticUpdate.js';
 export { stateDirectory, recordPath, protectStateFile, windowsCurrentUserAcl, windowsCurrentAccount, atomicWrite, withLock, type Fault, type PermissionStatus, type ExecFile, } from './storage.js';
 type Step = {
     complete: boolean;

@@ -10,6 +10,9 @@ export interface ProjectExecutor {
     apply(options: EnsureOptions): Promise<SetupResult>;
     rollback(options: EnsureOptions): Promise<SetupResult>;
 }
+export declare function ensureProjectRoot(root: string, executor: ProjectExecutor): Promise<SetupResult>;
+export declare function projectLimitMessage(result: SetupResult, roots: string | readonly string[]): string[] | undefined;
+export declare const connectedProjectsMessage: (roots: string[]) => string;
 export declare const projectExecutor: (dependencies: ExecutorDependencies) => ProjectExecutor;
 export type ServerProjectState = 'access' | 'archived' | 'deleted' | 'suspended' | 'mismatch' | 'not_found';
 export interface ProjectReadTransport {

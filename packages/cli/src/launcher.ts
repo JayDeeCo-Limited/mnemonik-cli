@@ -5,6 +5,7 @@ import { basename, isAbsolute, join, resolve } from 'node:path';
 import {
   appendWindowsPath,
   atomicWrite,
+  cliLauncherPath,
   readWindowsUserPath,
   removeWindowsPathEntry,
   stateDirectory,
@@ -58,7 +59,7 @@ function locations(options: LauncherOptions) {
     env,
     directory,
     state,
-    path: join(directory, platform === 'win32' ? 'mnemonik.cmd' : 'mnemonik'),
+    path: cliLauncherPath({ platform, home, env }),
     entry: join(state, 'runtimes', 'bootstrap', 'dist', 'bin.js'),
     record: join(state, 'launcher.json'),
   };

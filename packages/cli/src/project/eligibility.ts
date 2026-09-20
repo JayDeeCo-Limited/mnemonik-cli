@@ -2,7 +2,7 @@ import { lstat, readdir, realpath } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { join, posix, win32 } from 'node:path';
 import { stateDirectory } from '@mnemonik/local-setup';
-import type { ProjectIdentityResolution } from '@mnemonik/shared';
+import type { ProjectIdentityResolution, RepositoryRootResult } from '@mnemonik/shared';
 
 export type RootDecision =
   | { allowed: true; root: string; reason: string; nonGit: boolean }
@@ -22,6 +22,28 @@ async function canonical(path: string, platform: NodeJS.Platform): Promise<strin
   const absolute = paths.resolve(path);
   if (platform !== process.platform) return absolute;
   return realpath(path).catch(() => absolute);
+}
+
+/**
+ * Repository shape of a candidate root from what is on disk: a `.git` directory
+ * or file (a linked worktree) makes it a git repository; anything else is a
+ * plain folder. Every root-picking path must use this before evaluateRoot, so
+ * that a repository which happens to contain other repositories is never
+ * mistaken for a broad workspace parent.
+ */
+export async function repositoryAt(
+  candidate: string
+): Promise<Extract<RepositoryRootResult, { kind: 'git' | 'plain' }>> {
+  const marker = await lstat(join(candidate, '.git')).catch(() => undefined);
+  return marker?.isDirectory() || marker?.isFile()
+    ? {
+        kind: 'git',
+        root: candidate,
+        commonDir: join(candidate, '.git'),
+        isLinkedWorktree: false,
+        nested: [],
+      }
+    : { kind: 'plain', root: candidate };
 }
 
 async function broadWorkspace(root: string): Promise<boolean> {

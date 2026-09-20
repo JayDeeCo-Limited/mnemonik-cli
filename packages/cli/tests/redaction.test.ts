@@ -80,7 +80,7 @@ describe('redacted output funnel', () => {
                 {
                   kind: 'project_uncovered',
                   reason: 'Project is outside approved roots.',
-                  action: 'mnemonik roots add /work/acme',
+                  action: 'mnemonik add /work/acme',
                 },
               ],
             },

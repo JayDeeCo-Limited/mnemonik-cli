@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import type { Dirent } from 'node:fs';
-import { lstat, readdir, realpath } from 'node:fs/promises';
+import { access, lstat, readdir, realpath } from 'node:fs/promises';
 import { basename, isAbsolute, join, relative, resolve } from 'node:path';
 import {
   resolveProjectIdentity,
@@ -12,7 +12,7 @@ import {
 
 export const DIRECTORY_LIMIT = 10_000;
 export const DISCOVERY_DEPTH = 3;
-export const REPOSITORY_LIMIT = 32;
+export const REPOSITORY_LIMIT = 200;
 
 export type RepositoryState =
   'existing_project' | 'remote_setup' | 'not_set_up' | 'action_required';
@@ -23,6 +23,12 @@ export interface DiscoveredRepository {
   nonGitSelected?: true;
   fingerprint?: RepositoryFingerprint;
   reason?: Exclude<ProjectIdentityResolution['kind'], 'ok' | 'absent'>;
+}
+
+export interface ScannerCandidate {
+  path: string;
+  name: string;
+  kind: 'git' | 'folder';
 }
 
 export type DiscoveryResult = {
@@ -169,10 +175,13 @@ export async function discoverRepositories(
     } catch {
       continue;
     }
-    const boundary = entries.find(
+    const gitBoundary = entries.find(
       (entry) => entry.name === '.git' && (entry.isDirectory() || entry.isFile())
     );
-    if (boundary) {
+    const identityBoundary = entries.some(
+      (entry) => entry.name === '.mnemonik.json' && entry.isFile()
+    );
+    if (gitBoundary || identityBoundary) {
       repositories.push(
         await classifyRepository(canonical, {
           canonicalizePath: canonicalize,
@@ -184,13 +193,51 @@ export async function discoverRepositories(
     }
     if (directory.depth >= maxDepth) continue;
     const children = entries
-      .filter((entry) => entry.name !== '.git' && entry.isDirectory() && !entry.isSymbolicLink())
+      .filter(
+        (entry) =>
+          !entry.name.startsWith('.') &&
+          entry.name !== 'node_modules' &&
+          entry.isDirectory() &&
+          !entry.isSymbolicLink()
+      )
       .map((entry) => ({ path: join(canonical, entry.name), depth: directory.depth + 1 }))
       .sort((left, right) => left.path.localeCompare(right.path));
     queue.push(...children);
   }
 
   return result('complete', false);
+}
+
+export async function scannerCandidates(boundary: string): Promise<{
+  boundary: string;
+  candidates: ScannerCandidate[];
+  repositories: DiscoveredRepository[];
+}> {
+  const discovered = await discoverRepositories(boundary);
+  return {
+    boundary: discovered.root,
+    repositories: discovered.repositories,
+    candidates: discovered.repositories.map((repository) => ({
+      path: repository.path,
+      name: repositoryName(discovered.root, repository.path),
+      kind: repository.nonGitSelected ? 'folder' : 'git',
+    })),
+  };
+}
+
+export async function guessDiscoveryBoundary(cwd: string, home: string): Promise<string> {
+  if ((await discoverRepositories(cwd).catch(() => undefined))?.repositories.length) return cwd;
+  for (const name of ['Projects', 'projects', 'code', 'src', 'dev', 'repos']) {
+    const candidate = join(home, name);
+    if (
+      await access(candidate).then(
+        () => true,
+        () => false
+      )
+    )
+      return candidate;
+  }
+  return cwd;
 }
 
 export const repositoryName = (root: string, path: string): string =>

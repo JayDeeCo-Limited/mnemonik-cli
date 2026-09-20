@@ -1,4 +1,4 @@
-import { enableScanner } from './scanner/enable.js';
+import { enableScanner, updateScannerRoots } from './scanner/enable.js';
 import { controlScanner, scannerReceipt } from './scanner/control.js';
 import { updateScanner } from './scanner/update.js';
 import { deleteScannerIndex } from './scanner/data.js';
@@ -10,15 +10,17 @@ import { runHosts, hostSource, codexTrustConditions, connectHost, logoutHost, se
 import { hostOrder } from './install/adapters.js';
 import { readInstallVersions } from './install/ownership.js';
 import { ensureLauncher, removeLauncher, LauncherError } from './launcher.js';
-import { readFile } from 'node:fs/promises';
+import { readFile, realpath } from 'node:fs/promises';
+import { createInterface } from 'node:readline';
 import { RuntimeStore, updateRuntime } from './runtime/store.js';
-import { updateCli, cliUpdateLine, cliUpdateHint } from './runtime/selfUpdate.js';
+import { updateCli, cliUpdateHint } from './runtime/selfUpdate.js';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { Output } from './output.js';
 import { renderPreflight, runPreflight } from './preflight.js';
 import { postCurrentReadiness } from './installSession.js';
-import { ensureProjectForAgent, runProjectCommand, } from './project.js';
+import { createRealProjectRuntime, ensureProjectRoot, ensureProjectForAgent, projectLimitMessage, runProjectCommand, } from './project.js';
+import { evaluateRoot } from './project/eligibility.js';
 import { apiOrigin, describeReadiness, serializeReadiness as baseReadiness, } from '@mnemonik/shared';
 import { grantTransport, grantHost } from './auth/status.js';
 import { createCliAuth } from './auth/index.js';
@@ -31,6 +33,16 @@ import { chooseHostProfile, simulatedInstall, terminalInstallUI } from './instal
 import { collectStatusDocument, renderStatusSummaries, statusExitCode, } from './status.js';
 import { DiagnosticsError, previewDiagnostics, sendDiagnostics, } from './diagnostics.js';
 const supportedHosts = ['claude-code', 'codex', 'cursor', 'grok'];
+const editorNames = {
+    'claude-code': 'Claude Code',
+    codex: 'Codex',
+    cursor: 'Cursor',
+    grok: 'Grok',
+};
+export const connectFolderPrompt = (name) => `Connect ${name} to Mnemonik? [Y/n]`;
+export const removeFolderPrompt = (name) => `Stop indexing ${name}? Its memories stay in your account. [y/N]`;
+export const connectedFolderLine = (name) => `  ✓ Connected ${name}.`;
+export const removedFolderLine = (name) => `  ✓ ${name} is no longer connected.`;
 export function maintenanceExitCode(results) {
     if (results.some((result) => result.status === 'FAILED'))
         return 1;
@@ -41,9 +53,9 @@ const booleans = new Set([
     'non-interactive',
     'agent',
     'accept-scanner',
+    'accept-indexing',
     'accept-limited',
     'apply',
-    'approve-host',
     'confirm',
     'without-scanner',
     'non-git',
@@ -55,11 +67,11 @@ const booleans = new Set([
     'verify',
     'dry-run',
     'reopen-install',
+    'automatic',
 ]);
 const values = new Set([
     'components',
     'hosts',
-    'integration-scope',
     'scan-roots',
     'host',
     'scope',
@@ -77,8 +89,8 @@ Commands:
   status
   connect <claude-code|codex|cursor|grok>
   project <init|setup|status|link|ensure>
-  scanner <enable|start|stop|pause|resume|status|export-preview>
-  roots <add|remove|list>
+  add <folder>
+  remove <folder>
   data delete --project <id>
   diagnostics <preview|send>
   doctor
@@ -91,7 +103,7 @@ Commands:
   logout
 
 Global options: --json --non-interactive --no-browser --help --version
-Install consent: --accept-scanner --without-scanner --accept-limited --apply`;
+Install consent: --accept-indexing --accept-limited --apply`;
 function parse(args) {
     const positionals = [];
     const flags = new Map();
@@ -110,7 +122,7 @@ function parse(args) {
         if (booleans.has(name)) {
             if (inline !== undefined)
                 return { positionals, flags, error: `Unknown flag: ${argument}` };
-            flags.set(name, true);
+            flags.set(name === 'accept-scanner' ? 'accept-indexing' : name, true);
             continue;
         }
         if (values.has(name)) {
@@ -193,9 +205,16 @@ async function hostDependencies(deps, output, state) {
             throw new Error(bearer.reason);
         return bearer;
     }, deps.grantFetch);
+    const bearer = await cliAuth.getCliBearer();
+    if (typeof bearer !== 'string')
+        throw new Error(bearer.reason);
+    if (!cliAuth.accountEmail)
+        throw new Error('account_identity_failed');
+    const email = await cliAuth.accountEmail(bearer);
+    const installation = JSON.parse(await readFile(join(state, 'installation.json'), 'utf8').catch(() => '{}'));
     return {
         stateDir: state,
-        account: (await grants.list()).account,
+        account: typeof installation.account === 'string' ? installation.account : email,
         grants,
         getCliBearer: async () => {
             const bearer = await cliAuth.getCliBearer();
@@ -204,6 +223,15 @@ async function hostDependencies(deps, output, state) {
             return bearer;
         },
         credentialFetch: deps.grantFetch,
+    };
+}
+async function updateHostDependencies(deps, state) {
+    if (deps.hostManagement)
+        return { ...deps.hostManagement, stateDir: state };
+    const installation = JSON.parse(await readFile(join(state, 'installation.json'), 'utf8').catch(() => '{}'));
+    return {
+        stateDir: state,
+        account: typeof installation.account === 'string' ? installation.account : '',
     };
 }
 async function packageVersion() {
@@ -215,7 +243,7 @@ async function runHostCommand(command, parsed, deps, output, scannerSelected = f
     const state = deps.hostManagement?.stateDir ??
         deps.installStateDir ??
         stateDirectory(process.platform, process.env, deps.home);
-    const scope = parsed.flags.get(command === 'install' ? 'integration-scope' : 'scope');
+    const scope = command === 'install' ? undefined : parsed.flags.get('scope');
     const host = parsed.flags.get('host');
     const component = parsed.flags.get('component');
     const fullUninstall = command === 'uninstall' && !host && !scope && !component;
@@ -232,7 +260,6 @@ async function runHostCommand(command, parsed, deps, output, scannerSelected = f
         if (components.some((c) => !['hooks', 'mcp'].includes(c)))
             return placeholder(output, json, 'install scanner', 'scanner setup');
         const missing = requireConsent(parsed, output, [
-            'integration-scope',
             ...(scannerSelected ? [] : ['accept-limited']),
             'apply',
         ]);
@@ -242,13 +269,15 @@ async function runHostCommand(command, parsed, deps, output, scannerSelected = f
         selections = [...new Set(names)].flatMap((name) => [...new Set(components)].map((component) => ({
             component: component,
             host: name,
-            scope: scope,
+            scope: 'user',
             home: deps.home ?? homedir(),
             projectRoot: deps.cwd ?? process.cwd(),
         })));
     }
     else {
         const resolved = await selectOwned(state, host ? String(host) : undefined, scope ? String(scope) : undefined, component ? String(component) : undefined);
+        if (command === 'update')
+            resolved.selected = resolved.selected.filter((target) => target.component === 'hooks');
         if (resolved.ambiguous.length && !json && !parsed.flags.has('non-interactive')) {
             const profile = await chooseHostProfile(deps.input ?? process.stdin, output, resolved.ambiguous);
             if (!profile)
@@ -290,7 +319,9 @@ async function runHostCommand(command, parsed, deps, output, scannerSelected = f
             ? await store.verifyRuntime('cli')
             : undefined;
         const managed = selections.length || (await interrupted(state)).length
-            ? await hostDependencies(deps, output, state)
+            ? command === 'update'
+                ? await updateHostDependencies(deps, state)
+                : await hostDependencies(deps, output, state)
             : undefined;
         const result = managed
             ? await runHosts(command, selections, {
@@ -301,32 +332,20 @@ async function runHostCommand(command, parsed, deps, output, scannerSelected = f
                         ? (host) => hostSource(host, join(updatedCli.directory, 'node_modules/@mnemonik/cli/package.json'))
                         : undefined),
                 instruction: json ? undefined : (text) => output.line(text),
-                timeout: managed.timeout ??
-                    (json || parsed.flags.has('non-interactive')
-                        ? undefined
-                        : async (host) => (await chooseHostProfile(deps.input ?? process.stdin, output, [
-                            `Retry ${host}`,
-                            `Skip ${host}`,
-                        ]))?.startsWith('Retry')
-                            ? 'retry'
-                            : 'skip'),
                 apply: parsed.flags.has('apply'),
-                offerRevoke: managed.offerRevoke ??
-                    (json || parsed.flags.has('non-interactive')
-                        ? undefined
-                        : async (host) => (await chooseHostProfile(deps.input ?? process.stdin, output, [
-                            `Keep ${host} grant`,
-                            `Revoke ${host} grant`,
-                        ]))?.startsWith('Revoke') ?? false),
-            }, parsed.flags.has('integration-scope'))
+            }, false)
             : { journal: { state: 'READY' }, results: [], reports: [] };
         let scanner;
         let launcher;
         if (all &&
             (await readFile(`${state}/scanner/state.json`).then(() => true, () => false))) {
             try {
+                const before = await store.verifyRuntime('scanner').catch(() => undefined);
                 const runtime = await updateScanner({ stateDir: state, ...deps.scannerService }, deps.scannerEnable?.source);
-                scanner = { status: 'UPDATED', version: runtime.manifest.version };
+                scanner = {
+                    status: before?.reference.version === runtime.reference.version ? 'UP_TO_DATE' : 'UPDATED',
+                    version: runtime.manifest.version,
+                };
             }
             catch (error) {
                 scanner = { status: 'FAILED', reason: error.message };
@@ -375,6 +394,16 @@ async function runHostCommand(command, parsed, deps, output, scannerSelected = f
                 ...(launcher ? { launcher } : {}),
                 ...(cli ? { cli } : {}),
             });
+        else if (command === 'update') {
+            if (failed || hostExit !== 0)
+                output.error('Mnemonik could not update. Run mnemonik update again.');
+            else if (cli?.status === 'UPDATED' ||
+                result.reports.length > 0 ||
+                scanner?.status === 'UPDATED')
+                output.line('Mnemonik updated.');
+            else
+                output.line('Mnemonik is up to date.');
+        }
         else {
             for (const target of result.results)
                 output.line(`${target.target}: ${target.status} (${target.reason}${target.detail ? `: ${target.detail}` : ''})`);
@@ -386,14 +415,16 @@ async function runHostCommand(command, parsed, deps, output, scannerSelected = f
                 output.line('Stopped collection; removed local software. Credentials, cloud data and consent retained.');
             else if (scanner)
                 output.line(`Scanner ${scanner.status}: ${scanner.version ?? scanner.reason}.`);
-            if (cli)
-                output.line(cliUpdateLine(cli));
         }
         if (scanner?.status === 'failed')
             output.error(scanner.reason ?? 'scanner_uninstall_failed');
         return failed ? 1 : hostExit;
     }
     catch (error) {
+        if (command === 'update' && !json) {
+            output.error('Mnemonik could not update. Run mnemonik update again.');
+            return error instanceof LauncherError ? 3 : 1;
+        }
         if (error instanceof LauncherError) {
             if (json)
                 output.json({ status: error.status, reason: error.message, launcher: error.launcher });
@@ -415,14 +446,14 @@ async function runHostCommand(command, parsed, deps, output, scannerSelected = f
 }
 async function hostCommand(command, parsed, deps, output, scannerSelected = false) {
     const code = await runHostCommand(command, parsed, deps, output, scannerSelected);
-    if (command === 'update' || command === 'repair')
+    if (command === 'repair')
         await reportCurrentInstallation(deps, output);
     return code;
 }
 async function enableCommand(parsed, deps, output) {
     const json = parsed.flags.has('json');
     if (parsed.flags.has('non-interactive') || json) {
-        const missing = requireConsent(parsed, output, ['accept-scanner', 'apply']);
+        const missing = requireConsent(parsed, output, ['accept-indexing', 'apply']);
         if (missing !== undefined)
             return missing;
         if (!parsed.flags.has('scan-roots'))
@@ -434,6 +465,7 @@ async function enableCommand(parsed, deps, output) {
         const result = await enableScanner({
             stateDir: deps.installStateDir ?? stateDirectory(process.platform, process.env, deps.home),
             cwd: deps.cwd ?? process.cwd(),
+            home: deps.home,
             input: deps.input ?? process.stdin,
             output,
             nonInteractive: parsed.flags.has('non-interactive') || json,
@@ -444,6 +476,8 @@ async function enableCommand(parsed, deps, output) {
                 : {}),
             ...deps.scannerService,
             ...deps.scannerEnable,
+            projectExecutor: deps.projectExecutor,
+            projectStateDir: deps.projectStateDir,
         });
         if (json)
             output.json(result);
@@ -468,10 +502,9 @@ async function installCommand(parsed, deps, output) {
     const invalid = allowed(parsed, [
         'components',
         'hosts',
-        'integration-scope',
         'scan-roots',
         'exclusions',
-        'accept-scanner',
+        'accept-indexing',
         'accept-limited',
         'without-scanner',
         'apply',
@@ -485,7 +518,7 @@ async function installCommand(parsed, deps, output) {
         const state = deps.hostManagement?.stateDir ??
             deps.installStateDir ??
             stateDirectory(process.platform, process.env, deps.home);
-        return joinedInstall(parsed.flags, deps, output, () => ensureCliAuth(deps, output, parsed.flags.has('no-browser'), !parsed.flags.has('json')), () => hostDependencies(deps, output, state));
+        return joinedInstall(parsed.flags, deps, output, () => ensureCliAuth(deps, output, parsed.flags.has('no-browser'), false), () => hostDependencies(deps, output, state));
     }
     const simulation = parsed.flags.has('dry-run')
         ? simulatedInstall(deps.installStateDir)
@@ -568,7 +601,7 @@ async function doctorCommand(parsed, deps, output) {
         output.json(document);
     else {
         renderPreflight(result, output);
-        renderStatusSummaries(document, output);
+        renderStatusSummaries(document, output, { diagnostics: true });
     }
     return document.installation.state === 'READY'
         ? 0
@@ -606,13 +639,6 @@ async function collectCurrentInstallation(deps, output) {
         projectHookConditions: deps.projectHookConditions,
         configuredHosts: deps.configuredHosts ?? deps.install?.input.hosts,
         details: deps.statusDetails,
-        grants: deps.hostManagement?.grants ??
-            grantTransport(async () => {
-                const bearer = await auth(deps, output, false).getCliBearer();
-                if (typeof bearer !== 'string')
-                    throw new Error(bearer.reason);
-                return bearer;
-            }, deps.grantFetch),
         generatedAt: deps.statusGeneratedAt,
         launcher: { ...deps.launcher, stateDir: hostStateDir, home: deps.home },
     });
@@ -638,12 +664,16 @@ async function reportCurrentInstallation(deps, output, document) {
     }
 }
 export async function runCli(args, deps = {}) {
-    const output = new Output(deps.stdout ?? process.stdout, deps.stderr ?? process.stderr, {
+    const parsed = parse(args);
+    const silent = parsed.flags.has('automatic');
+    const discard = { write: () => { } };
+    const stdout = silent ? discard : (deps.stdout ?? process.stdout);
+    const stderr = silent ? discard : (deps.stderr ?? process.stderr);
+    const output = new Output(stdout, stderr, {
         home: deps.home ?? homedir(),
     });
-    if (process.env.MNEMONIK_DEV_RELEASE_DIR)
-        (deps.stderr ?? process.stderr).write('WARNING: MNEMONIK_DEV_RELEASE_DIR uses development artifacts; readiness remains LIMITED (dev_release_source).\n');
-    const parsed = parse(args);
+    if (process.env.MNEMONIK_DEV_RELEASE_DIR && !silent)
+        stderr.write('WARNING: MNEMONIK_DEV_RELEASE_DIR uses development artifacts; readiness remains LIMITED (dev_release_source).\n');
     if (parsed.error)
         return (output.error(parsed.error), 2);
     if (parsed.flags.has('version')) {
@@ -664,18 +694,20 @@ export async function runCli(args, deps = {}) {
             return (output.error(`Unexpected argument: ${subcommand}`), 2);
         return installCommand(parsed, deps, output);
     }
-    if (command === 'roots') {
-        const invalid = allowed(parsed, ['accept-scanner', 'apply', 'no-browser']);
+    if (command === 'roots' || command === 'add' || command === 'remove') {
+        const action = command === 'roots' ? subcommand : command;
+        const actionArguments = command === 'roots' ? rest : [subcommand, ...rest].filter(Boolean);
+        const invalid = allowed(parsed, ['accept-indexing', 'apply', 'no-browser']);
         if (invalid ||
-            !['add', 'remove', 'list'].includes(subcommand ?? '') ||
-            rest.length !== (subcommand === 'list' ? 0 : 1))
-            return (output.error(invalid ?? 'Usage: mnemonik roots <add|remove> <path>, or roots list'),
+            !['add', 'remove', 'list'].includes(action ?? '') ||
+            actionArguments.length !== (action === 'list' ? 0 : 1))
+            return (output.error(invalid ?? 'Usage: mnemonik add <folder> or mnemonik remove <folder>'),
                 2);
         const stateDir = deps.installStateDir ?? stateDirectory(process.platform, process.env, deps.home);
         const saved = JSON.parse(await readFile(`${stateDir}/scanner/state.json`, 'utf8').catch(() => 'null'));
         if (!saved)
-            return actionRequired(output, parsed.flags.has('json'), 'mnemonik scanner enable');
-        if (subcommand === 'list') {
+            return actionRequired(output, parsed.flags.has('json'), 'mnemonik install');
+        if (action === 'list') {
             if (parsed.flags.has('json'))
                 output.json(saved.config.roots);
             else
@@ -683,9 +715,77 @@ export async function runCli(args, deps = {}) {
                     output.line(root);
             return 0;
         }
-        const roots = subcommand === 'add'
-            ? [...new Set([...saved.config.roots, rest[0] ?? ''])]
-            : saved.config.roots.filter((root) => root !== rest[0]);
+        if (action === 'add' &&
+            (parsed.flags.has('non-interactive') || parsed.flags.has('json')) &&
+            !parsed.flags.has('apply'))
+            return actionRequired(output, parsed.flags.has('json'), 'Rerun with --apply', '--apply');
+        const pathArgument = actionArguments[0] ?? '';
+        const requested = action === 'add'
+            ? await realpath(pathArgument)
+            : (saved.config.roots.find((root) => root === pathArgument) ?? pathArgument);
+        const name = requested.split(/[\\/]/u).filter(Boolean).at(-1) ?? requested;
+        if (!parsed.flags.has('non-interactive') && !parsed.flags.has('json')) {
+            output.line(action === 'add' ? connectFolderPrompt(name) : removeFolderPrompt(name));
+            const readline = createInterface({ input: deps.input ?? process.stdin, terminal: false });
+            const answer = String((await readline[Symbol.asyncIterator]().next()).value ?? '').trim();
+            readline.close();
+            if ((action === 'add' && /^(?:n|no)$/iu.test(answer)) ||
+                (action === 'remove' && !/^(?:y|yes)$/iu.test(answer)))
+                return 130;
+        }
+        const bearer = await ensureCliAuth(deps, output, parsed.flags.has('no-browser'), false);
+        if (action === 'add') {
+            let executor = deps.projectExecutor;
+            if (!executor)
+                executor = (await createRealProjectRuntime({
+                    stateDir: deps.projectStateDir ?? stateDir,
+                    getCliBearer: async () => bearer,
+                    fetch: deps.grantFetch,
+                })).executor;
+            const resolution = await executor.resolveProjectIdentity(requested);
+            const decision = await evaluateRoot(resolution, {
+                cwd: requested,
+                home: deps.home,
+                nonGitSelected: true,
+            });
+            if (!decision.allowed)
+                return actionRequired(output, parsed.flags.has('json'), decision.reason);
+            const project = await ensureProjectRoot(requested, executor);
+            const limit = projectLimitMessage(project, requested);
+            if (limit) {
+                if (parsed.flags.has('json'))
+                    output.json({
+                        status: 'ACTION_REQUIRED',
+                        state: 'project_limit_reached',
+                        message: limit.join(' '),
+                    });
+                else
+                    for (const line of limit)
+                        output.line(line);
+                return 3;
+            }
+            if (project.status !== 'done') {
+                output.error(`Project action required: ${'state' in project ? project.state : project.status}`);
+                return 3;
+            }
+        }
+        const updated = await updateScannerRoots({
+            stateDir,
+            bearer,
+            add: action === 'add' ? [requested] : [],
+            remove: action === 'remove' ? [requested] : [],
+            fetch: deps.grantFetch,
+        });
+        if (updated.status === 'updated') {
+            if (parsed.flags.has('json'))
+                output.json(updated.state.config.roots);
+            else
+                output.line(action === 'add' ? connectedFolderLine(name) : removedFolderLine(name));
+            return 0;
+        }
+        const roots = action === 'add'
+            ? [...new Set([...saved.config.roots, requested])]
+            : saved.config.roots.filter((root) => root !== requested);
         parsed.flags.set('scan-roots', roots.join(','));
         parsed.flags.set('exclusions', (saved.config.exclusions ?? []).join(','));
         return enableCommand(parsed, deps, output);
@@ -750,9 +850,11 @@ export async function runCli(args, deps = {}) {
                 ...deps.scannerService,
             };
             if (command === 'update') {
+                const store = new RuntimeStore(options.stateDir);
+                const before = await store.verifyRuntime('scanner').catch(() => undefined);
                 const runtime = await updateScanner(options, deps.scannerEnable?.source);
                 const result = {
-                    status: 'updated',
+                    status: before?.reference.version === runtime.reference.version ? 'up_to_date' : 'updated',
                     version: runtime.manifest.version,
                     cli: { status: 'NOT_SELECTED' },
                     ...(process.env.MNEMONIK_DEV_RELEASE_DIR
@@ -762,7 +864,7 @@ export async function runCli(args, deps = {}) {
                 if (parsed.flags.has('json'))
                     output.json(result);
                 else
-                    output.line(`Scanner ${result.status}: ${result.version}.`);
+                    output.line(result.status === 'updated' ? 'Mnemonik updated.' : 'Mnemonik is up to date.');
             }
             else {
                 await scannerService(options).uninstall();
@@ -776,19 +878,24 @@ export async function runCli(args, deps = {}) {
                 else
                     output.line('Stopped collection; removed local software. Credentials, cloud data and consent retained.');
             }
-            if (command === 'update')
-                await reportCurrentInstallation(deps, output);
             return 0;
         }
         catch (error) {
-            output.error(error.message);
-            if (command === 'update')
-                await reportCurrentInstallation(deps, output);
+            output.error(command === 'update'
+                ? 'Mnemonik could not update. Run mnemonik update again.'
+                : error.message);
             return 3;
         }
     }
     if (command === 'repair' || command === 'update' || command === 'uninstall') {
-        const invalid = allowed(parsed, ['host', 'scope', 'component', 'confirm', 'apply']);
+        const invalid = allowed(parsed, [
+            'host',
+            'scope',
+            'component',
+            'confirm',
+            'apply',
+            ...(command === 'update' ? ['automatic'] : []),
+        ]);
         if (invalid || subcommand)
             return (output.error(invalid ?? `Unexpected argument: ${subcommand}`), 2);
         if (command === 'uninstall' && parsed.flags.has('non-interactive')) {
@@ -800,7 +907,7 @@ export async function runCli(args, deps = {}) {
             return hostCommand(command, parsed, deps, output);
     }
     if (command === 'update') {
-        const invalid = allowed(parsed, []);
+        const invalid = allowed(parsed, ['automatic']);
         if (invalid || subcommand)
             return (output.error(invalid ?? `Unexpected argument: ${subcommand}`), 2);
         if (!deps.runtimeUpdate)
@@ -813,8 +920,7 @@ export async function runCli(args, deps = {}) {
                 version: runtime.manifest.version,
             });
         else
-            output.line(`Updated ${runtime.manifest.artifact} to ${runtime.manifest.version}.`);
-        await reportCurrentInstallation(deps, output);
+            output.line('Mnemonik updated.');
         return 0;
     }
     if (command === 'doctor') {
@@ -864,7 +970,6 @@ export async function runCli(args, deps = {}) {
         const version = await packageVersion();
         const store = new RuntimeStore(deps.installStateDir ?? stateDirectory(process.platform, process.env, deps.home));
         if (!parsed.flags.has('json')) {
-            output.line(`CLI ${version}.`);
             renderStatusSummaries(document, output);
         }
         const hint = await cliUpdateHint(store, version);
@@ -876,55 +981,40 @@ export async function runCli(args, deps = {}) {
         return statusExitCode(document);
     }
     if (command === 'connect') {
-        const invalid = allowed(parsed, ['approve-host', 'no-browser', 'scope']);
+        const invalid = allowed(parsed, ['scope']);
         if (invalid)
             return (output.error(invalid), 2);
         if (!subcommand ||
             rest.length ||
             !supportedHosts.includes(subcommand))
             return (output.error('Usage: mnemonik connect <claude-code|codex|cursor|grok>'), 2);
-        if (parsed.flags.has('non-interactive') || parsed.flags.has('json')) {
-            const missing = requireConsent(parsed, output, ['approve-host']);
-            if (missing !== undefined)
-                return missing;
-        }
-        await ensureCliAuth(deps, output, parsed.flags.has('no-browser'), false);
         const state = deps.hostManagement?.stateDir ??
             deps.installStateDir ??
             stateDirectory(process.platform, process.env, deps.home);
         const owned = await selectOwned(state, subcommand, parsed.flags.get('scope'), 'mcp');
+        if (!owned.selected.length && !parsed.flags.has('json')) {
+            output.line(`${editorNames[subcommand]} will ask you to sign in to Mnemonik the first time you use it.`);
+            return 3;
+        }
         if (owned.selected.length !== 1)
             return actionRequired(output, parsed.flags.has('json'), owned.selected.length ? 'ambiguous_profile' : 'no_recorded_targets');
-        const managed = await hostDependencies(deps, output, state);
+        const managed = deps.hostManagement ?? { stateDir: state, account: '' };
         const selected = owned.selected[0];
         if (!selected)
             throw new Error('no_recorded_targets');
-        let approval = parsed.flags.has('approve-host') ? true : undefined;
+        let instructionShown = false;
         const result = await connectHost(selected, {
             ...managed,
-            noBrowser: parsed.flags.has('no-browser'),
-            approveHost: async () => (approval ??=
-                (await chooseHostProfile(deps.input ?? process.stdin, output, [
-                    `Approve ${subcommand} for account ${managed.account} on this machine`,
-                    'Cancel',
-                ]))?.startsWith('Approve') ?? false),
             instruction: (text) => {
-                if (!parsed.flags.has('json'))
+                if (!parsed.flags.has('json')) {
                     output.line(text);
+                    instructionShown = true;
+                }
             },
-            timeout: managed.timeout ??
-                (parsed.flags.has('json') || parsed.flags.has('non-interactive')
-                    ? undefined
-                    : async (host) => (await chooseHostProfile(deps.input ?? process.stdin, output, [
-                        `Retry ${host}`,
-                        `Skip ${host}`,
-                    ]))?.startsWith('Retry')
-                        ? 'retry'
-                        : 'skip'),
         });
         if (parsed.flags.has('json'))
             output.json(result);
-        else
+        else if (!instructionShown)
             output.line(`${result.status}: ${result.reason}${result.action ? `. ${result.action}` : ''}`);
         return result.status === 'READY' ? 0 : 3;
     }
@@ -1048,7 +1138,7 @@ export async function runCli(args, deps = {}) {
             ].includes(subcommand))
             return (output.error('Usage: mnemonik scanner <enable|start|stop|uninstall|status>'), 2);
         const invalid = allowed(parsed, subcommand === 'enable'
-            ? ['accept-scanner', 'apply', 'scan-roots', 'exclusions', 'no-browser']
+            ? ['accept-indexing', 'apply', 'scan-roots', 'exclusions', 'no-browser']
             : subcommand === 'export-preview'
                 ? ['out']
                 : []);

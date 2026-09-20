@@ -11,17 +11,73 @@ import { grantTransport } from '../auth/status.js';
 import { readInstallation, saveInstallation } from '../installation.js';
 import { RuntimeStore, hash } from '../runtime/store.js';
 import { releaseSource, devReadiness } from '../runtime/releaseSource.js';
-import { evaluateRoot } from '../project/eligibility.js';
-import { runScannerPicker } from './picker.js';
+import { evaluateRoot, repositoryAt } from '../project/eligibility.js';
 import { scannerService } from './service.js';
 import { controlScanner, scannerReceipt } from './control.js';
 import { bytesAt, digest } from '../install/journal.js';
+import { connectedProjectsMessage, createRealProjectRuntime, ensureProjectRoot, projectLimitMessage, } from '../project.js';
+import { consentDraft, runScannerBoundaryPicker } from './picker.js';
 export const scannerStateBytes = (state) => Buffer.from(`${JSON.stringify(state, null, 2)}\n`);
+export const SCANNER_APPROVAL_WAIT = 'Waiting for approval in your browser, up to 10 minutes.';
+export async function updateScannerRoots(options) {
+    await mkdir(join(options.stateDir, 'scanner'), { recursive: true, mode: 0o700 });
+    return withLock(join(options.stateDir, 'scanner/enable'), 5000, async () => {
+        const path = join(options.stateDir, 'scanner/state.json');
+        const state = JSON.parse(await readFile(path, 'utf8'));
+        const response = await (options.fetch ?? fetch)(`${apiOrigin()}/api/v1/scanner-consent/current`, {
+            method: 'POST',
+            headers: {
+                Authorization: `Bearer ${options.bearer}`,
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ add: options.add, remove: options.remove }),
+        });
+        const body = (await response.json().catch(() => ({})));
+        if (response.status === 409 && body.code === 'disclosure_required')
+            return { status: 'disclosure_required' };
+        if (!response.ok || !body.consent || !Array.isArray(body.consent.roots))
+            throw new Error(`scanner_request_${response.status}`);
+        const removed = new Set(options.remove);
+        state.config.roots = state.config.roots.filter((root) => !removed.has(root));
+        for (const root of options.add)
+            if (!state.config.roots.includes(root))
+                state.config.roots.push(root);
+        if (!state.config.roots.every((root) => body.consent?.roots.includes(root)))
+            throw new Error('scanner_consent_mismatch');
+        state.consent = body.consent;
+        await atomicWrite(path, scannerStateBytes(state));
+        return { status: 'updated', state };
+    });
+}
 export async function enableScanner(options) {
     return prepareScanner(options, async (prepared) => {
-        const document = await prepared.apply();
+        const executor = await prepared.projectExecutor();
+        const connected = [];
+        let limit;
+        for (const root of [...prepared.roots]) {
+            const result = await ensureProjectRoot(root, executor);
+            if (result.status === 'done')
+                connected.push(root);
+            else {
+                const lines = projectLimitMessage(result, root);
+                if (lines) {
+                    limit = lines.join('\n');
+                    break;
+                }
+                throw new Error('project_setup_required');
+            }
+        }
+        prepared.roots.splice(0, prepared.roots.length, ...connected);
+        const document = await prepared.apply(undefined, connected);
         if (document.installation.state === 'READY')
             await prepared.complete(document);
+        if (!options.nonInteractive) {
+            if (connected.length)
+                options.output.line(connectedProjectsMessage(connected));
+            if (limit)
+                for (const line of limit.split('\n'))
+                    options.output.line(line);
+        }
         return document;
     });
 }
@@ -97,34 +153,37 @@ export async function prepareScanner(options, work) {
             await controlScanner('pause', options);
         try {
             const picked = options.roots
-                ? { roots: options.roots, exclusions: options.exclusions ?? [] }
+                ? { roots: options.roots, exclusions: options.exclusions ?? [], repositories: [] }
                 : options.nonInteractive
                     ? (() => {
                         throw new Error('scan_roots_required');
                     })()
-                    : await runScannerPicker({
+                    : await runScannerBoundaryPicker({
                         input: options.input,
                         output: options.output,
                         currentProject: options.cwd,
                         currentFolder: options.cwd,
+                        home: options.home,
                     });
             if ('status' in picked)
                 throw new Error('consent_declined');
-            if (!picked.roots.length)
+            if (!picked.roots.length && !picked.candidates?.length)
                 throw new Error('scan_roots_required');
             picked.roots = await Promise.all(picked.roots.map((root) => realpath(root)));
             picked.exclusions = await Promise.all(picked.exclusions.map((root) => realpath(root)));
             for (const root of picked.roots) {
-                const decision = await evaluateRoot({ kind: 'absent', root, repository: { kind: 'plain', root }, nested: [] }, { cwd: root, nonGitSelected: true });
-                if (!decision.allowed)
+                const decision = await evaluateRoot({ kind: 'absent', root, repository: await repositoryAt(root), nested: [] }, { cwd: root, nonGitSelected: true });
+                if (!decision.allowed) {
+                    options.output.error(`${decision.reason}: ${root}`);
                     throw new Error(decision.reason);
+                }
             }
             let remote = (await request('GET', '/api/v1/scanner-consent/current'));
-            if (!options.nonInteractive)
-                for (const statement of remote.disclosure.statements)
-                    options.output.line(statement.text);
             const matches = () => remote.consent?.disclosureVersion === remote.disclosure.version &&
-                JSON.stringify(remote.consent?.roots) === JSON.stringify(picked.roots) &&
+                (picked.candidates
+                    ? !!remote.consent?.roots.length &&
+                        remote.consent.roots.every((root) => picked.candidates?.some((candidate) => candidate.path === root))
+                    : JSON.stringify(remote.consent?.roots) === JSON.stringify(picked.roots)) &&
                 JSON.stringify(remote.consent?.exclusions) === JSON.stringify(picked.exclusions);
             if (!matches() || !session) {
                 const listing = await grantTransport(async () => bearer, options.fetch).list();
@@ -134,7 +193,9 @@ export async function prepareScanner(options, work) {
                 if (!installation)
                     throw new Error('scanner_installation_missing');
                 // Browser approval reuses this installation's active session. Never cancel the hosts' session.
-                bearer = await authorize(picked, installation);
+                if (!options.nonInteractive && !options.approvalAnnounced)
+                    options.output.line(SCANNER_APPROVAL_WAIT);
+                bearer = await authorize(consentDraft(picked), installation);
                 session = (await request('GET', '/api/v1/install-sessions/current'));
                 remote = (await request('GET', '/api/v1/scanner-consent/current'));
             }
@@ -146,12 +207,20 @@ export async function prepareScanner(options, work) {
             });
             const approvedSession = session;
             const approvedConsent = remote.consent;
+            const approvedRoots = [...approvedConsent.roots];
             const pointer = store.pointerPath('scanner');
             return await work({
-                roots: picked.roots,
+                roots: approvedRoots,
                 exclusions: picked.exclusions,
                 files: [path, pointer],
                 session,
+                projectExecutor: async () => options.projectExecutor ??
+                    (await createRealProjectRuntime({
+                        stateDir: options.projectStateDir ?? options.stateDir,
+                        credentials,
+                        getCliBearer: async () => bearer,
+                        fetch: options.fetch,
+                    })).executor,
                 complete: async (document) => {
                     await request('POST', `/api/v1/install-sessions/${approvedSession.id}/complete`, {
                         readiness: document,
@@ -161,7 +230,7 @@ export async function prepareScanner(options, work) {
                 rollback: async (journal) => {
                     await restoreScannerInstall(journal, options);
                 },
-                apply: async (journal) => {
+                apply: async (journal, roots = approvedRoots) => {
                     const put = async (targetPath, content) => {
                         if (!journal)
                             return atomicWrite(targetPath, content);
@@ -191,8 +260,9 @@ export async function prepareScanner(options, work) {
                     restore = false;
                     const state = {
                         schemaVersion: 1,
+                        ...(picked.boundary ? { boundary: picked.boundary } : {}),
                         config: {
-                            roots: picked.roots,
+                            roots: [...roots],
                             exclusions: picked.exclusions,
                             serverUrl: apiOrigin(),
                             deviceInstallationId: approvedSession.device_installation_id,

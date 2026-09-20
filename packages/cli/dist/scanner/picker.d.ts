@@ -1,7 +1,7 @@
 import type { Readable } from 'node:stream';
 import type { EnsureOptions, SetupResult } from '@mnemonik/local-setup';
 import type { Output } from '../output.js';
-import { classifyRepository, discoverRepositories, type RepositoryState } from './discover.js';
+import { classifyRepository, discoverRepositories, type ScannerCandidate, type RepositoryState } from './discover.js';
 export interface PickerRepository {
     path: string;
     state: RepositoryState;
@@ -12,6 +12,8 @@ export interface ScannerPickerResult {
     roots: string[];
     exclusions: string[];
     repositories: PickerRepository[];
+    boundary?: string;
+    candidates?: ScannerCandidate[];
 }
 export type ScannerPickerRunResult = ScannerPickerResult | {
     status: 'cancelled';
@@ -20,9 +22,12 @@ export type ScannerPickerRunResult = ScannerPickerResult | {
 export interface ScannerConsentDraft {
     roots: string[];
     exclusions: string[];
+    candidates?: ScannerCandidate[];
+    boundary?: string;
 }
 export declare const SCANNER_SELECTION_LIMIT = 32;
 export declare const SCANNER_SELECTION_LIMIT_MESSAGE = "You can leave out up to 32 repositories here. Choose a narrower folder, or watch only this project.";
+export declare const scannerBoundaryPrompt: (shown: string) => string;
 interface PickerOptions {
     input: Readable;
     output: Output;
@@ -36,6 +41,7 @@ interface PickerOptions {
     home?: string;
     env?: NodeJS.ProcessEnv;
 }
+export declare function runScannerBoundaryPicker(options: PickerOptions): Promise<ScannerPickerResult>;
 export declare function runScannerPicker(options: PickerOptions): Promise<ScannerPickerRunResult>;
 export declare function consentDraft(picked: ScannerPickerResult): ScannerConsentDraft;
 export declare const scannerRootsParameter: (picked: ScannerPickerResult) => string;

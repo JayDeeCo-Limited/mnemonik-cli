@@ -1,6 +1,6 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { apiOrigin } from '@mnemonik/shared';
-import { grantTransport, matchHostGrant } from '../src/auth/status.js';
+import { grantTransport } from '../src/auth/status.js';
 
 afterEach(() => vi.unstubAllEnvs());
 it('keeps production URLs and resolves staging to its origin', async () => {
@@ -32,17 +32,7 @@ it('keeps production URLs and resolves staging to its origin', async () => {
       )
   );
   const transport = grantTransport(async () => 'bearer', fetcher);
-  expect(
-    (
-      await matchHostGrant(
-        { authenticatedTools: true, declarationPresent: true },
-        'codex',
-        'user',
-        transport,
-        0
-      )
-    ).grant?.id
-  ).toBe('test-grant');
+  expect((await transport.list()).grants[0]?.id).toBe('test-grant');
   expect(String(fetcher.mock.calls[0]?.[0])).toBe(apiOrigin() + '/api/v1/auth/grants');
 });
 
@@ -83,11 +73,19 @@ it.each(['json', 'toml'] as const)(
           runtimeEntry: join(root, 'hook.js'),
           runtimeRoot: root,
           credentialFamily: '',
+          installationId: '11111111-1111-4111-8111-111111111111',
         };
         const plan = await adapter.plan(target);
         if (format === 'json')
           expect(JSON.parse(plan.changes[0]!.content.toString())).toEqual({
-            mcpServers: { mnemonik: { url: origin + '/mcp' } },
+            mcpServers: {
+              mnemonik: {
+                url: origin + '/mcp',
+                headers: {
+                  'x-mnemonik-installation-id': '11111111-1111-4111-8111-111111111111',
+                },
+              },
+            },
           });
         else expect(plan.changes[0]!.content.toString()).toContain(origin + '/mcp');
         await writeFile(path(), plan.changes[0]!.content);

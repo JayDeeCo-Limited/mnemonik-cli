@@ -14,6 +14,7 @@ export declare class Output {
     constructor(stdout: Writable, stderr?: Writable, context?: OutputContext);
     setContext(context: OutputContext): void;
     line(value?: string): void;
+    write(value: string): void;
     /** Deliberate local-only identity display; never use for logs, JSON, or errors. */
     signedIn(email: string): void;
     error(value: unknown): void;
