@@ -658,6 +658,8 @@ describe('credential records and rotation', () => {
       expect.objectContaining({ refreshToken: next.refresh_token }),
     ]);
     expect(rotateFamily).toHaveBeenCalledTimes(1);
+    expect(rotateFamily).toHaveBeenCalledWith(familyId, f.current.refresh_token);
+    expect(await readFile(f.paths.secret, 'utf8')).toContain(next.refresh_token);
   });
 
   it('rotates and retries protected work once after a 401', async () => {
