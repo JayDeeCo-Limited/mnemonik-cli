@@ -6,6 +6,7 @@
  */
 export { MCP_INSTRUCTIONS, MCP_INSTRUCTIONS_RAW, getMcpInstructions } from './instructions.js';
 export { USAGE_GUIDE } from './usageGuide.js';
+export declare const SCANNER_HEARTBEAT_INTERVAL_MS = 300000;
 export { CodeScanner, MAX_SCANNED_FILE_BYTES, MAX_PUSH_CHUNK_CONTENT_LENGTH, AUTHORITY_FILE_MATCHERS, BUILT_IN_IGNORE_DIRS, DEFAULT_INCLUDE_EXTENSIONS, languageForExtension, makeIgnoreMatcher, isGitBoundary, FIXTURE_PATH_RE, isFixturePath, isSecretFile, isAuthorityOnlyPath, logAstCapabilityOnce, type CodeChunk, type ScanOptions, } from './codeScanner.js';
 export { AST_LANGUAGE_IDS, QUERY_CHAIN, VENDORED_ARTIFACT_DIR, astArtifactReport, astCapabilityReport, grammarArtifactBasename, loadGrammar, loadedGrammarIds, resolveAstLanguage, type AstLanguageId, type GrammarBinding, type GrammarLoad, type GrammarUnavailableReason, } from './ast/grammars.js';
 export { MAX_AST_PARSE_BYTES, chunkWithAst, type AstChunk, type AstChunkResult, } from './ast/astChunker.js';

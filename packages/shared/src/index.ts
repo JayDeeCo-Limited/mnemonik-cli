@@ -7,6 +7,7 @@
 
 export { MCP_INSTRUCTIONS, MCP_INSTRUCTIONS_RAW, getMcpInstructions } from './instructions.js';
 export { USAGE_GUIDE } from './usageGuide.js';
+export const SCANNER_HEARTBEAT_INTERVAL_MS = 300_000;
 export {
   CodeScanner,
   MAX_SCANNED_FILE_BYTES,

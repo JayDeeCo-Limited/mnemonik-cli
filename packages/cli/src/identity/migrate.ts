@@ -133,12 +133,6 @@ async function decodeHostPath(
   encoded: string,
   platform: NodeJS.Platform
 ): Promise<string | undefined> {
-  if (platform === 'win32') {
-    const windows = encoded.match(/^([A-Za-z])--(.+)$/u);
-    const drive = windows?.[1];
-    const rest = windows?.[2];
-    return drive && rest ? `${drive}:\\${rest.replaceAll('-', '\\')}` : undefined;
-  }
   const walk = async (current: string, rest: string): Promise<string | undefined> => {
     if (!rest) return current;
     const names = (await files(current))
@@ -152,11 +146,11 @@ async function decodeHostPath(
     }
     return undefined;
   };
-  const exact = await walk(sep, encoded.replace(/^-/, ''));
-  if (exact) return exact;
-  return /^-?(?:home|Users|tmp|mnt|Volumes|workspace|work)-/u.test(encoded)
-    ? `${sep}${encoded.replace(/^-/, '').replaceAll('-', sep)}`
-    : undefined;
+  if (platform === 'win32') {
+    const windows = encoded.match(/^([A-Za-z])--(.+)$/u);
+    return windows?.[1] && windows[2] ? walk(`${windows[1]}:\\`, windows[2]) : undefined;
+  }
+  return walk(sep, encoded.replace(/^-/, ''));
 }
 
 async function addConfig(
@@ -226,6 +220,12 @@ async function collectCandidates(options: MigrationOptions): Promise<{
   const platform = options.platform ?? process.platform;
   const candidates = new Map<string, Set<string>>();
   const sources: SourceStatus[] = [];
+
+  if (options.paths?.length) {
+    for (const selected of options.paths)
+      addCandidate(candidates, resolve(options.cwd ?? process.cwd(), selected), 'owner-selected');
+    return { candidates, sources };
+  }
 
   for (const scanner of [join(home, '.mnemonik', 'scanner.json'), join(state, 'scanner.json')]) {
     try {
@@ -325,8 +325,6 @@ async function collectCandidates(options: MigrationOptions): Promise<{
     }
   }
 
-  for (const selected of options.paths ?? [])
-    addCandidate(candidates, resolve(options.cwd ?? process.cwd(), selected), 'owner-selected');
   return { candidates, sources };
 }
 
@@ -389,6 +387,7 @@ async function inspectProject(
       throw Object.assign(new Error('candidate is not a directory'), { code: 'ENOTDIR' });
     await access(projectPath);
   } catch (error) {
+    if (errorCode(error) === 'ENOENT') return [];
     return [
       {
         kind: 'identity',

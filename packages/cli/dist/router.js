@@ -985,7 +985,8 @@ export async function runCli(args, deps = {}) {
     }
     if (command === 'identity') {
         if (subcommand !== 'migrate')
-            return (output.error('Usage: mnemonik identity migrate [paths] [--report|--backup|--apply|--verify|--rollback <run-id>]'),
+            return (output.error('Usage: mnemonik identity migrate [paths] [--report|--backup]\n' +
+                '       mnemonik identity migrate [--apply|--verify|--rollback <run-id>]'),
                 2);
         const invalid = allowed(parsed, ['report', 'backup', 'apply', 'verify', 'rollback']);
         if (invalid)

@@ -65,15 +65,9 @@ describe('private identity migration', () => {
       stateDir: f.stateDir,
     });
     expect(report.entries.map(({ state }) => state)).toEqual(
-      expect.arrayContaining([
-        'v0',
-        'v1',
-        'malformed',
-        'invalid_uuid',
-        'unreachable',
-        'cursor_match',
-      ])
+      expect.arrayContaining(['v0', 'v1', 'malformed', 'invalid_uuid', 'cursor_match'])
     );
+    expect(report.entries.some((entry) => entry.projectPath === f.unreachable)).toBe(false);
     expect(report.entries.find((entry) => entry.state === 'v0')).toMatchObject({
       strictResult: 'unknown_version',
       droppedKeys: ['legacyHint'],
@@ -170,6 +164,50 @@ describe('private identity migration', () => {
     });
     await runIdentityMigration({ mode: 'apply', home: f.home, stateDir: f.stateDir });
     expect(await readFile(rule)).toEqual(mismatch);
+  });
+
+  it('limits explicit discovery to byte-exact existing paths', async () => {
+    const f = await fixture();
+    const selected = [
+      join(fixtureRoot, 'x', 'book-reader-2'),
+      join(fixtureRoot, 'x', 'WTF Notebooks'),
+    ];
+    await Promise.all(
+      selected.map(async (path) => {
+        await mkdir(path, { recursive: true });
+        await writeFile(join(path, '.mnemonik.json'), JSON.stringify({ projectId: ID }));
+      })
+    );
+    await mkdir(join(f.home, '.claude', 'projects', '-tmp-x-does-not-exist'), {
+      recursive: true,
+    });
+    await mkdir(join(f.home, '.mnemonik'), { recursive: true });
+    await writeFile(
+      join(f.home, '.mnemonik', 'scanner.json'),
+      JSON.stringify({ roots: [f.paths.v1] })
+    );
+
+    const report = await inventoryIdentityFiles({
+      mode: 'report',
+      paths: selected,
+      home: f.home,
+      stateDir: f.stateDir,
+      platform: 'linux',
+    });
+
+    expect(
+      report.entries.map(({ projectPath, sources, state }) => ({ projectPath, sources, state }))
+    ).toEqual(
+      selected.map((projectPath) => ({ projectPath, sources: ['owner-selected'], state: 'v0' }))
+    );
+
+    const discovered = await inventoryIdentityFiles({
+      mode: 'report',
+      home: f.home,
+      stateDir: f.stateDir,
+      platform: 'linux',
+    });
+    expect(discovered.entries.map(({ projectPath }) => projectPath)).toEqual([f.paths.v1]);
   });
 
   it('collects the bounded scanner, CLI, host-config and recent-workspace sources', async () => {

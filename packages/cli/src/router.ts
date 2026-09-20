@@ -1213,7 +1213,8 @@ export async function runCli(args: string[], deps: CliDependencies = {}): Promis
     if (subcommand !== 'migrate')
       return (
         output.error(
-          'Usage: mnemonik identity migrate [paths] [--report|--backup|--apply|--verify|--rollback <run-id>]'
+          'Usage: mnemonik identity migrate [paths] [--report|--backup]\n' +
+            '       mnemonik identity migrate [--apply|--verify|--rollback <run-id>]'
         ),
         2
       );

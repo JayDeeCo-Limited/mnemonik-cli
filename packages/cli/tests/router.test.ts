@@ -167,6 +167,12 @@ describe('command router', () => {
     const f = fixture();
     await runCli(['--help'], f.deps);
     expect(f.stdout.text).not.toContain('identity migrate');
+
+    expect(await runCli(['identity', 'unknown'], f.deps)).toBe(2);
+    expect(f.stderr.text).toBe(
+      'Usage: mnemonik identity migrate [paths] [--report|--backup]\n' +
+        '       mnemonik identity migrate [--apply|--verify|--rollback <run-id>]\n'
+    );
   });
 
   it('emits the reconciliation report as one JSON document', async () => {

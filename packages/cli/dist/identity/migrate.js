@@ -46,12 +46,6 @@ function pathsFromText(text) {
 }
 /** Decode host directory names by following real path components, preserving hyphens. */
 async function decodeHostPath(encoded, platform) {
-    if (platform === 'win32') {
-        const windows = encoded.match(/^([A-Za-z])--(.+)$/u);
-        const drive = windows?.[1];
-        const rest = windows?.[2];
-        return drive && rest ? `${drive}:\\${rest.replaceAll('-', '\\')}` : undefined;
-    }
     const walk = async (current, rest) => {
         if (!rest)
             return current;
@@ -67,12 +61,11 @@ async function decodeHostPath(encoded, platform) {
         }
         return undefined;
     };
-    const exact = await walk(sep, encoded.replace(/^-/, ''));
-    if (exact)
-        return exact;
-    return /^-?(?:home|Users|tmp|mnt|Volumes|workspace|work)-/u.test(encoded)
-        ? `${sep}${encoded.replace(/^-/, '').replaceAll('-', sep)}`
-        : undefined;
+    if (platform === 'win32') {
+        const windows = encoded.match(/^([A-Za-z])--(.+)$/u);
+        return windows?.[1] && windows[2] ? walk(`${windows[1]}:\\`, windows[2]) : undefined;
+    }
+    return walk(sep, encoded.replace(/^-/, ''));
 }
 async function addConfig(candidates, sourceStatuses, name, path) {
     try {
@@ -127,6 +120,11 @@ async function collectCandidates(options) {
     const platform = options.platform ?? process.platform;
     const candidates = new Map();
     const sources = [];
+    if (options.paths?.length) {
+        for (const selected of options.paths)
+            addCandidate(candidates, resolve(options.cwd ?? process.cwd(), selected), 'owner-selected');
+        return { candidates, sources };
+    }
     for (const scanner of [join(home, '.mnemonik', 'scanner.json'), join(state, 'scanner.json')]) {
         try {
             const parsed = JSON.parse(await readFile(scanner, 'utf8'));
@@ -217,8 +215,6 @@ async function collectCandidates(options) {
             // Optional recent-workspace entry.
         }
     }
-    for (const selected of options.paths ?? [])
-        addCandidate(candidates, resolve(options.cwd ?? process.cwd(), selected), 'owner-selected');
     return { candidates, sources };
 }
 function classify(bytes) {
@@ -269,6 +265,8 @@ async function inspectProject(projectPath, sources) {
         await access(projectPath);
     }
     catch (error) {
+        if (errorCode(error) === 'ENOENT')
+            return [];
         return [
             {
                 kind: 'identity',
