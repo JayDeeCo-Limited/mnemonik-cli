@@ -1,30 +1,30 @@
 {
   "schemaVersion": 1,
-  "version": "7.101.4",
+  "version": "7.102.0",
   "packages": {
     "@mnemonik/cli": {
-      "version": "7.101.4",
-      "integrity": "sha512-gdpJjVtgdUqr1E2fMNPkieluK5G5u5GvtYqnwF+ZUWb2DkgYgmcbtKj4EsNAakQimVQ0J2VoV8WWn+bUyQW9Yw=="
+      "version": "7.102.0",
+      "integrity": "sha512-HpwIWDSjfoLPay2cMswWQXLW83UvG0M0Ij/n0Eu0bfvXp56InHQVMz82wYDiq85FoLxJs032O/Ptw/asXPF6gA=="
     },
     "@mnemonik/claude-code-hooks": {
-      "version": "0.9.202",
-      "integrity": "sha512-NXIhicxVHRR94YFMWQ5UitOG6VQ7BRbXPbbw14ZHKF1zcEl/gNLpq23Ys2f1QYMiobxZOHVmSkA5HX1P5Wlasg=="
+      "version": "0.9.203",
+      "integrity": "sha512-ipM3ZSoGer9QQa7ecS68xOWfTrGgrX2ZiRWK03cJyI2C94tcVSjJ4QWlSeZ6CaGoqlTe0Os5a06lsIhWSAWnAQ=="
     },
     "@mnemonik/codex-hooks": {
-      "version": "0.8.171",
-      "integrity": "sha512-ZePQUQupSVm5JOn7dCyr83Zch99v7GwAtfRdN9FjX90sgZbez5CecDMt/TaTPMQ5MtrWnMJ8ZaFmn8kOAP82bQ=="
+      "version": "0.8.172",
+      "integrity": "sha512-0GHfAVHkC1bmUKe/RzhW4gtqZMGi21nPTXWSQ11z313FoapumODBvhFK+hk6qDdC67hXTzMN6x5oNPdoOKfr2g=="
     },
     "@mnemonik/cursor-hooks": {
-      "version": "0.7.158",
-      "integrity": "sha512-hZVk2lIB+avi7r1vOEFuFjroIsH5tBDUKpWJj4o7VfttDUliofAVWo834KRVEBm2uHFHMhM4laDli3JMK9z2VA=="
+      "version": "0.7.159",
+      "integrity": "sha512-Nxc+Zs3w5xMZZmMDxi1YzhR7ZISH/8hDQ1OpDnyryKDwMb3iVbURa7wWG61r4k+3vybY6WvvRrWOZdw2blvM/A=="
     },
     "@mnemonik/grok-hooks": {
-      "version": "0.1.44",
-      "integrity": "sha512-gY6xMFtdPcz9Yfc6dGcNksgjQus0dQ6Zr8Ku6WhQaj4YT0Wfw+Cyiw8pXZOl2t1HLfXG3rJ0Vkuf9nCECR+wFQ=="
+      "version": "0.1.45",
+      "integrity": "sha512-b+By2KF2e96J2nsnjTv3J7xPdxbJnw5RodSy8TY+10E6oWU6THvUEsl1/F0YmotBF81u4YAU47hsZPobUCiMYA=="
     },
     "@mnemonik/copilot-hooks": {
-      "version": "0.1.35",
-      "integrity": "sha512-8csWO/4Mvxxwi/I731Z2hVJXcU71HXnCDnc/RAIkM71g+FnQ/SQ+JP73lIf4Ps1C6PTMzTgrvr2yVf+W1RvknQ=="
+      "version": "0.1.36",
+      "integrity": "sha512-Hvkave+DSbeiGytST5O4RMCcoYOHikoexrReJuFHdBd2WeZdxzlD955KwpA6DQlV4yChJRiAWmJ6hY5eSFK6GQ=="
     }
   }
 }
