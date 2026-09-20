@@ -51,6 +51,12 @@ export function sbom(workspace) {
         { cwd: scratch, shell: process.platform === 'win32' }
       )
     );
+    // The CLI is rebuilt before publish and must match the signed tarball integrity.
+    // CycloneDX permits omitting these per-build values.
+    if (workspace === 'cli') {
+      delete document.serialNumber;
+      delete document.metadata.timestamp;
+    }
     document.metadata.component.name = `@mnemonik/${workspace}`;
     if (workspace === 'scanner')
       document.components.push({
