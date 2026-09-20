@@ -1,25 +1,38 @@
 import { createInterface } from 'node:readline';
 import { readdir, realpath } from 'node:fs/promises';
-import { posix } from 'node:path';
+import { parse, posix, resolve } from 'node:path';
 import { isProtectedLocalPath, protectedLocalPaths, protectedPathsWithinRoot, } from '@mnemonik/shared';
 import { evaluateRoot, repositoryAt } from '../project/eligibility.js';
 import { classifyRepository, discoverRepositories, guessDiscoveryBoundary, repositoryName, repositoryStateLabel, scannerCandidates, } from './discover.js';
 export const SCANNER_SELECTION_LIMIT = 32;
 export const SCANNER_SELECTION_LIMIT_MESSAGE = 'You can leave out up to 32 repositories here. Choose a narrower folder, or watch only this project.';
-export const scannerBoundaryPrompt = (shown) => `Where do your projects live? [${shown}]`;
+export const scannerBoundaryPrompt = (shown) => shown ? `Where do your projects live? [${shown}]` : 'Where do your projects live?';
 export async function runScannerBoundaryPicker(options) {
-    const readline = createInterface({ input: options.input, terminal: false });
-    const answers = readline[Symbol.asyncIterator]();
     const canonicalize = options.canonicalizePath ?? realpath;
     const home = options.home ?? process.env.HOME ?? '';
     const guess = await guessDiscoveryBoundary(options.currentFolder, home);
     const shown = home && (guess === home || guess.startsWith(`${home}/`))
         ? `~${guess.slice(home.length)}`
         : guess;
-    options.output.line(scannerBoundaryPrompt(shown));
+    const readline = createInterface({ input: options.input, terminal: false });
+    const answers = readline[Symbol.asyncIterator]();
     try {
-        const answer = String((await answers.next()).value ?? '').trim();
-        const boundary = await canonicalize(answer || guess);
+        let boundary = '';
+        for (let attempt = 0; attempt < 2; attempt++) {
+            options.output.line(scannerBoundaryPrompt(shown));
+            const answer = String((await answers.next()).value ?? '').trim();
+            const candidate = answer || guess;
+            const absolute = candidate ? resolve(candidate) : '';
+            if (candidate && absolute !== resolve(home) && absolute !== parse(absolute).root) {
+                boundary = await canonicalize(candidate);
+                break;
+            }
+            if (attempt === 0) {
+                options.output.line('Choose a project folder inside your home folder.');
+                continue;
+            }
+            throw new Error(absolute === parse(absolute).root ? 'filesystem_root' : 'home_directory');
+        }
         const decision = await evaluateRoot({ kind: 'absent', root: boundary, repository: await repositoryAt(boundary), nested: [] }, {
             cwd: boundary,
             home: options.home,

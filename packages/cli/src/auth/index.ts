@@ -14,7 +14,7 @@ import {
   isCredentialSessionUnavailableError,
 } from '@mnemonik/credentials';
 import { runDeviceFlow } from './device.js';
-import { BrowserUnavailableError, OAuthProtocolError, runPkce, type PkceOptions } from './pkce.js';
+import { open, OAuthProtocolError } from './pkce.js';
 
 export const CLI_SCOPES = [
   'account:read',
@@ -38,7 +38,7 @@ export interface CliAuthOptions {
   deviceName?: string;
   print?: (line: string) => void;
   fetch?: typeof fetch;
-  openBrowser?: PkceOptions['openBrowser'];
+  openBrowser?: (url: string) => Promise<void>;
   sleep?: (milliseconds: number) => Promise<void>;
   now?: () => number;
   credentials?: ReturnType<typeof createCredentialAdapter>;
@@ -49,7 +49,11 @@ export function noBrowserAvailable(
   platform: NodeJS.Platform = process.platform,
   env: NodeJS.ProcessEnv = process.env
 ): boolean {
-  return platform === 'linux' && !env.DISPLAY && !env.WAYLAND_DISPLAY;
+  return (
+    !!env.SSH_CONNECTION ||
+    !!env.SSH_TTY ||
+    (platform === 'linux' && !env.DISPLAY && !env.WAYLAND_DISPLAY)
+  );
 }
 
 const clientMetadata = (redirectUris: string[]) => ({
@@ -100,24 +104,7 @@ export function createCliAuth(options: CliAuthOptions = {}) {
     return body.client_id;
   }
 
-  async function browser(clientId: string, registerFirst = false) {
-    return runPkce({
-      issuer,
-      resource,
-      scopes: CLI_SCOPES,
-      scannerRoots: options.scannerRoots,
-      deviceInstallationId,
-      deviceInstallationIds,
-      deviceName: options.deviceName ?? hostname(),
-      clientId: registerFirst ? (redirectUri) => register([redirectUri]) : clientId,
-      print,
-      fetch: fetchImpl,
-      openBrowser: options.openBrowser,
-      platform: options.platform,
-    });
-  }
-
-  async function device(clientId: string) {
+  async function device(clientId: string, openBrowser?: (url: string) => Promise<void>) {
     return runDeviceFlow({
       issuer,
       resource,
@@ -128,18 +115,25 @@ export function createCliAuth(options: CliAuthOptions = {}) {
       clientId,
       deviceName: options.deviceName ?? hostname(),
       print,
+      openBrowser,
       fetch: fetchImpl,
       sleep: options.sleep,
       now,
     });
   }
 
-  async function deviceWithRegistration(clientId: string) {
+  async function deviceWithRegistration(
+    clientId: string,
+    openBrowser?: (url: string) => Promise<void>
+  ) {
     try {
-      return await device(clientId);
+      return await device(clientId, openBrowser);
     } catch (error) {
       if (!(error instanceof OAuthProtocolError) || error.code !== 'invalid_client') throw error;
-      return device(await register(['http://127.0.0.1/callback', 'http://[::1]/callback']));
+      return device(
+        await register(['http://127.0.0.1/callback', 'http://[::1]/callback']),
+        openBrowser
+      );
     }
   }
 
@@ -157,17 +151,14 @@ export function createCliAuth(options: CliAuthOptions = {}) {
       throw error;
     });
     const clientId = saved?.clientId ?? cimdClientId;
-    const useDevice = options.noBrowser || noBrowserAvailable(options.platform, options.env);
-    let result: { clientId: string; tokens: CliTokenResponse };
-    try {
-      result = useDevice ? await deviceWithRegistration(clientId) : await browser(clientId);
-    } catch (error) {
-      if (!useDevice && error instanceof BrowserUnavailableError)
-        result = await deviceWithRegistration(clientId);
-      else if (error instanceof OAuthProtocolError && error.code === 'invalid_client')
-        result = await browser(clientId, true);
-      else throw error;
-    }
+    const browserUnavailable =
+      options.noBrowser || noBrowserAvailable(options.platform, options.env);
+    const result: { clientId: string; tokens: CliTokenResponse } = await deviceWithRegistration(
+      clientId,
+      browserUnavailable
+        ? undefined
+        : (options.openBrowser ?? ((url) => open(url, options.platform ?? process.platform)))
+    );
     const rotatedAt = now();
     // localFamilyKey: the server does not expose its family id to the CLI yet;
     // this stable digest is only the local serialization/lease identity.

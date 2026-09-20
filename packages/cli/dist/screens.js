@@ -60,5 +60,5 @@ export function renderScreen(screen, output, width = 80) {
 }
 export * from './scanner/discover.js';
 export * from './scanner/picker.js';
-export { journeyAnswers, renderCustomize, renderJourney } from './screens/journey.js';
+export { INSTALLATION_STOPPED, journeyAnswers, renderCustomize, renderJourney, stepProgress, } from './screens/journey.js';
 //# sourceMappingURL=screens.js.map

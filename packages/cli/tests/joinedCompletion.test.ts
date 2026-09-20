@@ -1,6 +1,7 @@
 import { mkdir, mkdtemp, rm, readFile, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import { afterEach, expect, it, vi } from 'vitest';
 import { joinedInstall } from '../src/install/journey.js';
 import { Output } from '../src/output.js';
@@ -139,3 +140,66 @@ it.each([
     }
   }
 );
+
+it('bounds a black-holed final report and still prints a late installation failure', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'joined-completion-timeout-'));
+  homes.push(home);
+  vi.stubEnv('PATH', '/usr/bin');
+  run.mockRejectedValue(new Error('late failure'));
+  const fetcher = vi.fn(
+    (_url: Parameters<typeof fetch>[0], _init?: Parameters<typeof fetch>[1]) =>
+      new Promise<Response>(() => undefined)
+  );
+  let text = '';
+  const install = joinedInstall(
+    new Map<string, string | true>([
+      ['hosts', 'codex'],
+      ['components', 'hooks'],
+      ['apply', true],
+      ['non-interactive', true],
+      ['without-scanner', true],
+      ['accept-limited', true],
+    ]),
+    {
+      cwd: home,
+      home,
+      installStateDir: home,
+      grantFetch: fetcher,
+      preflight: {
+        nodeVersion: '24.21.0',
+        pathExists: async () => false,
+        execFile: async () => {
+          throw Object.assign(new Error('not found'), { code: 'ENOENT' });
+        },
+        fetch: async () => Response.json({}),
+        resolveIdentity: async () => ({
+          kind: 'absent',
+          root: home,
+          repository: { kind: 'plain', root: home },
+          nested: [],
+        }),
+      },
+    },
+    new Output({
+      write: (chunk) => {
+        text += chunk;
+      },
+    }),
+    async () => 'owner',
+    async () => ({ stateDir: home, account: 'owner', getCliBearer: async () => 'fixture' })
+  );
+
+  await expect(
+    Promise.race([
+      install,
+      delay(5_000).then(() => {
+        throw new Error('installation did not return after the final-report deadline');
+      }),
+    ])
+  ).resolves.toBe(3);
+  expect(fetcher).toHaveBeenCalledOnce();
+  expect(fetcher.mock.calls[0]?.[1]?.signal?.aborted).toBe(true);
+  expect(text).toContain('  Configuring your editors\n');
+  expect(text).toContain('Installation stopped. Details:');
+  expect(text).not.toContain('final installation status could not be uploaded');
+}, 7_000);

@@ -19,10 +19,23 @@ export interface CustomizeItem {
 }
 export declare const completedStep: (step: number, text: string) => string;
 export declare const completedLine: (text: string) => string;
+export declare const INSTALLATION_STOPPED = "Installation stopped.";
+export declare const stepProgress: (output: Output, interactive: boolean, text: string) => {
+    complete(result: string): void;
+    stop(): void;
+};
 export declare function renderCustomize(items: CustomizeItem[], output: Output, cursor?: number): number;
 /** Browser-owned account, CLI and scanner choices are announced, never duplicated here. */
 export declare function renderJourney(screen: string, output: Output, v?: JourneyValues): number;
-export declare function journeyAnswers(input: Readable, output?: Pick<Output, 'line' | 'write'>): {
+interface SignalSource {
+    on(event: 'SIGINT' | 'SIGHUP', listener: () => void): unknown;
+    off(event: 'SIGINT' | 'SIGHUP', listener: () => void): unknown;
+    emit?(event: 'SIGINT' | 'SIGHUP'): boolean;
+}
+export declare function journeyAnswers(input: Readable, output?: Pick<Output, 'line' | 'write'>, options?: {
+    interrupt?: (signal: 'SIGINT' | 'SIGHUP') => void;
+    signals?: SignalSource;
+}): {
     choose(choices: string[], fallback?: number): Promise<string>;
     customize(items: CustomizeItem[]): Promise<"Back" | "Cancel" | {
         selected: string[];
@@ -30,4 +43,5 @@ export declare function journeyAnswers(input: Readable, output?: Pick<Output, 'l
     text(): Promise<string | undefined>;
     close(): void;
 };
+export {};
 //# sourceMappingURL=journey.d.ts.map

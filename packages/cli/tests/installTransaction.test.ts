@@ -2,7 +2,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Readable } from 'node:stream';
+import { PassThrough, Readable } from 'node:stream';
 import { createProjectSetupExecutor } from '@mnemonik/local-setup';
 import { resolveProjectIdentity } from '@mnemonik/shared';
 import { hostOrder, SimulatedHostAdapter } from '../src/install/adapters.js';
@@ -14,6 +14,8 @@ import {
   type InstallDependencies,
 } from '../src/install/transaction.js';
 import { rollbackHost } from '../src/install/ownership.js';
+import { terminalInstallUI } from '../src/install/ui.js';
+import { Output } from '../src/output.js';
 import { runCli } from '../src/router.js';
 
 const dirs: string[] = [];
@@ -278,6 +280,24 @@ it('router exposes a simulated dry run using the actual transaction screens', as
   expect(text).toContain('Ready to install');
   expect(text).toContain('LIMITED');
   expect(await interrupted(f.deps.stateDir)).toEqual([]);
+});
+
+it('interrupts a simulated dry run when Ctrl-C arrives between questions', () => {
+  const input = Object.assign(new PassThrough(), { isTTY: true, setRawMode: vi.fn() });
+  const session = terminalInstallUI(input, new Output({ write: vi.fn() }), async () => {
+    throw new Error('unused');
+  });
+  const kill = vi.spyOn(process, 'kill').mockImplementation(() => {
+    process.emit('SIGINT');
+    return true;
+  });
+  try {
+    input.emit('keypress', '\u0003', { ctrl: true, name: 'c' });
+    expect(session.signal.aborted).toBe(true);
+  } finally {
+    kill.mockRestore();
+    session.close();
+  }
 });
 
 it('Back removing a project restores its staged identity and never applies it', async () => {

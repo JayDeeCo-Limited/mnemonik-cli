@@ -124,6 +124,16 @@ export async function withLock(path, waitMs, work) {
                 .then(() => rmdir(dir))
                 .then(() => callback(), callback);
         },
+        rmdirSync: (dir) => {
+            try {
+                fs.unlinkSync(join(dir, 'owner'));
+            }
+            catch (error) {
+                if (!codeIs(error, 'ENOENT'))
+                    throw error;
+            }
+            fs.rmdirSync(dir);
+        },
         stat: (file, callback) => {
             // A superseded holder must also stop heartbeating the replacement lease.
             void (acquired ? assertOwned() : Promise.resolve()).then(() => fs.stat(file, callback), () => callback(Object.assign(new Error('lock_lost'), { code: 'ENOENT' })));

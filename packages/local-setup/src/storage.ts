@@ -158,6 +158,14 @@ export async function withLock<T>(
         .then(() => rmdir(dir))
         .then(() => callback(), callback);
     },
+    rmdirSync: (dir: string) => {
+      try {
+        fs.unlinkSync(join(dir, 'owner'));
+      } catch (error) {
+        if (!codeIs(error, 'ENOENT')) throw error;
+      }
+      fs.rmdirSync(dir);
+    },
     stat: (
       file: string,
       callback: (error: NodeJS.ErrnoException | null, stats?: fs.Stats) => void

@@ -13,7 +13,6 @@ import {
   runDeviceFlow,
   runPkce,
 } from '../src/auth/index.js';
-import { signedInPage } from '../src/auth/pkce.js';
 import { DEVICE_WARNING } from '../src/auth/device.js';
 
 vi.mock('node:crypto', async (importOriginal) => {
@@ -26,6 +25,14 @@ const resource = 'https://api.mnemonik.dev/';
 const clientId = `${issuer}/oauth/clients/mnemonik-cli.json`;
 const scannerRoots = JSON.stringify({ roots: ['/approved'], exclusions: [] });
 const installationId = '11111111-1111-4111-8111-111111111111';
+const issued = {
+  device_code: 'opaque-device-code',
+  user_code: 'BCDF-GHJK',
+  expires_in: 600,
+  interval: 5,
+  verification_uri: `${issuer}/oauth/device`,
+  verification_uri_complete: `${issuer}/oauth/device?user_code=BCDF-GHJK`,
+};
 type FetchInit = NonNullable<Parameters<typeof fetch>[1]>;
 const token = () =>
   new Response(
@@ -66,9 +73,9 @@ async function localhostResponse(url: URL): Promise<number> {
 }
 
 describe('PKCE loopback flow', () => {
-  it('always prints the browser fallback link and serves the branded completion page', async () => {
+  it('always prints the browser fallback link', async () => {
     const printed: string[] = [];
-    let page = '';
+    let status = 0;
     await runPkce({
       issuer,
       resource,
@@ -78,36 +85,18 @@ describe('PKCE loopback flow', () => {
       fetch: vi.fn(async () => token()) as typeof fetch,
       openBrowser: async (url) => {
         const authorize = new URL(url);
-        const response = await fetch(
-          `${authorize.searchParams.get('redirect_uri')}?code=done&state=${authorize.searchParams.get('state')}&iss=${issuer}`
-        );
-        page = await response.text();
+        status = (
+          await fetch(
+            `${authorize.searchParams.get('redirect_uri')}?code=done&state=${authorize.searchParams.get('state')}&iss=${issuer}`
+          )
+        ).status;
       },
     });
     expect(printed).toEqual([
       'If your browser did not open, open this link:',
       expect.stringMatching(/^https:\/\/auth\.mnemonik\.ai\/oauth\/authorize\?/u),
     ]);
-    await vi.waitFor(() => expect(page).toBe(signedInPage));
-    expect(page).toContain('Mnemonik');
-    expect(page).toContain("You're signed in.");
-    expect(page).toContain('You can close this tab and return to your terminal.');
-    expect(page).toContain('class="au-wrap"');
-    expect(page).toContain('class="au-glow"');
-    expect(page).toContain('class="au-grid"');
-    expect(page).toContain('class="au-card"');
-    expect(page).toContain('class="au-panel"');
-    expect(page).toContain('class="cst green">Authorized');
-    expect(page).toContain('viewBox="0 0 1012.45 151.93"');
-    expect(page.match(/<path /gu)).toHaveLength(13);
-    expect(page.match(/<rect /gu)).toHaveLength(1);
-    expect(page).toContain('background: #07080c');
-    expect(page).toContain('color: #ECEEF5');
-    expect(page).toContain('background: #11141c');
-    expect(page).toContain('rgba(99, 91, 255, .16)');
-    expect(page).toContain('rgba(74, 222, 128, .09)');
-    expect(page.match(/data:font\/woff2;base64,/gu)).toHaveLength(3);
-    expect(page).not.toMatch(/<script|https?:\/\//u);
+    await vi.waitFor(() => expect(status).toBe(204));
   });
 
   it('binds before opening, refuses callback mix-ups, exchanges once, and closes', async () => {
@@ -171,7 +160,7 @@ describe('PKCE loopback flow', () => {
         ).toBe(404);
         expect(
           await fetch(`${redirect.origin}/callback?code=one-use-code&state=${state}&iss=${issuer}`)
-        ).toMatchObject({ status: 200 });
+        ).toMatchObject({ status: 204 });
       },
     });
     expect(result.redirectUri).toBe(redirect.origin + '/callback');
@@ -332,16 +321,7 @@ describe('PKCE loopback flow', () => {
 });
 
 describe('device fallback', () => {
-  const issued = {
-    device_code: 'opaque-device-code',
-    user_code: 'BCDF-GHJK',
-    expires_in: 600,
-    interval: 5,
-    verification_uri: `${issuer}/oauth/device`,
-    verification_uri_complete: `${issuer}/oauth/device?user_code=BCDF-GHJK`,
-  };
-
-  it('prints only the exact code and verification URIs, and permanently adds five seconds on slow_down', async () => {
+  it('prints only the full approval link and exact safety sentence, and permanently adds five seconds on slow_down', async () => {
     let now = 0;
     const sleeps: number[] = [];
     const responses = [
@@ -351,6 +331,9 @@ describe('device fallback', () => {
       token(),
     ];
     const lines: string[] = [];
+    const openBrowser = vi.fn(async () => {
+      throw new Error('opener failed');
+    });
     const fetcher = vi.fn(async (_input: string | URL, _init?: FetchInit) => responses.shift()!);
     await expect(
       runDeviceFlow({
@@ -360,6 +343,7 @@ describe('device fallback', () => {
         clientId,
         deviceName: 'Headless box',
         print: (line) => lines.push(line),
+        openBrowser,
         fetch: fetcher as typeof fetch,
         now: () => now,
         sleep: async (ms) => {
@@ -371,12 +355,12 @@ describe('device fallback', () => {
     const start = new URLSearchParams(String(fetcher.mock.calls[0]![1]?.body));
     expect(start.get('device_name')).toBe('Headless box');
     expect(lines).toEqual([
-      'Code: BCDF-GHJK',
-      `Verification URI: ${issuer}/oauth/device`,
-      `Complete URI: ${issuer}/oauth/device?user_code=BCDF-GHJK`,
-      DEVICE_WARNING,
+      `${issuer}/oauth/device?user_code=BCDF-GHJK`,
+      'Approve only a request on a device you control.',
     ]);
+    expect(DEVICE_WARNING).toBe('Approve only a request on a device you control.');
     expect(sleeps).toEqual([5000, 10_000, 10_000]);
+    expect(openBrowser).toHaveBeenCalledWith(issued.verification_uri_complete);
   });
 
   it.each([
@@ -466,14 +450,69 @@ describe('device fallback', () => {
   });
 
   it.each([
-    ['access_denied', 'denied on the other device'],
-    ['expired_token', 'expired'],
-  ])('stops polling on %s', async (error, message) => {
+    ['access_denied', 'That approval request was refused. Starting a new one.'],
+    ['expired_token', 'That approval request expired. Starting a new one.'],
+  ])('replaces a dead %s request once', async (error, notice) => {
+    let now = 0;
+    const replacement = {
+      ...issued,
+      device_code: 'replacement-device-code',
+      user_code: 'JKLM-NPQR',
+      verification_uri_complete: `${issuer}/oauth/device?user_code=JKLM-NPQR`,
+    };
+    const lines: string[] = [];
+    const openBrowser = vi.fn(async () => undefined);
+    const fetcher = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify(issued), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ error }), { status: 400 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(replacement), { status: 200 }))
+      .mockResolvedValueOnce(token());
+    await expect(
+      runDeviceFlow({
+        issuer,
+        resource,
+        scopes: CLI_SCOPES,
+        clientId,
+        deviceName: 'box',
+        print: (line) => lines.push(line),
+        openBrowser,
+        fetch: fetcher,
+        now: () => now,
+        sleep: async (ms) => void (now += ms),
+      })
+    ).resolves.toMatchObject({ tokens: { access_token: 'access' } });
+    expect(fetcher.mock.calls.map(([input]) => new URL(String(input)).pathname)).toEqual([
+      '/oauth/device_authorization',
+      '/oauth/token',
+      '/oauth/device_authorization',
+      '/oauth/token',
+    ]);
+    expect(lines).toEqual([
+      issued.verification_uri_complete,
+      DEVICE_WARNING,
+      notice,
+      replacement.verification_uri_complete,
+      DEVICE_WARNING,
+    ]);
+    expect(openBrowser.mock.calls).toEqual([
+      [issued.verification_uri_complete],
+      [replacement.verification_uri_complete],
+    ]);
+  });
+
+  it('starts only one replacement after two refused requests', async () => {
     let now = 0;
     const fetcher = vi
       .fn()
       .mockResolvedValueOnce(new Response(JSON.stringify(issued), { status: 200 }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ error }), { status: 400 }));
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ error: 'access_denied' }), { status: 400 })
+      )
+      .mockResolvedValueOnce(new Response(JSON.stringify(issued), { status: 200 }))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ error: 'access_denied' }), { status: 400 })
+      );
     await expect(
       runDeviceFlow({
         issuer,
@@ -486,8 +525,10 @@ describe('device fallback', () => {
         now: () => now,
         sleep: async (ms) => void (now += ms),
       })
-    ).rejects.toThrow(message);
-    expect(fetcher).toHaveBeenCalledTimes(2);
+    ).rejects.toMatchObject({ code: 'access_denied' });
+    expect(
+      fetcher.mock.calls.filter(([input]) => String(input).endsWith('/oauth/device_authorization'))
+    ).toHaveLength(2);
   });
 
   it('registers once and persists the DCR client after CIMD invalid_client', async () => {
@@ -535,8 +576,123 @@ describe('device fallback', () => {
   it('detects a missing Linux display but not Wayland, macOS, or Windows', () => {
     expect(noBrowserAvailable('linux', {})).toBe(true);
     expect(noBrowserAvailable('linux', { WAYLAND_DISPLAY: 'wayland-0' })).toBe(false);
+    expect(noBrowserAvailable('darwin', { SSH_TTY: '/dev/ttys001' })).toBe(true);
     expect(noBrowserAvailable('darwin', {})).toBe(false);
     expect(noBrowserAvailable('win32', {})).toBe(false);
+  });
+
+  it.each(['darwin', 'linux'] as const)(
+    'uses cross-device authorization over SSH on %s without opening a loopback URL',
+    async (platform) => {
+      const stateDir = await mkdtemp(join(tmpdir(), 'ssh-auth-'));
+      dirs.push(stateDir);
+      let now = 0;
+      const requests: Array<{ url: URL; form: URLSearchParams }> = [];
+      const openBrowser = vi.fn(async () => {
+        throw new Error('must not open a browser on the remote machine');
+      });
+      const fetcher = vi.fn(async (input: string | URL, init?: FetchInit) => {
+        const url = new URL(input);
+        const form = new URLSearchParams(String(init?.body ?? ''));
+        requests.push({ url, form });
+        if (url.pathname === '/oauth/device_authorization')
+          return new Response(JSON.stringify(issued), { status: 200 });
+        if (url.pathname === '/oauth/token') return token();
+        if (url.pathname === '/api/v1/auth/grants')
+          return Response.json({ email: 'owner@example.test' });
+        throw new Error(`unexpected request: ${url.pathname}`);
+      });
+
+      await createCliAuth({
+        stateDir,
+        scannerRoots,
+        platform,
+        env: { SSH_CONNECTION: 'client 123 server 22', DISPLAY: ':0' },
+        credentials: createCredentialAdapter({ stateDir }),
+        fetch: fetcher as typeof fetch,
+        openBrowser,
+        print: () => undefined,
+        now: () => now,
+        sleep: async (ms) => void (now += ms),
+      }).signIn();
+
+      expect(openBrowser).not.toHaveBeenCalled();
+      expect(requests[0]?.url.pathname).toBe('/oauth/device_authorization');
+      expect(requests[0]?.form.get('scanner_roots')).toBe(scannerRoots);
+      expect(requests.every(({ form }) => !form.has('redirect_uri'))).toBe(true);
+    }
+  );
+
+  it('opens local repository approval in the browser with the selected repositories', async () => {
+    const stateDir = await mkdtemp(join(tmpdir(), 'local-scanner-auth-'));
+    dirs.push(stateDir);
+    const paths: string[] = [];
+    const openBrowser = vi.fn(async () => undefined);
+    const fetcher = vi.fn(async (input: string | URL, init?: FetchInit) => {
+      const path = new URL(input).pathname;
+      paths.push(path);
+      if (path === '/oauth/device_authorization') {
+        expect(new URLSearchParams(String(init?.body)).get('scanner_roots')).toBe(scannerRoots);
+        return new Response(JSON.stringify(issued), { status: 200 });
+      }
+      if (path === '/oauth/token') return token();
+      if (path === '/api/v1/auth/grants') return Response.json({ email: 'owner@example.test' });
+      throw new Error(`unexpected request: ${path}`);
+    });
+
+    await createCliAuth({
+      stateDir,
+      scannerRoots,
+      platform: 'darwin',
+      env: {},
+      credentials: createCredentialAdapter({ stateDir }),
+      fetch: fetcher as typeof fetch,
+      openBrowser,
+      print: () => undefined,
+      sleep: async () => undefined,
+    }).signIn();
+
+    expect(openBrowser).toHaveBeenCalledWith(issued.verification_uri_complete);
+    expect(paths).toEqual(['/oauth/device_authorization', '/oauth/token', '/api/v1/auth/grants']);
+  });
+
+  it('finishes local sign-in within one poll when the browser cannot call the machine', async () => {
+    vi.useFakeTimers();
+    try {
+      const stateDir = await mkdtemp(join(tmpdir(), 'local-device-auth-'));
+      dirs.push(stateDir);
+      const credentials = createCredentialAdapter({ stateDir });
+      vi.spyOn(credentials, 'readCliOAuth')
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce({} as never);
+      vi.spyOn(credentials, 'putCliOAuth').mockResolvedValue({ store: 'test' });
+      const opened: string[] = [];
+      const fetcher = vi.fn(async (input: string | URL) => {
+        const path = new URL(input).pathname;
+        if (path === '/oauth/device_authorization')
+          return new Response(JSON.stringify(issued), { status: 200 });
+        if (path === '/oauth/token') return token();
+        if (path === '/api/v1/auth/grants') return Response.json({ email: 'owner@example.test' });
+        throw new Error(`unexpected request: ${path}`);
+      });
+      const signIn = createCliAuth({
+        stateDir,
+        platform: 'darwin',
+        env: {},
+        credentials,
+        fetch: fetcher as typeof fetch,
+        openBrowser: async (url) => void opened.push(url),
+        print: () => undefined,
+      }).signIn();
+
+      await vi.waitFor(() => expect(opened).toHaveLength(1));
+      await vi.advanceTimersByTimeAsync(5_000);
+
+      await expect(signIn).resolves.toBeDefined();
+      expect(opened).toEqual([issued.verification_uri_complete]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
@@ -636,30 +792,33 @@ it('login reuses owned installation identity when the session cannot read its cr
   expect(fetcher).toHaveBeenCalledTimes(1);
 });
 
-it('browser CLI sign-in sends the hostname as the device name', async () => {
+it('local CLI sign-in sends the hostname and opens the complete link', async () => {
   const { hostname } = await import('node:os');
   const stateDir = await mkdtemp(join(tmpdir(), 'browser-name-'));
   dirs.push(stateDir);
   let observed: string | null = null;
+  const openBrowser = vi.fn(async () => undefined);
   const auth = createCliAuth({
     stateDir,
     issuer,
     resource,
     platform: 'win32',
     credentials: createCredentialAdapter({ stateDir }),
-    fetch: async (url) =>
-      String(url).includes('/auth/grants')
-        ? Response.json({ email: 'owner@example.test' })
-        : token(),
-    print: () => {},
-    openBrowser: async (url) => {
-      const authorize = new URL(url);
-      observed = authorize.searchParams.get('device_name');
-      await fetch(
-        `${authorize.searchParams.get('redirect_uri')}?code=fixture&state=${authorize.searchParams.get('state')}&iss=${issuer}`
-      );
+    fetch: async (url, init) => {
+      const path = new URL(url).pathname;
+      if (path === '/oauth/device_authorization') {
+        observed = new URLSearchParams(String(init?.body)).get('device_name');
+        return new Response(JSON.stringify(issued), { status: 200 });
+      }
+      if (path === '/oauth/token') return token();
+      if (path === '/api/v1/auth/grants') return Response.json({ email: 'owner@example.test' });
+      throw new Error(`unexpected request: ${path}`);
     },
+    print: () => {},
+    openBrowser,
+    sleep: async () => undefined,
   });
   await auth.signIn();
   expect(observed).toBe(hostname());
+  expect(openBrowser).toHaveBeenCalledWith(issued.verification_uri_complete);
 });

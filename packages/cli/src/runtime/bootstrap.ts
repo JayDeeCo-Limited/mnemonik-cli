@@ -41,6 +41,42 @@ interface NpmLaunch {
   packages: Record<string, LockEntry>;
   entry: string;
 }
+
+interface BootstrapWritable {
+  write(chunk: string): unknown;
+}
+
+const bootstrapFrames = ['|', '/', '-', '\\'] as const;
+
+export function bootstrapProgress(
+  stream: BootstrapWritable = process.stdout,
+  interactive = Boolean(process.stdout.isTTY),
+  inherited = false
+): { stop(): void } {
+  if (!interactive) {
+    if (!inherited) stream.write('Preparing the installer\n');
+    return { stop: () => undefined };
+  }
+  let frame = 0;
+  let active = true;
+  const render = () => {
+    if (!active) return;
+    stream.write(`\r\u001b[2K${bootstrapFrames[frame]} Preparing the installer`);
+    frame = (frame + 1) % bootstrapFrames.length;
+  };
+  const timer = setInterval(render, 80);
+  timer.unref();
+  render();
+  return {
+    stop: () => {
+      if (!active) return;
+      active = false;
+      clearInterval(timer);
+      stream.write('\r\u001b[2K');
+    },
+  };
+}
+
 const json = async <T>(path: string): Promise<T> => JSON.parse(await readFile(path, 'utf8')) as T;
 
 function bootstrapStateDirectory(
@@ -336,6 +372,23 @@ export function newerVersion(candidate: string, current: string): boolean {
 }
 
 export async function bootstrap(args: string[], entry = process.argv[1] ?? ''): Promise<number> {
+  const inheritedProgress = process.env.MNEMONIK_BOOTSTRAP_PROGRESS === '1';
+  delete process.env.MNEMONIK_BOOTSTRAP_PROGRESS;
+  const progress =
+    args[0] === 'install'
+      ? bootstrapProgress(process.stdout, undefined, inheritedProgress)
+      : undefined;
+  return bootstrapWithProgress(args, entry, progress).catch((error: unknown) => {
+    progress?.stop();
+    throw error;
+  });
+}
+
+async function bootstrapWithProgress(
+  args: string[],
+  entry: string,
+  progress: ReturnType<typeof bootstrapProgress> | undefined
+): Promise<number> {
   const root = fileURLToPath(new URL('../../', import.meta.url)).replace(/[\\/]$/, '');
   if ((await json<Package>(join(root, 'package.json'))).name === '@mnemonik/runtime-bootstrap') {
     const store = new RuntimeStore(dirname(dirname(root)));
@@ -350,6 +403,7 @@ export async function bootstrap(args: string[], entry = process.argv[1] ?? ''): 
     const { runCli } = (await import(
       pathToFileURL(verified.entry).href
     )) as typeof import('../router.js');
+    progress?.stop();
     return runCli(args);
   }
   // A runtime bin is callable only while the verified current pointer selects it.
@@ -369,6 +423,7 @@ export async function bootstrap(args: string[], entry = process.argv[1] ?? ''): 
     const { runCli } = (await import(
       pathToFileURL(verified.entry).href
     )) as typeof import('../router.js');
+    progress?.stop();
     return runCli(args);
   }
   const launch = await guardNpmLaunch(entry);
@@ -389,7 +444,12 @@ export async function bootstrap(args: string[], entry = process.argv[1] ?? ''): 
   )
     await store.installRuntime('cli', launch.pkg.version, source);
   const launcher = await installBootstrap(store, source);
-  return launchChild(process.execPath, [launcher, ...args]);
+  progress?.stop();
+  return launchChild(
+    process.execPath,
+    [launcher, ...args],
+    progress ? { MNEMONIK_BOOTSTRAP_PROGRESS: '1' } : undefined
+  );
 }
 
 const children = new Set<ChildProcess>();
@@ -399,10 +459,14 @@ const interruptChildren = (): void => {
 const terminateChildren = (): void => {
   for (const child of children) child.kill('SIGTERM');
 };
+const hangupChildren = (): void => {
+  for (const child of children) child.kill('SIGHUP');
+};
 function trackChild(child: ChildProcess): () => void {
   if (children.size === 0) {
     process.on('SIGINT', interruptChildren);
     process.on('SIGTERM', terminateChildren);
+    process.on('SIGHUP', hangupChildren);
   }
   children.add(child);
   return () => {
@@ -410,13 +474,18 @@ function trackChild(child: ChildProcess): () => void {
     if (children.size === 0) {
       process.off('SIGINT', interruptChildren);
       process.off('SIGTERM', terminateChildren);
+      process.off('SIGHUP', hangupChildren);
     }
   };
 }
 
-export function launchChild(file: string, args: string[]): Promise<number> {
+export function launchChild(
+  file: string,
+  args: string[],
+  envOverrides: Record<string, string> = {}
+): Promise<number> {
   // Do not inherit Node preload hooks or external module lookup paths into the durable child.
-  const env = { ...process.env };
+  const env = { ...process.env, ...envOverrides };
   delete env.NODE_OPTIONS;
   delete env.NODE_PATH;
   return new Promise((resolve, reject) => {

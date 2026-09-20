@@ -7,7 +7,7 @@ import { hostname } from 'node:os';
 import { URLSearchParams } from 'node:url';
 import { isCredentialSessionUnavailableError, } from '@mnemonik/credentials';
 import { runDeviceFlow } from './device.js';
-import { BrowserUnavailableError, OAuthProtocolError, runPkce } from './pkce.js';
+import { open, OAuthProtocolError } from './pkce.js';
 export const CLI_SCOPES = [
     'account:read',
     'install:manage',
@@ -18,7 +18,9 @@ export const CLI_SCOPES = [
 const CLI_VERSION = createRequire(import.meta.url)('../../package.json')
     .version;
 export function noBrowserAvailable(platform = process.platform, env = process.env) {
-    return platform === 'linux' && !env.DISPLAY && !env.WAYLAND_DISPLAY;
+    return (!!env.SSH_CONNECTION ||
+        !!env.SSH_TTY ||
+        (platform === 'linux' && !env.DISPLAY && !env.WAYLAND_DISPLAY));
 }
 const clientMetadata = (redirectUris) => ({
     client_name: 'Mnemonik CLI',
@@ -59,23 +61,7 @@ export function createCliAuth(options = {}) {
             throw new OAuthProtocolError(typeof body.error === 'string' ? body.error : 'client_registration_failed');
         return body.client_id;
     }
-    async function browser(clientId, registerFirst = false) {
-        return runPkce({
-            issuer,
-            resource,
-            scopes: CLI_SCOPES,
-            scannerRoots: options.scannerRoots,
-            deviceInstallationId,
-            deviceInstallationIds,
-            deviceName: options.deviceName ?? hostname(),
-            clientId: registerFirst ? (redirectUri) => register([redirectUri]) : clientId,
-            print,
-            fetch: fetchImpl,
-            openBrowser: options.openBrowser,
-            platform: options.platform,
-        });
-    }
-    async function device(clientId) {
+    async function device(clientId, openBrowser) {
         return runDeviceFlow({
             issuer,
             resource,
@@ -86,19 +72,20 @@ export function createCliAuth(options = {}) {
             clientId,
             deviceName: options.deviceName ?? hostname(),
             print,
+            openBrowser,
             fetch: fetchImpl,
             sleep: options.sleep,
             now,
         });
     }
-    async function deviceWithRegistration(clientId) {
+    async function deviceWithRegistration(clientId, openBrowser) {
         try {
-            return await device(clientId);
+            return await device(clientId, openBrowser);
         }
         catch (error) {
             if (!(error instanceof OAuthProtocolError) || error.code !== 'invalid_client')
                 throw error;
-            return device(await register(['http://127.0.0.1/callback', 'http://[::1]/callback']));
+            return device(await register(['http://127.0.0.1/callback', 'http://[::1]/callback']), openBrowser);
         }
     }
     async function signIn() {
@@ -112,19 +99,10 @@ export function createCliAuth(options = {}) {
             throw error;
         });
         const clientId = saved?.clientId ?? cimdClientId;
-        const useDevice = options.noBrowser || noBrowserAvailable(options.platform, options.env);
-        let result;
-        try {
-            result = useDevice ? await deviceWithRegistration(clientId) : await browser(clientId);
-        }
-        catch (error) {
-            if (!useDevice && error instanceof BrowserUnavailableError)
-                result = await deviceWithRegistration(clientId);
-            else if (error instanceof OAuthProtocolError && error.code === 'invalid_client')
-                result = await browser(clientId, true);
-            else
-                throw error;
-        }
+        const browserUnavailable = options.noBrowser || noBrowserAvailable(options.platform, options.env);
+        const result = await deviceWithRegistration(clientId, browserUnavailable
+            ? undefined
+            : (options.openBrowser ?? ((url) => open(url, options.platform ?? process.platform))));
         const rotatedAt = now();
         // localFamilyKey: the server does not expose its family id to the CLI yet;
         // this stable digest is only the local serialization/lease identity.

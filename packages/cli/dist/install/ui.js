@@ -4,9 +4,8 @@ import { cancelScreen, finalReviewScreen, interruptedScreen, renderScreen, } fro
 import { journeyAnswers } from '../screens/journey.js';
 import { hostOrder, SimulatedHostAdapter } from './adapters.js';
 export function terminalInstallUI(input, output, roots) {
-    const answers = journeyAnswers(input, output);
     const controller = new AbortController();
-    input.on('SIGINT', () => controller.abort());
+    const answers = journeyAnswers(input, output, { interrupt: () => controller.abort() });
     const ask = async (screen) => {
         renderScreen(screen, output);
         const answer = await answers.choose(screen.choices, screen.default);

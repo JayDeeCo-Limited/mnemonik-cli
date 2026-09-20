@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { bytesAt, withInstall } from '../../src/install/journal.js';
 import { runHosts } from '../../src/install/hosts.js';
+import { EventEmitter } from 'node:events';
 import { PassThrough, Readable } from 'node:stream';
 import { runCli } from '../../src/router.js';
 import { waitForInstallation } from '../../src/install/journey.js';
@@ -110,6 +111,86 @@ it('uses arrow keys and Enter, with Enter accepting the highlighted default', as
   answers.close();
 });
 
+it('discards keys pressed while no question is on screen', async () => {
+  const input = Object.assign(new PassThrough(), {
+    isTTY: true,
+    setRawMode: vi.fn(),
+  });
+  const answers = screens.journeyAnswers(input);
+  const first = answers.choose(['Recommended', 'Customize']);
+  input.write('\r');
+  await expect(first).resolves.toBe('Recommended');
+
+  input.write('\r');
+  const second = answers.choose(['Install', 'Cancel']);
+  let settled = false;
+  void second.then(() => (settled = true));
+  await new Promise((resolve) => globalThis.setImmediate(resolve));
+  expect(settled).toBe(false);
+
+  input.write('\u001b[B\r');
+  await expect(second).resolves.toBe('Cancel');
+  answers.close();
+});
+
+it('reports Ctrl-C and terminal hang-up immediately even when no question is waiting', () => {
+  const input = Object.assign(new PassThrough(), {
+    isTTY: true,
+    setRawMode: vi.fn(),
+  });
+  const signals = new EventEmitter();
+  const stopped = vi.fn();
+  const answers = (
+    screens.journeyAnswers as unknown as (
+      input: Readable,
+      output: undefined,
+      options: { interrupt: () => void; signals: EventEmitter }
+    ) => ReturnType<typeof screens.journeyAnswers>
+  )(input, undefined, { interrupt: stopped, signals });
+
+  input.write('\u0003');
+  signals.emit('SIGHUP');
+  expect(stopped).toHaveBeenCalledTimes(2);
+  answers.close();
+  expect(signals.listenerCount('SIGHUP')).toBe(0);
+});
+
+it('animates a long step in a TTY, replaces it with the result, and uses plain lines otherwise', () => {
+  vi.useFakeTimers();
+  const progress = (
+    screens as unknown as {
+      stepProgress?: (
+        output: Output,
+        interactive: boolean,
+        text: string
+      ) => { complete(result: string): void };
+    }
+  ).stepProgress;
+  expect(progress, 'the production journey exposes long-step output').toBeTypeOf('function');
+
+  let ttyText = '';
+  const tty = progress?.(
+    new Output({ isTTY: true, write: (chunk) => void (ttyText += chunk) }),
+    true,
+    'Signing in'
+  );
+  vi.advanceTimersByTime(160);
+  tty?.complete('  ✓ Signed in');
+  expect(ttyText).toMatch(/\| Signing in/u);
+  expect(ttyText).toMatch(/[\\/-] Signing in/u);
+  expect(ttyText.endsWith('\r\u001b[2K  ✓ Signed in\n')).toBe(true);
+
+  let plainText = '';
+  const plain = progress?.(
+    new Output({ write: (chunk) => void (plainText += chunk) }),
+    false,
+    'Signing in'
+  );
+  plain?.complete('  ✓ Signed in');
+  expect(plainText).toBe('  Signing in\n  ✓ Signed in\n');
+  vi.useRealTimers();
+});
+
 it('renders Customize as one checklist and applies its keyboard changes', async () => {
   let text = '';
   const output = new Output({ write: (chunk) => void (text += chunk) });
@@ -147,6 +228,16 @@ it('reports closed input as a cancellation', async () => {
   );
   await expect(answers.choose(['Recommended', 'Customize'])).resolves.toBe('Cancel');
   expect(text).toContain('Installation cancelled.');
+});
+
+it('stops reading terminal input when the journey closes', () => {
+  const input = Object.assign(new PassThrough(), { isTTY: true, setRawMode: vi.fn() });
+  const pause = vi.spyOn(input, 'pause');
+
+  const answers = screens.journeyAnswers(input);
+  answers.close();
+
+  expect(pause).toHaveBeenCalledOnce();
 });
 
 it.each([
@@ -296,7 +387,7 @@ it('names the found and minimum Node versions before stopping setup', async () =
   );
   expect(code).toBe(3);
   expect(text).toContain('Node 23.1.0 is installed. Mnemonik needs Node 24 or newer.');
-  expect(text).toContain('Install Node 24: https://nodejs.org/en/download/package-manager');
+  expect(text).toContain('Install Node 24:\nhttps://nodejs.org/en/download/package-manager\n');
   expect(text.trim()).not.toBe('preflight_failed');
 });
 it('doctor does not wait for indexing and bounds each Retry attempt', async () => {

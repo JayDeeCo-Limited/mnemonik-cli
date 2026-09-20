@@ -49,11 +49,49 @@ function redactJson(value: unknown, context: OutputContext): string {
 }
 
 export interface Writable {
+  isTTY?: boolean;
+  supportsHyperlinks?: boolean;
   write(chunk: string): unknown;
+}
+
+const urlPattern = /https?:\/\/[^\s]+/gu;
+const progressFrames = ['|', '/', '-', '\\'] as const;
+
+function supportsHyperlinks(stream: Writable): boolean {
+  if (stream.supportsHyperlinks !== undefined) return stream.supportsHyperlinks;
+  return Boolean(stream.isTTY && process.env.TERM !== 'dumb');
+}
+
+function terminalUrl(url: string, stream: Writable): string {
+  return supportsHyperlinks(stream) ? `\u001b]8;;${url}\u0007${url}\u001b]8;;\u0007` : url;
+}
+
+function humanLines(value: string): Array<{ text: string; url?: string }> {
+  urlPattern.lastIndex = 0;
+  if (!urlPattern.test(value)) return [{ text: value }];
+  urlPattern.lastIndex = 0;
+  const lines: Array<{ text: string; url?: string }> = [];
+  let offset = 0;
+  for (const match of value.matchAll(urlPattern)) {
+    const index = match.index;
+    const before = value.slice(offset, index).trimEnd();
+    if (before) lines.push({ text: before });
+    const url = match[0];
+    lines.push({ text: url, url });
+    offset = index + match[0].length;
+  }
+  const after = value.slice(offset).trimStart();
+  if (after) lines.push({ text: after });
+  return lines.length ? lines : [{ text: value }];
 }
 
 export class Output {
   private context: OutputContext;
+  private progress?: {
+    frame: number;
+    text: string;
+    timer: ReturnType<typeof setInterval>;
+  };
 
   constructor(
     private readonly stdout: Writable,
@@ -68,7 +106,7 @@ export class Output {
   }
 
   line(value = ''): void {
-    this.stdout.write(`${redact(value, this.context)}\n`);
+    this.emitHuman(this.stdout, redact(value, this.context));
   }
 
   write(value: string): void {
@@ -82,10 +120,52 @@ export class Output {
   }
 
   error(value: unknown): void {
-    this.stderr.write(`${redact(value, this.context)}\n`);
+    this.emitHuman(this.stderr, redact(value, this.context));
   }
 
   json(value: unknown): void {
     this.stdout.write(`${redactJson(value, this.context)}\n`);
+  }
+
+  progressLine(text: string, animated: boolean): { complete(result: string): void; stop(): void } {
+    if (!animated) {
+      this.line(text);
+      return { complete: (result) => this.line(result), stop: () => undefined };
+    }
+    if (this.progress?.timer) clearInterval(this.progress.timer);
+    const render = () => {
+      const progress = this.progress;
+      if (!progress) return;
+      this.stdout.write(`\r\u001b[2K${progressFrames[progress.frame]} ${progress.text}`);
+      progress.frame = (progress.frame + 1) % progressFrames.length;
+    };
+    const timer = setInterval(render, 80);
+    timer.unref?.();
+    this.progress = { frame: 0, text, timer };
+    render();
+    const stop = () => {
+      if (!this.progress || this.progress.timer !== timer) return;
+      clearInterval(timer);
+      this.progress = undefined;
+      this.stdout.write('\r\u001b[2K');
+    };
+    return {
+      complete: (result) => {
+        stop();
+        this.line(result);
+      },
+      stop,
+    };
+  }
+
+  private emitHuman(stream: Writable, value: string): void {
+    const progress = this.progress;
+    if (progress) this.stdout.write('\r\u001b[2K');
+    for (const line of humanLines(value))
+      stream.write(`${line.url ? terminalUrl(line.url, stream) : line.text}\n`);
+    if (progress) {
+      this.stdout.write(`\r\u001b[2K${progressFrames[progress.frame]} ${progress.text}`);
+      progress.frame = (progress.frame + 1) % progressFrames.length;
+    }
   }
 }

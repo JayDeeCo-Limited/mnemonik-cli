@@ -18,9 +18,8 @@ export function terminalInstallUI(
   output: Output,
   roots: InstallUI['roots']
 ): { ui: InstallUI; signal: AbortSignal; close(): void } {
-  const answers = journeyAnswers(input, output);
   const controller = new AbortController();
-  input.on('SIGINT', () => controller.abort());
+  const answers = journeyAnswers(input, output, { interrupt: () => controller.abort() });
   const ask = async (screen: ChoiceScreen) => {
     renderScreen(screen, output);
     const answer = await answers.choose(screen.choices, screen.default);

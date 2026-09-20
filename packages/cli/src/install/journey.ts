@@ -31,6 +31,8 @@ import {
   renderCustomize,
   renderJourney,
   journeyAnswers,
+  INSTALLATION_STOPPED,
+  stepProgress,
 } from '../screens/journey.js';
 import { interrupted, type Journal } from './journal.js';
 import {
@@ -47,6 +49,7 @@ import { ensureLauncher, launcherPathAction, LauncherError } from '../launcher.j
 const labels = { 'claude-code': 'Claude Code', codex: 'Codex', cursor: 'Cursor', grok: 'Grok' };
 const launchHosts = ['claude-code', 'codex', 'cursor', 'grok'] as const;
 const notOfferedHosts = ['vscode-copilot'] as const;
+const FINAL_REPORT_TIMEOUT_MS = 3_000;
 
 export function hostReadinessConditions(
   results: HostResult[],
@@ -141,11 +144,55 @@ export async function joinedInstall(
   }
   const home = deps.home ?? homedir();
   let cwd = deps.cwd ?? process.cwd();
+  const input = deps.input ?? process.stdin;
+  const interactive = Boolean((input as Readable & { isTTY?: boolean }).isTTY);
+  let answers: ReturnType<typeof journeyAnswers> | undefined;
+  let stopped = false;
+  const interrupt = (signal: 'SIGINT' | 'SIGHUP') => {
+    if (stopped) return;
+    stopped = true;
+    output.line(INSTALLATION_STOPPED);
+    answers?.close();
+    const repeat = globalThis.setImmediate(() => process.kill(process.pid, signal));
+    repeat.unref();
+  };
+  const interruptBySigint = () => interrupt('SIGINT');
+  const interruptByHangup = () => interrupt('SIGHUP');
+  let automaticSignals = false;
+  const closeInteraction = () => {
+    answers?.close();
+    if (automaticSignals) {
+      process.off('SIGINT', interruptBySigint);
+      process.off('SIGHUP', interruptByHangup);
+      automaticSignals = false;
+    }
+  };
+  let activeProgress: ReturnType<typeof stepProgress> | undefined;
+  const startProgress = (text: string) => {
+    activeProgress?.stop();
+    activeProgress = json ? undefined : stepProgress(output, interactive, text);
+  };
+  const completeProgress = (text: string) => {
+    activeProgress?.complete(completedLine(text));
+    activeProgress = undefined;
+  };
   const stateDir =
     deps.hostManagement?.stateDir ??
     deps.installStateDir ??
     stateDirectory(process.platform, process.env, home);
-  const previous = (await interrupted(stateDir))[0];
+  if (!automatic) answers = journeyAnswers(input, output, { interrupt });
+  else {
+    process.on('SIGINT', interruptBySigint);
+    process.on('SIGHUP', interruptByHangup);
+    automaticSignals = true;
+  }
+  let previous: Awaited<ReturnType<typeof interrupted>>[number] | undefined;
+  try {
+    previous = (await interrupted(stateDir))[0];
+  } catch (error) {
+    closeInteraction();
+    throw error;
+  }
   if (previous?.data.joined) {
     if (automatic) {
       if (json)
@@ -158,6 +205,7 @@ export async function joinedInstall(
         output.error(
           'Previous installation was interrupted. Run mnemonik install interactively to resume or roll back.'
         );
+      closeInteraction();
       return 3;
     }
     cwd = previous.data.hostRequest?.selections[0]?.projectRoot ?? previous.data.roots[0] ?? cwd;
@@ -165,12 +213,22 @@ export async function joinedInstall(
     scanner = components.includes('scanner');
     names = [...new Set(previous.data.hostRequest?.selections.map((s) => s.host) ?? [])];
   }
-  const preflight = await runPreflight({
-    cwd,
-    home,
-    ...(!scanner && flags.has('components') ? { fetch: async () => new Response('{}') } : {}),
-    ...deps.preflight,
-  });
+  startProgress('Checking this computer');
+  let preflight;
+  try {
+    preflight = await runPreflight({
+      cwd,
+      home,
+      ...(!scanner && flags.has('components') ? { fetch: async () => new Response('{}') } : {}),
+      ...deps.preflight,
+    });
+    completeProgress('Computer checked');
+  } catch (error) {
+    activeProgress?.stop();
+    activeProgress = undefined;
+    closeInteraction();
+    throw error;
+  }
   const root = preflight.project.root ?? cwd;
   const logPath = join(stateDir, 'install.log');
   const log = async (detail: unknown) => {
@@ -191,10 +249,6 @@ export async function joinedInstall(
           Object.keys(labels).find((key) => labels[key as keyof typeof labels] === h.name) ?? ''
       )
       .filter(Boolean);
-  const answers = automatic ? undefined : journeyAnswers(deps.input ?? process.stdin, output);
-  const interactive = Boolean(
-    ((deps.input ?? process.stdin) as Readable & { isTTY?: boolean }).isTTY
-  );
   const replaceScreen = (lines: number, replacement?: string) => {
     if (!interactive) return;
     output.write(`\u001b[${lines}A\r\u001b[J`);
@@ -335,68 +389,85 @@ export async function joinedInstall(
           deps.preflight?.platform ?? process.platform
         ))
           output.error(line);
-      if (!preflight.network.reachable)
-        output.error(
-          `Discovery ${preflight.network.discoveryUrl}: ${preflight.network.detail ?? 'unavailable'}`
-        );
+      if (!preflight.network.reachable) {
+        output.error('Discovery could not be reached.');
+        output.error(preflight.network.discoveryUrl);
+        output.error(preflight.network.detail ?? 'unavailable');
+      }
       throw new Error('preflight_failed');
     }
     if (!automatic && !flags.has('apply')) {
       renderJourney('account', output);
     }
     for (;;) {
+      startProgress('Signing in');
       try {
         await authorize();
-        if (!automatic) output.line(completedLine('Signed in'));
+        completeProgress('Signed in');
         break;
       } catch (error) {
+        activeProgress?.stop();
+        activeProgress = undefined;
         if (automatic || (await choose('Sign-in did not finish.', ['Retry', 'Skip'])) !== 'Retry')
           throw error;
       }
     }
+    if (!automatic) output.line(completedStep(3, 'Configure editors'));
+    startProgress('Configuring your editors');
     const managed = await management();
     reportFinal = async (readiness) => {
       const versions = await ownership
         .readInstallVersions(stateDir, readiness.scanner?.version ?? undefined)
         .catch(() => undefined);
       readiness = { ...readiness, platform: process.platform, ...(versions ? { versions } : {}) };
+      const controller = new AbortController();
+      let timer: ReturnType<typeof setTimeout> | undefined;
       try {
-        const bearer = await managed.getCliBearer?.();
-        if (bearer) {
-          const fetcher = deps.scannerEnable?.fetch ?? deps.grantFetch ?? fetch;
-          const headers = { authorization: `Bearer ${bearer}`, 'content-type': 'application/json' };
-          let session = prepared?.session;
-          if (!session) {
-            const response = await fetcher(`${apiOrigin()}/api/v1/install-sessions/current`, {
-              headers,
-            });
-            if (!response.ok) throw new Error(`install_report_${response.status}`);
-            session = (await response.json()) as PreparedScanner['session'];
-          }
-          const response = await fetcher(
-            `${apiOrigin()}/api/v1/install-sessions/${session.id}/complete`,
-            {
-              method: 'POST',
-              headers,
-              body: JSON.stringify({
-                readiness: serializeReadiness(readiness),
-                platform: process.platform,
-                ...(versions ? { versions } : {}),
-              }),
-            }
-          );
-          if (!response.ok) throw new Error(`install_report_${response.status}`);
-        } else if (prepared) await prepared.complete(serializeReadiness(readiness));
-      } catch (error) {
-        const reason = `The final installation status could not be uploaded: ${(error as Error).message}`;
-        readiness = {
-          ...readiness,
-          installation: {
-            state: readiness.installation.state === 'FAILED' ? 'FAILED' : 'LIMITED',
-            reasons: [...readiness.installation.reasons, reason],
-            actions: [...readiness.installation.actions, 'mnemonik install'],
-          },
-        };
+        await Promise.race([
+          (async () => {
+            const bearer = await managed.getCliBearer?.();
+            if (bearer) {
+              const fetcher = deps.scannerEnable?.fetch ?? deps.grantFetch ?? fetch;
+              const headers = {
+                authorization: `Bearer ${bearer}`,
+                'content-type': 'application/json',
+              };
+              let session = prepared?.session;
+              if (!session) {
+                const response = await fetcher(`${apiOrigin()}/api/v1/install-sessions/current`, {
+                  headers,
+                  signal: controller.signal,
+                });
+                if (!response.ok) throw new Error(`install_report_${response.status}`);
+                session = (await response.json()) as PreparedScanner['session'];
+              }
+              const response = await fetcher(
+                `${apiOrigin()}/api/v1/install-sessions/${session.id}/complete`,
+                {
+                  method: 'POST',
+                  headers,
+                  signal: controller.signal,
+                  body: JSON.stringify({
+                    readiness: serializeReadiness(readiness),
+                    platform: process.platform,
+                    ...(versions ? { versions } : {}),
+                  }),
+                }
+              );
+              if (!response.ok) throw new Error(`install_report_${response.status}`);
+            } else if (prepared) await prepared.complete(serializeReadiness(readiness));
+          })(),
+          new Promise<never>((_, reject) => {
+            timer = setTimeout(() => {
+              controller.abort();
+              reject(new Error('install_report_timeout'));
+            }, FINAL_REPORT_TIMEOUT_MS);
+          }),
+        ]);
+      } catch {
+        // Final status is best effort and must not change the local result.
+      } finally {
+        clearTimeout(timer);
       }
       return readiness;
     };
@@ -413,16 +484,12 @@ export async function joinedInstall(
           projectRoot: root,
         }))
     );
-    if (!automatic) output.line(completedStep(3, 'Configure editors'));
     const afterHosts = async (
       journal: Journal,
       results: HostResult[],
       refreshHosts: () => Promise<void>
     ) => {
-      if (!automatic)
-        output.line(
-          completedLine(`${names.length} ${names.length === 1 ? 'editor' : 'editors'} configured`)
-        );
+      completeProgress(`${names.length} ${names.length === 1 ? 'editor' : 'editors'} configured`);
       journal.data.components = components;
       journal.data.roots = roots;
       const projectConditions: ReadinessCondition[] = [];
@@ -489,6 +556,7 @@ export async function joinedInstall(
           roots = scannerPlan.roots;
           journal.data.roots = roots;
         }
+        if (scannerPlan) completeProgress('Repositories connected');
         if (!automatic && !flags.has('apply')) {
           for (;;) {
             const applyLines = renderJourney('apply', output, {
@@ -508,6 +576,7 @@ export async function joinedInstall(
           }
         }
         journal.data.phase = 'applying';
+        startProgress('Finishing installation');
         await journal.event('apply');
         for (const project of journal.data.projects) {
           const result = await executor?.apply({
@@ -628,6 +697,7 @@ export async function joinedInstall(
       };
       if (scanner) {
         if (!automatic) renderJourney('scanner', output);
+        startProgress('Connecting your repositories');
         try {
           await prepareScanner(
             {
@@ -731,6 +801,8 @@ export async function joinedInstall(
       false
     );
     if (restart && result.journal.phase === 'rolled_back') {
+      activeProgress?.stop();
+      activeProgress = undefined;
       answers?.close();
       output.line('  Restored this run. Review your settings again.');
       return joinedInstall(
@@ -772,6 +844,7 @@ export async function joinedInstall(
       };
     final = await reportFinal({ ...final, ...(launcher ? { launcher } : {}) });
     await log({ preflight, journal: result.journal, targets: result.results, readiness: final });
+    completeProgress('Installation finished');
     if (json)
       output.json({
         ...final,
@@ -809,9 +882,12 @@ export async function joinedInstall(
   } catch (error) {
     const reason = error instanceof Error ? error.message : 'install_failed';
     if (reason === 'install_cancelled') {
+      activeProgress?.stop();
+      activeProgress = undefined;
       output.line('  Installation cancelled.');
       return 130;
     }
+    if (!activeProgress) startProgress('Finishing installation');
     await reportFinal(
       serializeReadiness({
         installation: {
@@ -829,10 +905,13 @@ export async function joinedInstall(
       });
     else {
       await log({ error: reason }).catch(() => undefined);
+      activeProgress?.stop();
+      activeProgress = undefined;
       output.error(`Installation stopped. Details: ${logPath}`);
     }
     return 3;
   } finally {
-    answers?.close();
+    activeProgress?.stop();
+    closeInteraction();
   }
 }

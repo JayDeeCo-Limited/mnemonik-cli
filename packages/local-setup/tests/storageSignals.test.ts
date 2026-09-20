@@ -1,3 +1,5 @@
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -27,4 +29,32 @@ it('shares one signal-exit listener set across separate storage module identitie
 
   expect(counts()).toEqual(afterFirst);
   expect(afterFirst.every((count, index) => count - baseline[index]! <= 1)).toBe(true);
+});
+
+it('removes a held lock immediately when the process is stopped', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'storage-signal-cleanup-'));
+  dirs.push(root);
+  const path = join(root, 'state');
+  const storageModule = new URL('../src/storage.ts', import.meta.url).href;
+  const child = spawn(
+    process.execPath,
+    [
+      '--input-type=module',
+      '-e',
+      "const {withLock}=await import(process.argv[2]); await withLock(process.argv[1], 20, async () => { console.log('locked'); await new Promise(() => { setInterval(() => {}, 1000); }); });",
+      path,
+      storageModule,
+    ],
+    { stdio: ['ignore', 'pipe', 'inherit'] }
+  );
+  try {
+    await once(child.stdout!, 'data');
+    child.kill('SIGTERM');
+    await once(child, 'exit');
+  } finally {
+    if (child.exitCode === null) child.kill('SIGKILL');
+  }
+
+  const { withLock } = await import('../src/storage.js');
+  await expect(withLock(path, 20, async () => 'acquired')).resolves.toBe('acquired');
 });

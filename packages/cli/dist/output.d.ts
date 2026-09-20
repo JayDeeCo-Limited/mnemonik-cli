@@ -5,12 +5,15 @@ export interface OutputContext {
 /** Security boundary for every human and machine-readable CLI emission. */
 export declare function redact(value: unknown, context?: OutputContext): string;
 export interface Writable {
+    isTTY?: boolean;
+    supportsHyperlinks?: boolean;
     write(chunk: string): unknown;
 }
 export declare class Output {
     private readonly stdout;
     private readonly stderr;
     private context;
+    private progress?;
     constructor(stdout: Writable, stderr?: Writable, context?: OutputContext);
     setContext(context: OutputContext): void;
     line(value?: string): void;
@@ -19,5 +22,10 @@ export declare class Output {
     signedIn(email: string): void;
     error(value: unknown): void;
     json(value: unknown): void;
+    progressLine(text: string, animated: boolean): {
+        complete(result: string): void;
+        stop(): void;
+    };
+    private emitHuman;
 }
 //# sourceMappingURL=output.d.ts.map

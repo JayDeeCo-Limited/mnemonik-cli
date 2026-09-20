@@ -4,7 +4,7 @@ import { EventEmitter } from 'node:events';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { installBootstrap, launchChild } from '../src/runtime/bootstrap.js';
+import { bootstrapProgress, installBootstrap, launchChild } from '../src/runtime/bootstrap.js';
 import { RuntimeError, RuntimeStore, type RuntimeSource } from '../src/runtime/store.js';
 
 vi.mock('node:fs/promises', async (original) => {
@@ -60,6 +60,34 @@ afterEach(async () => {
   vi.mocked(fs.writeFile).mockReset();
   vi.mocked(fs.rename).mockReset();
   await fs.rm(state, { recursive: true, force: true });
+});
+
+it('shows moving bootstrap progress on a terminal and one plain line otherwise', () => {
+  vi.useFakeTimers();
+  let terminalText = '';
+  const terminal = bootstrapProgress(
+    { write: (chunk: string) => void (terminalText += chunk) },
+    true,
+    false
+  );
+  vi.advanceTimersByTime(160);
+  terminal.stop();
+  expect(terminalText).toMatch(/\| Preparing the installer/u);
+  expect(terminalText).toMatch(/[\\/-] Preparing the installer/u);
+  expect(terminalText.endsWith('\r\u001b[2K')).toBe(true);
+
+  let plainText = '';
+  bootstrapProgress({ write: (chunk: string) => void (plainText += chunk) }, false, false).stop();
+  expect(plainText).toBe('Preparing the installer\n');
+
+  let inheritedText = '';
+  bootstrapProgress(
+    { write: (chunk: string) => void (inheritedText += chunk) },
+    false,
+    true
+  ).stop();
+  expect(inheritedText).toBe('');
+  vi.useRealTimers();
 });
 
 it('returns the same path with zero staging, writes or spawns for equal digests', async () => {
@@ -128,7 +156,8 @@ it('shares one removable signal handler set across twenty child launches', async
   const baseline = Object.fromEntries(
     signals.map((signal) => [signal, process.listenerCount(signal)])
   ) as Record<(typeof signals)[number], number>;
-  const children: EventEmitter[] = [];
+  const children: Array<EventEmitter & { kill: ReturnType<typeof vi.fn> }> = [];
+  const previousHangups = new Set(process.listeners('SIGHUP'));
   vi.mocked(childProcess.spawn).mockImplementation(() => {
     const child = Object.assign(new EventEmitter(), { kill: vi.fn() });
     children.push(child);
@@ -138,7 +167,13 @@ it('shares one removable signal handler set across twenty child launches', async
   const launches = Array.from({ length: 20 }, () => launchChild('node', []));
   expect(process.listenerCount('SIGINT')).toBe(baseline.SIGINT + 1);
   expect(process.listenerCount('SIGTERM')).toBe(baseline.SIGTERM + 1);
-  expect(process.listenerCount('SIGHUP')).toBe(baseline.SIGHUP);
+  expect(process.listenerCount('SIGHUP')).toBe(baseline.SIGHUP + 1);
+  const forwardHangup = process
+    .listeners('SIGHUP')
+    .find((listener) => !previousHangups.has(listener));
+  expect(forwardHangup).toBeTypeOf('function');
+  forwardHangup?.('SIGHUP');
+  for (const child of children) expect(child.kill).toHaveBeenCalledWith('SIGHUP');
   for (const child of children) child.emit('close', 0);
   await expect(Promise.all(launches)).resolves.toEqual(Array(20).fill(0));
   for (const signal of signals) expect(process.listenerCount(signal)).toBe(baseline[signal]);

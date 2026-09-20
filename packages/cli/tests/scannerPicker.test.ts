@@ -137,6 +137,35 @@ describe('repository discovery', () => {
     ]);
   });
 
+  it('never guesses the home folder and asks again when it is entered', async () => {
+    const home = await temporaryDirectory();
+    const boundary = join(home, 'Projects');
+    const app = join(boundary, 'app');
+    await git(app);
+    const stream = capture();
+
+    const picked = await runScannerBoundaryPicker({
+      input: Readable.from(`${home}\n${boundary}\n`),
+      output: new Output(stream, undefined, { home }),
+      currentProject: home,
+      currentFolder: home,
+      home,
+      protectedPaths: [],
+    });
+
+    expect(picked).toMatchObject({ boundary });
+    expect(stream.text).toBe(
+      [
+        'Where do your projects live? [~/Projects]',
+        'Choose a project folder inside your home folder.',
+        'Where do your projects live? [~/Projects]',
+        '',
+      ].join('\n')
+    );
+    expect(stream.text).not.toContain('[~]\n');
+    expect(stream.text).not.toContain('[/]\n');
+  });
+
   it('finds real repositories through depth 3, nested roots separately, and never follows links or reads source', async () => {
     const parent = await temporaryDirectory();
     const outside = await temporaryDirectory();

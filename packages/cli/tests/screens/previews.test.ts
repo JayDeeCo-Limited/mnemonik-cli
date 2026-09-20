@@ -1,12 +1,16 @@
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { Readable } from 'node:stream';
 import { expect, it } from 'vitest';
-import { browserFallbackLines, signedInPage } from '../../src/auth/pkce.js';
+import { DEVICE_WARNING, runDeviceFlow } from '../../src/auth/device.js';
+import { browserFallbackLines } from '../../src/auth/pkce.js';
 import { Output } from '../../src/output.js';
 import { nodeVersionHelp } from '../../src/preflight.js';
 import { connectedProjectsMessage, projectLimitMessage } from '../../src/project.js';
+import { bootstrapProgress } from '../../src/runtime/bootstrap.js';
 import { SCANNER_APPROVAL_WAIT } from '../../src/scanner/enable.js';
-import { scannerBoundaryPrompt } from '../../src/scanner/picker.js';
+import { runScannerBoundaryPicker, scannerBoundaryPrompt } from '../../src/scanner/picker.js';
 import {
   connectedFolderLine,
   connectFolderPrompt,
@@ -18,9 +22,11 @@ import { serializeReadiness } from '@mnemonik/shared';
 import {
   completedLine,
   completedStep,
+  INSTALLATION_STOPPED,
   journeyAnswers,
   renderCustomize,
   renderJourney,
+  stepProgress,
 } from '../../src/screens/journey.js';
 
 const previewDirectory = '/tmp/previews';
@@ -159,8 +165,127 @@ it('renders the W3 owner previews from the production screen code', async () => 
   expect(preview).not.toMatch(/sha256|\/Users\/|\/home\//u);
   expect(statusAttention.text()).not.toContain('hook_not_verified');
   await mkdir(previewDirectory, { recursive: true });
-  await Promise.all([
-    writeFile(`${previewDirectory}/w3-install.txt`, preview),
-    writeFile(`${previewDirectory}/w3-signed-in.html`, signedInPage),
-  ]);
+  await writeFile(`${previewDirectory}/w3-install.txt`, preview);
+});
+
+it('renders the night interaction screens from production code', async () => {
+  const bootstrap = capture();
+  bootstrapProgress({ write: (chunk) => bootstrap.output.write(chunk) }, false).stop();
+  const progress = capture();
+  const signingIn = stepProgress(progress.output, false, 'Signing in');
+  signingIn.complete(completedLine('Signed in'));
+  const configuring = stepProgress(progress.output, false, 'Configuring your editors');
+  configuring.complete(completedLine('2 editors configured'));
+
+  const localSignIn = capture();
+  const opened: string[] = [];
+  await runDeviceFlow({
+    issuer: 'https://auth.mnemonik.ai',
+    resource: 'https://api.mnemonik.dev/',
+    scopes: ['openid'],
+    clientId: 'preview-client',
+    deviceName: 'Preview computer',
+    print: (line) => localSignIn.output.line(line),
+    openBrowser: async (url) => void opened.push(url),
+    fetch: async (url) =>
+      String(url).endsWith('/oauth/device_authorization')
+        ? Response.json({
+            device_code: 'local-device-code',
+            user_code: 'BCDF-GHJK',
+            expires_in: 600,
+            interval: 5,
+            verification_uri: 'https://auth.mnemonik.ai/oauth/device',
+            verification_uri_complete: 'https://auth.mnemonik.ai/oauth/device?user_code=BCDF-GHJK',
+          })
+        : Response.json({
+            access_token: 'preview-access',
+            refresh_token: 'preview-refresh',
+            expires_in: 3600,
+            scope: 'openid',
+          }),
+    sleep: async () => undefined,
+  });
+  expect(opened).toEqual(['https://auth.mnemonik.ai/oauth/device?user_code=BCDF-GHJK']);
+
+  const remoteSignIn = capture();
+  let now = 0;
+  const first = {
+    device_code: 'first-device-code',
+    user_code: 'BCDF-GHJK',
+    expires_in: 600,
+    interval: 5,
+    verification_uri: 'https://auth.mnemonik.ai/oauth/device',
+    verification_uri_complete: 'https://auth.mnemonik.ai/oauth/device?user_code=BCDF-GHJK',
+  };
+  const second = {
+    ...first,
+    device_code: 'second-device-code',
+    user_code: 'JKLM-NPQR',
+    verification_uri_complete: 'https://auth.mnemonik.ai/oauth/device?user_code=JKLM-NPQR',
+  };
+  const responses = [
+    Response.json(first),
+    Response.json({ error: 'expired_token' }, { status: 400 }),
+    Response.json(second),
+    Response.json({
+      access_token: 'preview-access',
+      refresh_token: 'preview-refresh',
+      expires_in: 3600,
+      scope: 'openid',
+    }),
+  ];
+  await runDeviceFlow({
+    issuer: 'https://auth.mnemonik.ai',
+    resource: 'https://api.mnemonik.dev/',
+    scopes: ['openid'],
+    clientId: 'preview-client',
+    deviceName: 'Preview computer',
+    print: (line) => remoteSignIn.output.line(line),
+    fetch: async () => responses.shift()!,
+    now: () => now,
+    sleep: async (milliseconds) => void (now += milliseconds),
+  });
+  expect(localSignIn.text()).toContain(DEVICE_WARNING);
+  expect(remoteSignIn.text()).toContain(DEVICE_WARNING);
+
+  const home = await mkdtemp(join(tmpdir(), 'mnemonik-night-preview-'));
+  const boundary = join(home, 'Projects');
+  await mkdir(join(boundary, 'app', '.git'), { recursive: true });
+  const folder = capture();
+  try {
+    await runScannerBoundaryPicker({
+      input: Readable.from(`${home}\n${boundary}\n`),
+      output: new Output({ write: (chunk) => folder.output.write(chunk) }, undefined, { home }),
+      currentProject: home,
+      currentFolder: home,
+      home,
+      protectedPaths: [],
+    });
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+
+  const preview = [
+    '=== Cold start in a non-interactive terminal ===',
+    bootstrap.text().trimEnd(),
+    '',
+    '=== Long steps in a non-interactive terminal ===',
+    progress.text().trimEnd(),
+    '',
+    '=== Local sign-in (browser opens automatically) ===',
+    localSignIn.text().trimEnd(),
+    '',
+    '=== Remote sign-in (open the printed link; expired request restarts once) ===',
+    remoteSignIn.text().trimEnd(),
+    '',
+    '=== Project folder guess and retry ===',
+    folder.text().trimEnd(),
+    '',
+    '=== Interrupted installation ===',
+    INSTALLATION_STOPPED,
+    '',
+  ].join('\n');
+  expect(preview).not.toContain(home);
+  await mkdir(previewDirectory, { recursive: true });
+  await writeFile(`${previewDirectory}/night-interaction.txt`, preview);
 });

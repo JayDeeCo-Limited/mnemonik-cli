@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { access, lstat, readdir, realpath } from 'node:fs/promises';
-import { basename, isAbsolute, join, relative, resolve } from 'node:path';
+import { basename, isAbsolute, join, parse, relative, resolve } from 'node:path';
 import { resolveProjectIdentity, selectRemote, } from '@mnemonik/shared';
 export const DIRECTORY_LIMIT = 10_000;
 export const DISCOVERY_DEPTH = 3;
@@ -157,14 +157,16 @@ export async function scannerCandidates(boundary) {
     };
 }
 export async function guessDiscoveryBoundary(cwd, home) {
-    if ((await discoverRepositories(cwd).catch(() => undefined))?.repositories.length)
+    const current = resolve(cwd);
+    const unsafe = current === resolve(home) || current === parse(current).root;
+    if (!unsafe && (await discoverRepositories(cwd).catch(() => undefined))?.repositories.length)
         return cwd;
     for (const name of ['Projects', 'projects', 'code', 'src', 'dev', 'repos']) {
         const candidate = join(home, name);
         if (await access(candidate).then(() => true, () => false))
             return candidate;
     }
-    return cwd;
+    return unsafe ? '' : cwd;
 }
 export const repositoryName = (root, path) => relative(root, path) || basename(resolve(path));
 export const repositoryStateLabel = (state) => ({

@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
 import type { Dirent } from 'node:fs';
 import { access, lstat, readdir, realpath } from 'node:fs/promises';
-import { basename, isAbsolute, join, relative, resolve } from 'node:path';
+import { basename, isAbsolute, join, parse, relative, resolve } from 'node:path';
 import {
   resolveProjectIdentity,
   selectRemote,
@@ -229,7 +229,10 @@ export async function scannerCandidates(boundary: string): Promise<{
 }
 
 export async function guessDiscoveryBoundary(cwd: string, home: string): Promise<string> {
-  if ((await discoverRepositories(cwd).catch(() => undefined))?.repositories.length) return cwd;
+  const current = resolve(cwd);
+  const unsafe = current === resolve(home) || current === parse(current).root;
+  if (!unsafe && (await discoverRepositories(cwd).catch(() => undefined))?.repositories.length)
+    return cwd;
   for (const name of ['Projects', 'projects', 'code', 'src', 'dev', 'repos']) {
     const candidate = join(home, name);
     if (
@@ -240,7 +243,7 @@ export async function guessDiscoveryBoundary(cwd: string, home: string): Promise
     )
       return candidate;
   }
-  return cwd;
+  return unsafe ? '' : cwd;
 }
 
 export const repositoryName = (root: string, path: string): string =>

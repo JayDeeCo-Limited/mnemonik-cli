@@ -1,30 +1,30 @@
 {
   "schemaVersion": 1,
-  "version": "7.102.0",
+  "version": "7.102.1",
   "packages": {
     "@mnemonik/cli": {
-      "version": "7.102.0",
-      "integrity": "sha512-HpwIWDSjfoLPay2cMswWQXLW83UvG0M0Ij/n0Eu0bfvXp56InHQVMz82wYDiq85FoLxJs032O/Ptw/asXPF6gA=="
+      "version": "7.102.1",
+      "integrity": "sha512-NbMs371vW/9DMNFnsm361HxJiqQjAbRKF55i2xVKNoCfWd85JtRLqDcoMCwd08E44hPcLSZuyCE/gbRJjBBtTg=="
     },
     "@mnemonik/claude-code-hooks": {
-      "version": "0.9.203",
-      "integrity": "sha512-ipM3ZSoGer9QQa7ecS68xOWfTrGgrX2ZiRWK03cJyI2C94tcVSjJ4QWlSeZ6CaGoqlTe0Os5a06lsIhWSAWnAQ=="
+      "version": "0.9.204",
+      "integrity": "sha512-tDRwqAb0TetCiEgkyBvCDtYiLQKsZD0s/vspMoJ0LOniT4zd+thLlLqUCcuat49RIBK8CA4l/X8KMXNYHlWfuQ=="
     },
     "@mnemonik/codex-hooks": {
-      "version": "0.8.172",
-      "integrity": "sha512-0GHfAVHkC1bmUKe/RzhW4gtqZMGi21nPTXWSQ11z313FoapumODBvhFK+hk6qDdC67hXTzMN6x5oNPdoOKfr2g=="
+      "version": "0.8.173",
+      "integrity": "sha512-Pryq6/9vlFqxBAJIdv5yZ3EhYGf6yMnINhIz+EBVYfv0KQZ0BaxJjqk3B6730PAJdzeCo2up1ELNvM7J4LAsjQ=="
     },
     "@mnemonik/cursor-hooks": {
-      "version": "0.7.159",
-      "integrity": "sha512-Nxc+Zs3w5xMZZmMDxi1YzhR7ZISH/8hDQ1OpDnyryKDwMb3iVbURa7wWG61r4k+3vybY6WvvRrWOZdw2blvM/A=="
+      "version": "0.7.160",
+      "integrity": "sha512-QUSq9hspFJlAjleBJ8xlfSWxC1APd938Y7D9B6k/gyPjcYiZoQJ1u4Tyc4p7+X7zK3f2jNdLZOJy5e/gO0L77A=="
     },
     "@mnemonik/grok-hooks": {
-      "version": "0.1.45",
-      "integrity": "sha512-b+By2KF2e96J2nsnjTv3J7xPdxbJnw5RodSy8TY+10E6oWU6THvUEsl1/F0YmotBF81u4YAU47hsZPobUCiMYA=="
+      "version": "0.1.46",
+      "integrity": "sha512-TyLu6ESVDxuXqvL0fiRrjulG+xYMeqRwCGvnnOjY24ENV6hYMuIaSiZtfp0parXIJzg5htv4+vo3KkX97P7/cA=="
     },
     "@mnemonik/copilot-hooks": {
-      "version": "0.1.36",
-      "integrity": "sha512-Hvkave+DSbeiGytST5O4RMCcoYOHikoexrReJuFHdBd2WeZdxzlD955KwpA6DQlV4yChJRiAWmJ6hY5eSFK6GQ=="
+      "version": "0.1.37",
+      "integrity": "sha512-fLKLXUu1YjLZFa8E4//QMe16alD3qmOafkLqNROhWBr9EPj2bVvI2PQypFKGEs3SMydtdiVp0AWS0jllcfyBrw=="
     }
   }
 }

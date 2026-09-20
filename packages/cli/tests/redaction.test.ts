@@ -12,6 +12,30 @@ const email = 'sam@example.com';
 const home = '/home/sam';
 
 describe('redacted output funnel', () => {
+  it('puts every URL on its own line and links it only on a supported TTY', () => {
+    const url = 'https://auth.mnemonik.ai/oauth/device?user_code=BCDF-GHJK';
+    vi.stubEnv('TERM_PROGRAM', 'vscode');
+    vi.stubEnv('TERM', 'xterm-256color');
+    const terminal = {
+      isTTY: true,
+      text: '',
+      write(chunk: string) {
+        this.text += chunk;
+      },
+    };
+    new Output(terminal).line(`Open this link: ${url}`);
+    expect(terminal.text).toBe(`Open this link:\n\u001b]8;;${url}\u0007${url}\u001b]8;;\u0007\n`);
+
+    const plain = {
+      text: '',
+      write(chunk: string) {
+        this.text += chunk;
+      },
+    };
+    new Output(plain).line(url);
+    expect(plain.text).toBe(`${url}\n`);
+  });
+
   it('removes secrets and home paths from JSON and the install-session report', async () => {
     const stream = {
       text: '',
