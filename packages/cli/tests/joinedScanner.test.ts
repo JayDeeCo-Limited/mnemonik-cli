@@ -140,7 +140,9 @@ it.each([
       {
         home,
         cwd: home,
-        ...(failure === 'scanner limited' ? { input: Readable.from('Recommended\n') } : {}),
+        ...(failure === 'scanner limited'
+          ? { input: Object.assign(Readable.from('Recommended\n'), { isTTY: true }) }
+          : {}),
         installStateDir: stateDir,
         preflight: {
           nodeVersion: '24.21.0',

@@ -1,5 +1,6 @@
 import { afterAll, afterEach, beforeAll, expect, it, vi } from 'vitest';
 import { readFile, rm } from 'node:fs/promises';
+import { Readable } from 'node:stream';
 import { hostPackageImports, hostOrder } from '../src/install/adapters.js';
 import { readOwnership } from '../src/install/ownership.js';
 import { saveInstallation } from '../src/installation.js';
@@ -99,6 +100,7 @@ it('installs hooks and MCP declarations for four editors without launching or li
     {
       home: fixture.home,
       cwd: fixture.projectRoot,
+      input: Object.assign(Readable.from([]), { isTTY: true }),
       installStateDir: fixture.deps.stateDir,
       grantFetch: completionFetch,
       projectExecutor: {

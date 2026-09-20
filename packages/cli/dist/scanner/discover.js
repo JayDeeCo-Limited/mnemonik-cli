@@ -82,6 +82,7 @@ export async function discoverRepositories(parentPath, options = {}) {
     const queue = [{ path: root, depth: 0 }];
     const repositories = [];
     const repositoryPaths = new Set();
+    let omitted = 0;
     let directoriesVisited = 0;
     const result = (status, truncated) => ({
         status,
@@ -89,7 +90,8 @@ export async function discoverRepositories(parentPath, options = {}) {
         root,
         directoriesVisited,
         repositories: repositories.sort((left, right) => left.path.localeCompare(right.path)),
-        truncated,
+        truncated: truncated || omitted > 0,
+        omitted,
     });
     while (queue.length) {
         if (directoriesVisited >= limit)
@@ -122,13 +124,14 @@ export async function discoverRepositories(parentPath, options = {}) {
             const repository = await classifyRepository(canonical, {
                 canonicalizePath: canonicalize,
                 resolveIdentity: options.resolveIdentity,
-                readRemotes: options.readRemotes,
+                readRemotes: repositories.length < REPOSITORY_LIMIT ? options.readRemotes : async () => [],
             });
             if (!repositoryPaths.has(repository.path)) {
                 repositoryPaths.add(repository.path);
-                repositories.push(repository);
-                if (repositories.length === REPOSITORY_LIMIT)
-                    return result('complete', true);
+                if (repositories.length < REPOSITORY_LIMIT)
+                    repositories.push(repository);
+                else
+                    omitted++;
             }
         }
         if (directory.depth >= maxDepth)
@@ -149,6 +152,7 @@ export async function scannerCandidates(boundary) {
     return {
         boundary: discovered.root,
         repositories: discovered.repositories,
+        omitted: discovered.omitted,
         candidates: discovered.repositories.map((repository) => ({
             path: repository.path,
             name: repositoryName(discovered.root, repository.path),

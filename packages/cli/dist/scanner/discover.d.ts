@@ -23,6 +23,7 @@ export type DiscoveryResult = {
     directoriesVisited: number;
     repositories: DiscoveredRepository[];
     truncated: boolean;
+    omitted: number;
 };
 interface DiscoveryOptions {
     directoryLimit?: number;
@@ -38,6 +39,7 @@ export declare function scannerCandidates(boundary: string): Promise<{
     boundary: string;
     candidates: ScannerCandidate[];
     repositories: DiscoveredRepository[];
+    omitted: number;
 }>;
 export declare function guessDiscoveryBoundary(cwd: string, home: string): Promise<string>;
 export declare const repositoryName: (root: string, path: string) => string;

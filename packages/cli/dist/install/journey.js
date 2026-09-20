@@ -1,9 +1,9 @@
-import { appendFile, mkdir, readFile } from 'node:fs/promises';
+import { appendFile, mkdir, readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { setTimeout as delay } from 'node:timers/promises';
 import { apiOrigin, remainingReadinessCount, serializeReadiness, } from '@mnemonik/shared';
-import { recordPath, stateDirectory } from '@mnemonik/local-setup';
+import { atomicWrite, recordPath, stateDirectory } from '@mnemonik/local-setup';
 import { nodeVersionHelp, runPreflight } from '../preflight.js';
 import { connectedProjectsMessage, createRealProjectRuntime, projectLimitMessage, } from '../project.js';
 import { classifyRepository } from '../scanner/discover.js';
@@ -11,7 +11,7 @@ import { prepareScanner, restoreScannerInstall } from '../scanner/enable.js';
 import { ScannerServiceLimited } from '../scanner/service.js';
 import { collectStatusDocument } from '../status.js';
 import { devReadiness } from '../runtime/releaseSource.js';
-import { completedStep, completedLine, renderCustomize, renderJourney, journeyAnswers, INSTALLATION_STOPPED, stepProgress, } from '../screens/journey.js';
+import { completedStep, completedLine, ADD_ANOTHER_FOLDER, renderCustomize, renderInterrupted, renderJourney, renderRollbackResult, journeyAnswers, INSTALLATION_STOPPED, stepProgress, } from '../screens/journey.js';
 import { interrupted } from './journal.js';
 import { runHosts, hookStatusConditions, } from './hosts.js';
 import { compensate, revokeInstallComponent } from './transaction.js';
@@ -67,7 +67,9 @@ export async function joinedInstall(flags, deps, output, authorize, management) 
     if (flags.has('accept-scanner'))
         flags.set('accept-indexing', true);
     const json = flags.has('json');
-    const automatic = json || flags.has('non-interactive');
+    const input = deps.input ?? process.stdin;
+    const interactive = Boolean(input.isTTY);
+    const automatic = json || flags.has('non-interactive') || !interactive;
     let components = String(flags.get('components') ?? (flags.has('without-scanner') ? 'hooks,mcp' : 'hooks,mcp,scanner')).split(',');
     if (flags.has('without-scanner'))
         components = components.filter((c) => c !== 'scanner');
@@ -100,8 +102,6 @@ export async function joinedInstall(flags, deps, output, authorize, management) 
     }
     const home = deps.home ?? homedir();
     let cwd = deps.cwd ?? process.cwd();
-    const input = deps.input ?? process.stdin;
-    const interactive = Boolean(input.isTTY);
     let answers;
     let stopped = false;
     const interrupt = (signal) => {
@@ -169,6 +169,19 @@ export async function joinedInstall(flags, deps, output, authorize, management) 
         scanner = components.includes('scanner');
         names = [...new Set(previous.data.hostRequest?.selections.map((s) => s.host) ?? [])];
     }
+    const indexingSkippedPath = join(stateDir, 'indexing-skipped');
+    const indexingOnly = Boolean(!previous &&
+        !automatic &&
+        !flags.has('hosts') &&
+        !flags.has('components') &&
+        ((await readFile(indexingSkippedPath).catch(() => undefined)) ||
+            (await ownership.readOwnership(stateDir)).targets.length) &&
+        !(await readFile(join(stateDir, 'scanner/state.json')).then(() => true, () => false)));
+    if (indexingOnly) {
+        components = ['scanner'];
+        scanner = true;
+        names = [];
+    }
     startProgress('Checking this computer');
     let preflight;
     try {
@@ -198,7 +211,7 @@ export async function joinedInstall(flags, deps, output, authorize, management) 
         .split(',')
         .filter(Boolean);
     output.setContext({ home, projectRoot: root });
-    if (!names.length)
+    if (!names.length && !indexingOnly)
         names = preflight.hosts
             .filter((h) => h.supported)
             .map((h) => Object.keys(labels).find((key) => labels[key] === h.name) ?? '')
@@ -276,8 +289,9 @@ export async function joinedInstall(flags, deps, output, authorize, management) 
     };
     let restart = false;
     try {
-        if (previous?.data.joined &&
-            (await choose('Previous installation was interrupted.', ['Resume', 'Rollback'])) !== 'Resume') {
+        if (previous?.data.joined)
+            renderInterrupted(output);
+        if (previous?.data.joined && (await answers?.choose(['Resume', 'Rollback'])) !== 'Resume') {
             const restored = await runHosts('install', [], {
                 stateDir,
                 account: previous.data.account,
@@ -285,12 +299,17 @@ export async function joinedInstall(flags, deps, output, authorize, management) 
                 rollbackInstall,
                 recovery: async () => 'rollback',
             });
-            output.line(`  Local rollback: ${restored.journal.phase}.`);
-            for (const report of restored.reports)
-                output.line(`  ${report}`);
+            renderRollbackResult(restored.journal.phase === 'rolled_back', output);
             return restored.journal.phase === 'rolled_back' ? 130 : 1;
         }
-        if (!previous && !automatic && !flags.has('hosts') && !flags.has('components')) {
+        if (indexingOnly) {
+            const indexingLines = renderJourney('indexing', output);
+            const choice = await answers?.choose(['Set up indexing', 'Cancel']);
+            replaceScreen(indexingLines, choice === 'Set up indexing' ? 'Set up indexing' : undefined);
+            if (choice !== 'Set up indexing')
+                return 130;
+        }
+        else if (!previous && !automatic && !flags.has('hosts') && !flags.has('components')) {
             for (;;) {
                 const recommendedLines = renderJourney('recommended', output, {
                     hosts: names.map((h) => labels[h]),
@@ -348,14 +367,14 @@ export async function joinedInstall(flags, deps, output, authorize, management) 
             }
             throw new Error('preflight_failed');
         }
-        if (!automatic && !flags.has('apply')) {
+        if (!automatic && !flags.has('apply') && !indexingOnly) {
             renderJourney('account', output);
         }
         for (;;) {
-            startProgress('Signing in');
+            startProgress(indexingOnly ? 'Checking your account' : 'Signing in');
             try {
                 await authorize();
-                completeProgress('Signed in');
+                completeProgress(indexingOnly ? 'Account checked' : 'Signed in');
                 break;
             }
             catch (error) {
@@ -365,9 +384,9 @@ export async function joinedInstall(flags, deps, output, authorize, management) 
                     throw error;
             }
         }
-        if (!automatic)
+        if (!automatic && !indexingOnly)
             output.line(completedStep(3, 'Configure editors'));
-        startProgress('Configuring your editors');
+        startProgress(indexingOnly ? 'Getting ready' : 'Configuring your editors');
         const managed = await management();
         reportFinal = async (readiness) => {
             const versions = await ownership
@@ -439,7 +458,9 @@ export async function joinedInstall(flags, deps, output, authorize, management) 
             projectRoot: root,
         })));
         const afterHosts = async (journal, results, refreshHosts) => {
-            completeProgress(`${names.length} ${names.length === 1 ? 'editor' : 'editors'} configured`);
+            completeProgress(indexingOnly
+                ? 'Ready'
+                : `${names.length} ${names.length === 1 ? 'editor' : 'editors'} configured`);
             journal.data.components = components;
             journal.data.roots = roots;
             const projectConditions = [];
@@ -502,8 +523,11 @@ export async function joinedInstall(flags, deps, output, authorize, management) 
                     roots = scannerPlan.roots;
                     journal.data.roots = roots;
                 }
-                if (scannerPlan)
+                if (scannerPlan) {
                     completeProgress('Repositories connected');
+                    if (!json)
+                        output.line(`  ${ADD_ANOTHER_FOLDER}`);
+                }
                 if (!automatic && !flags.has('apply')) {
                     for (;;) {
                         const applyLines = renderJourney('apply', output, {
@@ -543,6 +567,7 @@ export async function joinedInstall(flags, deps, output, authorize, management) 
                 if (scannerPlan) {
                     try {
                         scannerDocument = await scannerPlan.apply(journal, scannerPlan.roots);
+                        await rm(indexingSkippedPath, { force: true });
                         if (!json) {
                             if (scannerPlan.roots.length)
                                 output.line(connectedProjectsMessage(scannerPlan.roots));
@@ -753,6 +778,8 @@ export async function joinedInstall(flags, deps, output, authorize, management) 
             };
         final = await reportFinal({ ...final, ...(launcher ? { launcher } : {}) });
         await log({ preflight, journal: result.journal, targets: result.results, readiness: final });
+        if (!scanner && result.journal.state !== 'FAILED')
+            await atomicWrite(indexingSkippedPath, Buffer.from('indexing was skipped\n'));
         completeProgress('Installation finished');
         if (json)
             output.json({
@@ -767,8 +794,14 @@ export async function joinedInstall(flags, deps, output, authorize, management) 
             if (result.journal.state === 'FAILED') {
                 output.line(`  Installation failed. Details: ${logPath}`);
             }
+            else if (!scanner) {
+                renderJourney('indexing_skipped', output);
+                for (const action of new Set(final.installation.actions))
+                    if (action !== 'mnemonik install' && action !== launcherError?.launcher.action)
+                        output.line(`  ${action}`);
+            }
             else if (final.installation.state === 'READY')
-                renderJourney('done', output, {
+                renderJourney(indexingOnly ? 'indexing_done' : 'done', output, {
                     total: final.indexing?.total,
                     completed: final.indexing?.completed,
                 });
@@ -777,8 +810,10 @@ export async function joinedInstall(flags, deps, output, authorize, management) 
                     remaining: remainingReadinessCount(final.installation),
                     skipped: [...new Set(final.installation.actions)].join('\n') || 'mnemonik status',
                 });
-            if (launcherError || (launcher && !launcher.onPath))
-                output.line(`  ${launcher ? launcherPathAction(launcherOptions) : 'Run npx -y @mnemonik/cli@latest status'}`);
+            if (launcherError)
+                output.line(`  ${launcherError.launcher.action}`);
+            else if (launcher && !launcher.onPath)
+                output.line(`  ${launcherPathAction(launcherOptions)}`);
         }
         return result.journal.state === 'FAILED'
             ? 1

@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from 'vitest';
-import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough, Readable } from 'node:stream';
@@ -239,6 +239,24 @@ it('finishes rollback while keeping an app-edited file and still refuses stale r
   await expect(withInstall(f.deps.stateDir, f.deps.input, pending, async () => {})).rejects.toThrow(
     'Stale install generation'
   );
+});
+
+it('resumes after an old install lock is left behind', async () => {
+  const f = await fixture();
+  await withInstall(f.deps.stateDir, f.deps.input, undefined, async (journal) => {
+    journal.data.phase = 'applying';
+    await journal.save();
+  });
+  const pending = (await interrupted(f.deps.stateDir))[0]!;
+  const lock = join(f.deps.stateDir, 'install-owner.json.lock');
+  await mkdir(lock);
+  await writeFile(join(lock, 'owner'), 'old-owner');
+  const old = new Date(Date.now() - 31_000);
+  await utimes(lock, old, old);
+
+  await expect(
+    withInstall(f.deps.stateDir, f.deps.input, pending, async () => 'resumed')
+  ).resolves.toBe('resumed');
 });
 
 it('a corrupt host backup prevents every restore even when the app edited another file', async () => {

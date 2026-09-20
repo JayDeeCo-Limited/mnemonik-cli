@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { bytesAt, withInstall } from '../../src/install/journal.js';
@@ -270,7 +270,7 @@ it('the real flagless router starts with Recommended before authorization', asyn
   const code = await runCli(['install'], {
     cwd: '/code/acme-api',
     home: '/home/tester',
-    input: Readable.from('Cancel\n'),
+    input: Object.assign(Readable.from('Cancel\n'), { isTTY: true }),
     stdout: {
       write: (chunk) => {
         text += chunk;
@@ -301,6 +301,68 @@ it('the real flagless router starts with Recommended before authorization', asyn
   expect(text).toContain('  > Recommended\n    Customize\n');
 });
 
+it('a piped install stops at the first missing flag without printing key instructions', async () => {
+  let text = '';
+  let authorizations = 0;
+  const code = await runCli(['install'], {
+    input: Readable.from('Recommended\n'),
+    stdout: { write: (chunk) => void (text += chunk) },
+    stderr: { write: (chunk) => void (text += chunk) },
+    cliAuth: {
+      getCliBearer: async () => {
+        authorizations++;
+        return 'cli';
+      },
+      signIn: async () => {},
+      logout: async () => {},
+    },
+  });
+
+  expect(code).toBe(3);
+  expect(text).toBe('Missing required consent flag: --accept-indexing\n');
+  expect(text).not.toMatch(/arrow keys|Recommended|Customize/iu);
+  expect(authorizations).toBe(0);
+});
+
+it('a second run after skipping indexing offers only indexing', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'joined-indexing-only-'));
+  try {
+    await writeFile(join(home, 'indexing-skipped'), 'indexing was skipped\n');
+    let text = '';
+    const code = await runCli(['install'], {
+      cwd: home,
+      home,
+      installStateDir: home,
+      input: Object.assign(Readable.from('Cancel\n'), { isTTY: true }),
+      stdout: { write: (chunk) => void (text += chunk) },
+      preflight: {
+        nodeVersion: '24.21.0',
+        fetch: async () => Response.json({}),
+        resolveIdentity: async () => ({
+          kind: 'absent',
+          root: home,
+          repository: { kind: 'plain', root: home },
+          nested: [],
+        }),
+      },
+    });
+
+    expect(code).toBe(130);
+    expect(text).toContain('Indexing was skipped.\n');
+    expect(text).toContain('  > Set up indexing\n    Cancel\n');
+    expect(text).not.toMatch(/Recommended|Customize|Configure editors/iu);
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+it('names skipped indexing and the command that sets it up later', () => {
+  let text = '';
+  screens.renderJourney('indexing_skipped', new Output({ write: (chunk) => void (text += chunk) }));
+  expect(text).toContain('Indexing was skipped. Run mnemonik install to set it up later.\n');
+  expect(text).not.toContain('one thing left');
+});
+
 it('prints the failed discovery URL and network detail before stopping setup', async () => {
   let text = '';
   const output = {
@@ -311,7 +373,7 @@ it('prints the failed discovery URL and network detail before stopping setup', a
   const code = await runCli(['install'], {
     cwd: '/code/acme-api',
     home: '/home/tester',
-    input: Readable.from('Recommended\n'),
+    input: Object.assign(Readable.from('Recommended\n'), { isTTY: true }),
     stdout: output,
     stderr: output,
     preflight: {
@@ -571,13 +633,14 @@ it('interrupted joined files can be rolled back without account authorization', 
       }
     );
     let authorized = false;
+    let text = '';
     const code = await runCli(['install'], {
       cwd: stateDir,
       home: stateDir,
       installStateDir: stateDir,
-      input: Readable.from('Rollback\n'),
-      stdout: { write() {} },
-      stderr: { write() {} },
+      input: Object.assign(Readable.from('Rollback\n'), { isTTY: true }),
+      stdout: { write: (chunk) => void (text += chunk) },
+      stderr: { write: (chunk) => void (text += chunk) },
       preflight: {
         nodeVersion: '24.21.0',
         fetch: async () => Response.json({}),
@@ -602,6 +665,10 @@ it('interrupted joined files can be rolled back without account authorization', 
     expect(code).toBe(130);
     expect(authorized).toBe(false);
     expect(await bytesAt(identity)).toBeNull();
+    expect(text).toContain('Resume keeps your choices and continues the installation.\n');
+    expect(text).toContain('Rollback removes changes from the unfinished installation.\n');
+    expect(text).toContain('The unfinished installation was removed.\n');
+    expect(text).not.toContain('rolled_back');
   } finally {
     await rm(stateDir, { recursive: true, force: true });
   }

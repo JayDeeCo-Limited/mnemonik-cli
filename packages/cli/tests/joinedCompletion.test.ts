@@ -2,6 +2,7 @@ import { mkdir, mkdtemp, rm, readFile, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
+import { Readable } from 'node:stream';
 import { afterEach, expect, it, vi } from 'vitest';
 import { joinedInstall } from '../src/install/journey.js';
 import { Output } from '../src/output.js';
@@ -99,7 +100,7 @@ it.each([
     expect(code).toBe(foreign ? 3 : state === 'READY' ? 0 : state === 'FAILED' ? 1 : 3);
     if (foreign) {
       expect(await readFile(launcher, 'utf8')).toBe('#!/bin/sh\necho foreign\n');
-      expect(text).toContain('Done, with one thing left.');
+      expect(text).toContain('Indexing was skipped. Run mnemonik install to set it up later.');
       expect(text).toContain('~/.local/bin/mnemonik');
       expect(text).toContain('Move the existing');
       expect(text).not.toContain('Launcher:');
@@ -107,10 +108,7 @@ it.each([
       expect(await readFile(launcher, 'utf8')).toContain('runtimes/bootstrap/dist/bin.js');
       expect((await stat(launcher)).mode & 0o777).toBe(0o755);
     }
-    if (state === 'LIMITED') {
-      expect(text).toContain('1. mnemonik status');
-      if (!onPath) expect(text).toContain('new terminal after that');
-    }
+    if (state === 'LIMITED' && !onPath) expect(text).toContain('new terminal after that');
     expect(fetcher).toHaveBeenCalledTimes(2);
     expect(String(fetcher.mock.calls[1]![0])).toContain(
       '/install-sessions/active-session/complete'
@@ -134,12 +132,59 @@ it.each([
         text.match(/Your editors will ask you to sign in to Mnemonik the first time you use it\./g)
       ).toHaveLength(1);
     if (state === 'LIMITED') {
-      expect(text).toContain(count ? `Done, with ${count} things left.` : '  Done.\n');
+      expect(text).toContain('Indexing was skipped. Run mnemonik install to set it up later.');
+      expect(text).not.toContain('thing left');
       expect(body.readiness.installation.reasons).toEqual(reasons);
       for (const reason of reasons) expect(text).not.toContain(reason);
     }
   }
 );
+
+it('a fully flagged piped install proceeds without terminal questions', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'joined-piped-'));
+  homes.push(home);
+  vi.stubEnv('PATH', join(home, '.local/bin'));
+  run.mockResolvedValue({
+    journal: { state: 'READY', phase: 'complete', runId: 'run' },
+    results: [],
+    reports: [],
+  });
+  let text = '';
+  const authorize = vi.fn(async () => 'owner');
+  const code = await joinedInstall(
+    new Map<string, string | true>([
+      ['hosts', 'codex'],
+      ['components', 'hooks,mcp'],
+      ['without-scanner', true],
+      ['accept-limited', true],
+      ['apply', true],
+    ]),
+    {
+      cwd: home,
+      home,
+      input: Readable.from([]),
+      installStateDir: home,
+      preflight: {
+        nodeVersion: '24.21.0',
+        fetch: async () => Response.json({}),
+        resolveIdentity: async () => ({
+          kind: 'absent',
+          root: home,
+          repository: { kind: 'plain', root: home },
+          nested: [],
+        }),
+      },
+    },
+    new Output({ write: (chunk) => void (text += chunk) }),
+    authorize,
+    async () => ({ stateDir: home, account: 'owner' })
+  );
+
+  expect(code).toBe(0);
+  expect(authorize).toHaveBeenCalledOnce();
+  expect(text).not.toMatch(/arrow keys|Recommended|Customize/iu);
+  expect(await readFile(join(home, 'indexing-skipped'), 'utf8')).toBe('indexing was skipped\n');
+});
 
 it('bounds a black-holed final report and still prints a late installation failure', async () => {
   const home = await mkdtemp(join(tmpdir(), 'joined-completion-timeout-'));

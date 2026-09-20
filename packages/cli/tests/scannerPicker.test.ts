@@ -166,6 +166,29 @@ describe('repository discovery', () => {
     expect(stream.text).not.toContain('[/]\n');
   });
 
+  it('explains a missing or empty projects folder and asks again', async () => {
+    const home = await temporaryDirectory();
+    const empty = join(home, 'empty');
+    const boundary = join(home, 'Projects');
+    await fs.mkdir(empty);
+    await git(join(boundary, 'app'));
+    const stream = capture();
+
+    const picked = await runScannerBoundaryPicker({
+      input: Readable.from(`${join(home, 'missing')}\n${empty}\n${boundary}\n`),
+      output: new Output(stream, undefined, { home }),
+      currentProject: home,
+      currentFolder: home,
+      home,
+      protectedPaths: [],
+    });
+
+    expect(picked).toMatchObject({ boundary });
+    expect(stream.text).toContain('That folder does not exist. Choose another folder.\n');
+    expect(stream.text).toContain('No repositories were found there. Choose another folder.\n');
+    expect(stream.text.match(/Where do your projects live\?/gu)).toHaveLength(3);
+  });
+
   it('finds real repositories through depth 3, nested roots separately, and never follows links or reads source', async () => {
     const parent = await temporaryDirectory();
     const outside = await temporaryDirectory();
@@ -237,7 +260,7 @@ describe('repository discovery', () => {
     expect(result).toMatchObject({ status: 'list_truncated', directoriesVisited: 10 });
   });
 
-  it('stops after 200 candidate repositories without reading the 201st', async () => {
+  it('shows 200 repositories and counts the ones left out', async () => {
     const parent = await temporaryDirectory();
     expect(REPOSITORY_LIMIT).toBe(200);
     for (let index = 0; index < 201; index++)
@@ -267,7 +290,41 @@ describe('repository discovery', () => {
 
     expect(result.repositories).toHaveLength(200);
     expect(result.truncated).toBe(true);
-    expect(reads).not.toContain(join(parent, 'repo-200'));
+    expect(result.omitted).toBe(1);
+    expect(reads).toContain(join(parent, 'repo-200'));
+  });
+
+  it('tells the person how many repositories were left out and how to add them', async () => {
+    const home = await temporaryDirectory();
+    const boundary = join(home, 'Projects');
+    await fs.mkdir(boundary);
+    const stream = capture();
+    const repositories = Array.from({ length: 200 }, (_, index) => ({
+      path: join(boundary, `repo-${String(index).padStart(3, '0')}`),
+      state: 'not_set_up' as const,
+    }));
+
+    await runScannerBoundaryPicker({
+      input: Readable.from(`${boundary}\n`),
+      output: new Output(stream, undefined, { home }),
+      currentProject: home,
+      currentFolder: home,
+      home,
+      protectedPaths: [],
+      discover: async () => ({
+        status: 'complete',
+        displayRoot: boundary,
+        root: boundary,
+        directoriesVisited: 201,
+        repositories,
+        truncated: true,
+        omitted: 1,
+      }),
+    });
+
+    expect(stream.text).toContain(
+      '1 repository was left out and can be added later with mnemonik add <folder>.\n'
+    );
   });
 
   it.runIf(process.platform !== 'win32')(
@@ -575,6 +632,7 @@ describe('scanner picker and consent', () => {
         directoriesVisited: 1,
         repositories,
         truncated: true,
+        omitted: 0,
       }),
     });
     expect(result).toEqual({ status: 'cancelled', reason: 'selection_limit_back' });

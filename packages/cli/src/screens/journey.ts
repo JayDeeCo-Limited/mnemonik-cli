@@ -24,6 +24,7 @@ export interface CustomizeItem {
 export const completedStep = (step: number, text: string): string => `Step ${step} of 5: ${text}`;
 export const completedLine = (text: string): string => `  ✓ ${text}`;
 export const INSTALLATION_STOPPED = 'Installation stopped.';
+export const ADD_ANOTHER_FOLDER = 'To connect a folder somewhere else, run mnemonik add <folder>.';
 
 export const stepProgress = (output: Output, interactive: boolean, text: string) =>
   output.progressLine(interactive ? text : `  ${text}`, interactive);
@@ -62,6 +63,16 @@ export function renderJourney(screen: string, output: Output, v: JourneyValues =
       '    Customize',
       '',
     ],
+    indexing: [
+      'Mnemonik',
+      '',
+      'Indexing was skipped.',
+      '  Use the Up/Down arrow keys and Enter.',
+      '',
+      '  > Set up indexing',
+      '    Cancel',
+      '',
+    ],
     account: ['Step 2 of 5: Sign in. Your browser will open. This waits up to 10 minutes.'],
     cli_approval: [
       '  Approve this CLI in the browser.',
@@ -81,6 +92,13 @@ export function renderJourney(screen: string, output: Output, v: JourneyValues =
     done: [
       '  ✓ Installed.',
       '  Your editors will ask you to sign in to Mnemonik the first time you use it.',
+      '',
+    ],
+    indexing_done: ['  ✓ Indexing set up.', ''],
+    indexing_skipped: [
+      '  ✓ Installed.',
+      '  Your editors will ask you to sign in to Mnemonik the first time you use it.',
+      '  Indexing was skipped. Run mnemonik install to set it up later.',
       '',
     ],
     skipped: [
@@ -106,6 +124,25 @@ export function renderJourney(screen: string, output: Output, v: JourneyValues =
   const rendered = lines[screen] ?? [];
   for (const line of rendered) output.line(line);
   return rendered.length;
+}
+
+export function renderInterrupted(output: Output): void {
+  output.line('  Previous installation was interrupted.');
+  output.line('  Resume keeps your choices and continues the installation.');
+  output.line('  Rollback removes changes from the unfinished installation.');
+  output.line('  Use the Up/Down arrow keys and Enter.');
+  output.line();
+  output.line('  > Resume');
+  output.line('    Rollback');
+  output.line();
+}
+
+export function renderRollbackResult(removed: boolean, output: Output): void {
+  output.line(
+    removed
+      ? '  The unfinished installation was removed.'
+      : '  Run mnemonik install again to finish removing the unfinished installation.'
+  );
 }
 
 interface SignalSource {

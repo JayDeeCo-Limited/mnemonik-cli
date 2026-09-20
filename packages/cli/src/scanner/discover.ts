@@ -38,6 +38,7 @@ export type DiscoveryResult = {
   directoriesVisited: number;
   repositories: DiscoveredRepository[];
   truncated: boolean;
+  omitted: number;
 };
 
 interface DiscoveryOptions {
@@ -144,6 +145,7 @@ export async function discoverRepositories(
   const queue: Array<{ path: string; depth: number }> = [{ path: root, depth: 0 }];
   const repositories: DiscoveredRepository[] = [];
   const repositoryPaths = new Set<string>();
+  let omitted = 0;
   let directoriesVisited = 0;
   const result = (status: DiscoveryResult['status'], truncated: boolean): DiscoveryResult => ({
     status,
@@ -151,7 +153,8 @@ export async function discoverRepositories(
     root,
     directoriesVisited,
     repositories: repositories.sort((left, right) => left.path.localeCompare(right.path)),
-    truncated,
+    truncated: truncated || omitted > 0,
+    omitted,
   });
 
   while (queue.length) {
@@ -186,12 +189,12 @@ export async function discoverRepositories(
       const repository = await classifyRepository(canonical, {
         canonicalizePath: canonicalize,
         resolveIdentity: options.resolveIdentity,
-        readRemotes: options.readRemotes,
+        readRemotes: repositories.length < REPOSITORY_LIMIT ? options.readRemotes : async () => [],
       });
       if (!repositoryPaths.has(repository.path)) {
         repositoryPaths.add(repository.path);
-        repositories.push(repository);
-        if (repositories.length === REPOSITORY_LIMIT) return result('complete', true);
+        if (repositories.length < REPOSITORY_LIMIT) repositories.push(repository);
+        else omitted++;
       }
     }
     if (directory.depth >= maxDepth) continue;
@@ -215,11 +218,13 @@ export async function scannerCandidates(boundary: string): Promise<{
   boundary: string;
   candidates: ScannerCandidate[];
   repositories: DiscoveredRepository[];
+  omitted: number;
 }> {
   const discovered = await discoverRepositories(boundary);
   return {
     boundary: discovered.root,
     repositories: discovered.repositories,
+    omitted: discovered.omitted,
     candidates: discovered.repositories.map((repository) => ({
       path: repository.path,
       name: repositoryName(discovered.root, repository.path),

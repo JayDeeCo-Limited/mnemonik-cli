@@ -12,6 +12,7 @@ import { bootstrapProgress } from '../../src/runtime/bootstrap.js';
 import { SCANNER_APPROVAL_WAIT } from '../../src/scanner/enable.js';
 import { runScannerBoundaryPicker, scannerBoundaryPrompt } from '../../src/scanner/picker.js';
 import {
+  runCli,
   connectedFolderLine,
   connectFolderPrompt,
   removedFolderLine,
@@ -20,12 +21,15 @@ import {
 import { renderStatusSummaries } from '../../src/status.js';
 import { serializeReadiness } from '@mnemonik/shared';
 import {
+  ADD_ANOTHER_FOLDER,
   completedLine,
   completedStep,
   INSTALLATION_STOPPED,
   journeyAnswers,
   renderCustomize,
+  renderInterrupted,
   renderJourney,
+  renderRollbackResult,
   stepProgress,
 } from '../../src/screens/journey.js';
 
@@ -166,6 +170,195 @@ it('renders the W3 owner previews from the production screen code', async () => 
   expect(statusAttention.text()).not.toContain('hook_not_verified');
   await mkdir(previewDirectory, { recursive: true });
   await writeFile(`${previewDirectory}/w3-install.txt`, preview);
+});
+
+it('renders the L-60 to L-64 wording from production code', async () => {
+  const interrupted = capture();
+  renderInterrupted(interrupted.output);
+  const rollback = capture();
+  renderRollbackResult(true, rollback.output);
+  const rollbackNeedsAction = capture();
+  renderRollbackResult(false, rollbackNeedsAction.output);
+
+  const home = await mkdtemp(join(tmpdir(), 'mnemonik-day-words-preview-'));
+  const missing = join(home, 'missing');
+  const closed = join(home, 'closed');
+  const empty = join(home, 'empty');
+  const privateFolder = join(home, 'private');
+  const projects = join(home, 'Projects');
+  await mkdir(empty);
+  await mkdir(privateFolder);
+  await mkdir(projects);
+  const repositories = Array.from({ length: 200 }, (_, index) => ({
+    path: join(projects, `project-${index + 1}`),
+    state: 'not_set_up' as const,
+  }));
+  const renderFolderChoice = async (
+    first: string,
+    issue: 'empty' | 'missing' | 'closed' | 'protected' | 'unusable',
+    omitted = 0
+  ) => {
+    const screen = capture();
+    await runScannerBoundaryPicker({
+      input: Readable.from(`${first}\n${projects}\n`),
+      output: new Output({ write: (chunk) => screen.output.write(chunk) }, undefined, { home }),
+      currentProject: home,
+      currentFolder: home,
+      home,
+      protectedPaths: issue === 'protected' ? [privateFolder] : [],
+      canonicalizePath: async (path) => {
+        if (path === first && issue === 'missing')
+          throw Object.assign(new Error('missing'), { code: 'ENOENT' });
+        if (path === first && issue === 'closed')
+          throw Object.assign(new Error('closed'), { code: 'EACCES' });
+        return path;
+      },
+      discover: async (path) => ({
+        status: 'complete',
+        displayRoot: path,
+        root: path,
+        directoriesVisited: path === empty ? 1 : 300,
+        repositories: path === empty ? [] : repositories,
+        truncated: omitted > 0,
+        omitted,
+      }),
+    });
+    return screen.text().trimEnd();
+  };
+  const folderHome = await renderFolderChoice(home, 'unusable');
+  const folderRoot = await renderFolderChoice('/', 'unusable');
+  const folderClosed = await renderFolderChoice(closed, 'closed');
+  const folderUnusable = await renderFolderChoice(tmpdir(), 'unusable');
+  const folderProtected = await renderFolderChoice(privateFolder, 'protected');
+  const folderMissing = await renderFolderChoice(missing, 'missing');
+  const folderEmpty = await renderFolderChoice(empty, 'empty');
+  const folderOmittedOne = capture();
+  const folderOmittedMany = capture();
+  try {
+    for (const [screen, omitted] of [
+      [folderOmittedOne, 1],
+      [folderOmittedMany, 100],
+    ] as const)
+      await runScannerBoundaryPicker({
+        input: Readable.from(`${projects}\n`),
+        output: new Output({ write: (chunk) => screen.output.write(chunk) }, undefined, { home }),
+        currentProject: home,
+        currentFolder: home,
+        home,
+        protectedPaths: [],
+        canonicalizePath: async (path) => path,
+        discover: async (path) => ({
+          status: 'complete',
+          displayRoot: path,
+          root: path,
+          directoriesVisited: 300,
+          repositories,
+          truncated: true,
+          omitted,
+        }),
+      });
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+
+  const noTerminalScreens = await Promise.all(
+    [[], ['--without-scanner'], ['--accept-indexing'], ['--accept-indexing', '--apply']].map(
+      async (flags) => {
+        const screen = capture();
+        await runCli(['install', ...flags], {
+          input: Readable.from([]),
+          stdout: { write: (chunk) => screen.output.write(chunk) },
+          stderr: { write: (chunk) => screen.output.write(chunk) },
+        });
+        return screen.text().trimEnd();
+      }
+    )
+  );
+
+  const indexingSkipped = capture();
+  renderJourney('indexing_skipped', indexingSkipped.output);
+  const indexingOnly = capture();
+  renderJourney('indexing', indexingOnly.output);
+  const indexingDone = capture();
+  renderJourney('indexing_done', indexingDone.output);
+  const indexingProgress = capture();
+  const checkingAccount = stepProgress(indexingProgress.output, false, 'Checking your account');
+  checkingAccount.complete(completedLine('Account checked'));
+  const gettingReady = stepProgress(indexingProgress.output, false, 'Getting ready');
+  gettingReady.complete(completedLine('Ready'));
+  const anotherFolder = capture();
+  anotherFolder.output.line(completedLine('Repositories connected'));
+  anotherFolder.output.line(`  ${ADD_ANOTHER_FOLDER}`);
+
+  const preview = [
+    '=== When a previous installation was interrupted ===',
+    interrupted.text().trimEnd(),
+    '',
+    '=== After Rollback succeeds ===',
+    rollback.text().trimEnd(),
+    '',
+    '=== When Rollback needs to be finished ===',
+    rollbackNeedsAction.text().trimEnd(),
+    '',
+    '=== When the home folder is entered as the projects folder ===',
+    folderHome,
+    '',
+    '=== When the whole computer is entered as the projects folder ===',
+    folderRoot,
+    '',
+    '=== When the projects folder cannot be opened ===',
+    folderClosed,
+    '',
+    '=== When the projects folder cannot be used ===',
+    folderUnusable,
+    '',
+    '=== When the projects folder cannot be read ===',
+    folderProtected,
+    '',
+    '=== When the projects folder does not exist ===',
+    folderMissing,
+    '',
+    '=== When the projects folder has no repositories ===',
+    folderEmpty,
+    '',
+    '=== When one repository is left out of the projects list ===',
+    folderOmittedOne.text().trimEnd(),
+    '',
+    '=== When 100 repositories are left out of the projects list ===',
+    folderOmittedMany.text().trimEnd(),
+    '',
+    '=== When install has no terminal and --accept-indexing is missing ===',
+    noTerminalScreens[0],
+    '',
+    '=== When install has no terminal and --accept-limited is missing ===',
+    noTerminalScreens[1],
+    '',
+    '=== When install has no terminal and --apply is missing ===',
+    noTerminalScreens[2],
+    '',
+    '=== When install has no terminal and --scan-roots is missing ===',
+    noTerminalScreens[3],
+    '',
+    '=== When installation finishes after indexing was unticked ===',
+    indexingSkipped.text().trimEnd(),
+    '',
+    '=== When install is run again after indexing was skipped ===',
+    indexingOnly.text().trimEnd(),
+    '',
+    '=== During the indexing-only run ===',
+    indexingProgress.text().trimEnd(),
+    '',
+    '=== When the indexing-only run finishes ===',
+    indexingDone.text().trimEnd(),
+    '',
+    '=== After repositories are connected ===',
+    anotherFolder.text().trimEnd(),
+    '',
+  ].join('\n');
+
+  expect(preview).not.toContain(home);
+  await mkdir(previewDirectory, { recursive: true });
+  await writeFile(`${previewDirectory}/day-cli-words.txt`, preview);
 });
 
 it('renders the night interaction screens from production code', async () => {

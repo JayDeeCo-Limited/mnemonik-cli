@@ -3,7 +3,7 @@ import { readdir, realpath } from 'node:fs/promises';
 import { parse, posix, resolve } from 'node:path';
 import { isProtectedLocalPath, protectedLocalPaths, protectedPathsWithinRoot, } from '@mnemonik/shared';
 import { evaluateRoot, repositoryAt } from '../project/eligibility.js';
-import { classifyRepository, discoverRepositories, guessDiscoveryBoundary, repositoryName, repositoryStateLabel, scannerCandidates, } from './discover.js';
+import { classifyRepository, discoverRepositories, guessDiscoveryBoundary, repositoryName, repositoryStateLabel, } from './discover.js';
 export const SCANNER_SELECTION_LIMIT = 32;
 export const SCANNER_SELECTION_LIMIT_MESSAGE = 'You can leave out up to 32 repositories here. Choose a narrower folder, or watch only this project.';
 export const scannerBoundaryPrompt = (shown) => shown ? `Where do your projects live? [${shown}]` : 'Where do your projects live?';
@@ -17,53 +17,79 @@ export async function runScannerBoundaryPicker(options) {
     const readline = createInterface({ input: options.input, terminal: false });
     const answers = readline[Symbol.asyncIterator]();
     try {
-        let boundary = '';
-        for (let attempt = 0; attempt < 2; attempt++) {
+        for (;;) {
             options.output.line(scannerBoundaryPrompt(shown));
-            const answer = String((await answers.next()).value ?? '').trim();
+            const response = await answers.next();
+            if (response.done)
+                throw new Error('project_folder_required');
+            const answer = String(response.value ?? '').trim();
             const candidate = answer || guess;
             const absolute = candidate ? resolve(candidate) : '';
-            if (candidate && absolute !== resolve(home) && absolute !== parse(absolute).root) {
-                boundary = await canonicalize(candidate);
-                break;
-            }
-            if (attempt === 0) {
+            if (!candidate || absolute === resolve(home)) {
                 options.output.line('Choose a project folder inside your home folder.');
                 continue;
             }
-            throw new Error(absolute === parse(absolute).root ? 'filesystem_root' : 'home_directory');
+            if (absolute === parse(absolute).root) {
+                options.output.line('Choose a project folder instead of the whole computer.');
+                continue;
+            }
+            let boundary;
+            try {
+                boundary = await canonicalize(candidate);
+            }
+            catch (error) {
+                options.output.line(error.code === 'ENOENT'
+                    ? 'That folder does not exist. Choose another folder.'
+                    : 'That folder could not be opened. Choose another folder.');
+                continue;
+            }
+            const decision = await evaluateRoot({ kind: 'absent', root: boundary, repository: await repositoryAt(boundary), nested: [] }, {
+                cwd: boundary,
+                home: options.home,
+                platform: options.platform,
+                env: options.env,
+                nonGitSelected: true,
+            });
+            if (!decision.allowed && decision.reason !== 'broad_workspace_parent') {
+                options.output.line('That folder cannot be used. Choose another folder.');
+                continue;
+            }
+            const protectedPaths = options.protectedPaths ?? protectedLocalPaths(options.platform, options.env, options.home);
+            const enclosing = protectedPaths.find((path) => isProtectedLocalPath(boundary, [path], options.platform));
+            if (enclosing) {
+                options.output.line('That folder cannot be read. Choose another folder.');
+                continue;
+            }
+            const found = await (options.discover ?? discoverRepositories)(boundary);
+            const candidates = found.repositories.map((repository) => ({
+                path: repository.path,
+                name: repositoryName(found.root, repository.path),
+                kind: repository.nonGitSelected ? 'folder' : 'git',
+            }));
+            if (!candidates.length) {
+                options.output.line('No repositories were found there. Choose another folder.');
+                continue;
+            }
+            if (found.omitted) {
+                const noun = found.omitted === 1 ? 'repository was' : 'repositories were';
+                options.output.line(`${found.omitted} ${noun} left out and can be added later with mnemonik add <folder>.`);
+            }
+            const exclusions = protectedPathsWithinRoot(boundary, protectedPaths, options.platform);
+            if (exclusions.length > SCANNER_SELECTION_LIMIT)
+                throw new RangeError(SCANNER_SELECTION_LIMIT_MESSAGE);
+            return {
+                roots: [],
+                exclusions,
+                boundary: found.root,
+                candidates,
+                repositories: found.repositories.map(({ path, state, nonGitSelected }) => ({
+                    path,
+                    state,
+                    selected: !nonGitSelected,
+                    ...(nonGitSelected ? { nonGitSelected } : {}),
+                })),
+            };
         }
-        const decision = await evaluateRoot({ kind: 'absent', root: boundary, repository: await repositoryAt(boundary), nested: [] }, {
-            cwd: boundary,
-            home: options.home,
-            platform: options.platform,
-            env: options.env,
-            nonGitSelected: true,
-        });
-        if (!decision.allowed && decision.reason !== 'broad_workspace_parent')
-            throw new Error(decision.reason);
-        const protectedPaths = options.protectedPaths ?? protectedLocalPaths(options.platform, options.env, options.home);
-        const enclosing = protectedPaths.find((path) => isProtectedLocalPath(boundary, [path], options.platform));
-        if (enclosing)
-            throw new Error(`protected_path: ${enclosing}`);
-        const discovered = await scannerCandidates(boundary);
-        if (!discovered.candidates.length)
-            throw new Error('no_projects_found');
-        const exclusions = protectedPathsWithinRoot(boundary, protectedPaths, options.platform);
-        if (exclusions.length > SCANNER_SELECTION_LIMIT)
-            throw new RangeError(SCANNER_SELECTION_LIMIT_MESSAGE);
-        return {
-            roots: [],
-            exclusions,
-            boundary: discovered.boundary,
-            candidates: discovered.candidates,
-            repositories: discovered.repositories.map(({ path, state, nonGitSelected }) => ({
-                path,
-                state,
-                selected: !nonGitSelected,
-                ...(nonGitSelected ? { nonGitSelected } : {}),
-            })),
-        };
     }
     finally {
         readline.close();
