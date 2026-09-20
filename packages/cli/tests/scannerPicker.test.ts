@@ -119,6 +119,24 @@ describe('repository discovery', () => {
     expect(stream.text).toBe('Where do your projects live? [~/Projects]\n');
   });
 
+  it('lists a git repository with descendant identities and a nested git repository only once', async () => {
+    const boundary = await temporaryDirectory();
+    const repository = join(boundary, 'devops');
+    const nested = join(repository, 'dokploy-mcp-server');
+    await git(repository);
+    await identity(repository, uuid('1'));
+    await fs.mkdir(join(repository, 'home-agent'));
+    await identity(join(repository, 'home-agent'), uuid('2'));
+    await git(nested);
+
+    const discovered = await scannerCandidates(boundary);
+
+    expect(discovered.candidates).toEqual([
+      { path: repository, name: 'devops', kind: 'git' },
+      { path: nested, name: 'devops/dokploy-mcp-server', kind: 'git' },
+    ]);
+  });
+
   it('finds real repositories through depth 3, nested roots separately, and never follows links or reads source', async () => {
     const parent = await temporaryDirectory();
     const outside = await temporaryDirectory();

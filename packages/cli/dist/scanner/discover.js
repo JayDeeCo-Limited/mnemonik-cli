@@ -81,6 +81,7 @@ export async function discoverRepositories(parentPath, options = {}) {
     const readDirectory = options.readDirectory ?? ((path) => readdir(path, { withFileTypes: true }));
     const queue = [{ path: root, depth: 0 }];
     const repositories = [];
+    const repositoryPaths = new Set();
     let directoriesVisited = 0;
     const result = (status, truncated) => ({
         status,
@@ -118,13 +119,17 @@ export async function discoverRepositories(parentPath, options = {}) {
         const gitBoundary = entries.find((entry) => entry.name === '.git' && (entry.isDirectory() || entry.isFile()));
         const identityBoundary = entries.some((entry) => entry.name === '.mnemonik.json' && entry.isFile());
         if (gitBoundary || identityBoundary) {
-            repositories.push(await classifyRepository(canonical, {
+            const repository = await classifyRepository(canonical, {
                 canonicalizePath: canonicalize,
                 resolveIdentity: options.resolveIdentity,
                 readRemotes: options.readRemotes,
-            }));
-            if (repositories.length === REPOSITORY_LIMIT)
-                return result('complete', true);
+            });
+            if (!repositoryPaths.has(repository.path)) {
+                repositoryPaths.add(repository.path);
+                repositories.push(repository);
+                if (repositories.length === REPOSITORY_LIMIT)
+                    return result('complete', true);
+            }
         }
         if (directory.depth >= maxDepth)
             continue;
