@@ -1,30 +1,30 @@
 {
   "schemaVersion": 1,
-  "version": "7.101.2",
+  "version": "7.101.3",
   "packages": {
     "@mnemonik/cli": {
-      "version": "7.101.2",
-      "integrity": "sha512-MKnlu645E3Z3WYJa1SzR6HWgdtphfKAZLJjq2PxLaOcq5rWPrGpnPwWsHCbFRKyijYbRaDfT5PjEoGTFJgKfFA=="
+      "version": "7.101.3",
+      "integrity": "sha512-H1iLx80dOR3m9xLs0w0Bm8WERRQhhTAF6icQ28uu2UPMWUIOxjyI5SO5C3BLitD0XSOnkRwD6n3Xj2OW11Mmig=="
     },
     "@mnemonik/claude-code-hooks": {
-      "version": "0.9.200",
-      "integrity": "sha512-cXsRGr5fgyU4zQF0n/Lu2Uvf0t6hu65pEHlv3USvAJdrcUxzph6xtoD9RjwZTImcgDb28LU2ZUWudNXsfqy8bQ=="
+      "version": "0.9.201",
+      "integrity": "sha512-AZiSZt9UOY7epQSYYhcPkevYW/Ji+vl4KUejnVTKGj9YJFnydepSw+7w+jXrMCYrKP9WHsXqQDq47rPGB2TqGw=="
     },
     "@mnemonik/codex-hooks": {
-      "version": "0.8.169",
-      "integrity": "sha512-ig0uymI5CnAFGuRH+QxjFaE4pIAQHFjwAFWLvorBmtCKNqoR9XiWO2Fqx28pDo8Z/knWjWNhdgWzYMXfaI0j4A=="
+      "version": "0.8.170",
+      "integrity": "sha512-LL8FFUaG8awYe0UHnFWCDF6YoFwlyKVQ7JdVI3XC2CIdb1vyP/nudi7eiusk1iGB3Vr7T7DnN/AoJ28hYO2jyw=="
     },
     "@mnemonik/cursor-hooks": {
-      "version": "0.7.156",
-      "integrity": "sha512-Xlksbd9/3XQpIN5OdIb2mQsO6rtHiw1r7Kkyh/BxMFDk4Mo3kCesDhgkbd17duYHTzhUASrHmEu5yPPZExs5Jw=="
+      "version": "0.7.157",
+      "integrity": "sha512-WkTrJfh4bEhpxRRz4EUfO2VVWAOJuDpVcYTLSzYF1Ch0a2fQ1x7AVu6rmcALKeDxC+2ixmCxCMyDDk98Pt6VgQ=="
     },
     "@mnemonik/grok-hooks": {
-      "version": "0.1.42",
-      "integrity": "sha512-BvwmDnSRA5Cgpql+I1AXOWYqp5Fx6M6KOWtpfMgV+48Nr99zFfmU8u/kyU89KGMdjv2wLqW2FZ84qtMkSJq8Lg=="
+      "version": "0.1.43",
+      "integrity": "sha512-A7WiXDMIIwwA9tABr/J/9x0fWTrCgOXAP7Iy7jAWv6zNDAjnQM89g9jBMbzibqrYvw9+JEG38DGFk3Ax4PlN/w=="
     },
     "@mnemonik/copilot-hooks": {
-      "version": "0.1.33",
-      "integrity": "sha512-W8k28CXPg6me3KzUTOFPE+Xo3RurHgl+ubgsqMSAdko4IRAifwjw5KCcHMPFU8U5SHptczCGPtL2YToFrb2Yjg=="
+      "version": "0.1.34",
+      "integrity": "sha512-SPF4F5OxLdWNAUl/YXFnZ1xtH/spcbd7x250Gvx47bfFNN3Cru6F1FFyGtOCtgYc6vwIrAaOFqfX4gdot7Zbbg=="
     }
   }
 }

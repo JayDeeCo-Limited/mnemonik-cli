@@ -1,6 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
+  chmodSync,
   cpSync,
   globSync,
   mkdirSync,
@@ -18,6 +19,8 @@ for (const name of ['shared', 'local-setup', 'credentials', 'cli'])
 rmSync('dist-package', { recursive: true, force: true });
 mkdirSync('dist-package/dist', { recursive: true });
 cpSync('packages/cli/dist', 'dist-package/dist', { recursive: true });
+// npm links an existing workspace bin before rebuilds, but not before its first build.
+chmodSync('dist-package/dist/bin.js', 0o755);
 cpSync('packages/cli/LICENSE', 'dist-package/LICENSE');
 const options = {
   bundle: true,
