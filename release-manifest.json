@@ -1,30 +1,30 @@
 {
   "schemaVersion": 1,
-  "version": "7.103.1",
+  "version": "7.103.2",
   "packages": {
     "@mnemonik/cli": {
-      "version": "7.103.1",
-      "integrity": "sha512-/p3kx1iq+iW9QW2XFQKzYvrKjADpD4qnhJR2Uy74ylLFfF2kzHlbK9ZsN+9VioSoHFCwI5TC3+FnaXwl9aOkVQ=="
+      "version": "7.103.2",
+      "integrity": "sha512-7V7/Ta+spfKP4gn25eC3dwblqH5t07/yLBIZd9qTiUfhfRaBnY4zgmFFO6mvCuC9rMp1Li79XKepJcMlM+CmCQ=="
     },
     "@mnemonik/claude-code-hooks": {
-      "version": "0.9.206",
-      "integrity": "sha512-Ow54bUKHUTE7985ORNTf0MksI34qgVB2oWybc098tTvJdzEGOrHwExifYiN0hd35yW1Aqv53LmMZtkqY5LUgfQ=="
+      "version": "0.9.207",
+      "integrity": "sha512-eE/u2uiUpmuSMxJsPTlnWbB4sw8vxinfWYtMGmkWB4efae4vBBJtonZJ2BLKI9pe65uT9BryaypbCHChFDcwkA=="
     },
     "@mnemonik/codex-hooks": {
-      "version": "0.8.175",
-      "integrity": "sha512-8fOwCDe1dZ/+yjgAaKKyBnWAKvHeoF3Ul/z72wh9fNIayQlIt0BhoXQGrQrGKj+M+Ab9emGubkUtaRtPxmU3Vw=="
+      "version": "0.8.176",
+      "integrity": "sha512-vbL+4wePxecFj6b3cRJs7qXAq04t5ePAurEIEj4pMD5DipX37dVhYx0BTV5Eod3utiP7ZCLnVhiSYJ9f4FU1zw=="
     },
     "@mnemonik/cursor-hooks": {
-      "version": "0.7.162",
-      "integrity": "sha512-HGcu1e6RcNqMYNOMyQF37NQRHaGvn+1VtLbORBPHt71d0BLy3t355qjxp4+HrKy9Y8+Zq6Tzsl2EpQ+FXc0HUA=="
+      "version": "0.7.163",
+      "integrity": "sha512-bWHP/LKXLU2mGSHgjP5ISPbfw2GsWqF858Tz1Y2Cz6UQjUL9KvlWJwuXrBBuPtHL7EqCeo6j9zuFHzgFlPIEhA=="
     },
     "@mnemonik/grok-hooks": {
-      "version": "0.1.48",
-      "integrity": "sha512-ue/I/v28VsBcZ0i5xtmhYznO53X4GgJxvpkWVuCRMdijh+FbqiqO1y4FMfAG5WqP3TF3S4DCn/5PO3RcvrK2Vg=="
+      "version": "0.1.49",
+      "integrity": "sha512-4vLXRUk95mhmp3ZBO5sxIA7hrSZyXeds0DcXi1UMipL8nPSlI9+LYFulXME9pkiROccRLg6UsrkfGQDEPuuMjg=="
     },
     "@mnemonik/copilot-hooks": {
-      "version": "0.1.39",
-      "integrity": "sha512-bNaV9TygP8Gv0W+HEtoyoNM2rYJnDdQzQA7jaD3Jm3vMBgo7q/ucMCypJqtyEpO3so/YDNgp0RdjybIKGJ2q7Q=="
+      "version": "0.1.40",
+      "integrity": "sha512-MtK4gnlh+9Lr43tD2WntHHzT20yH0+owy/anJUeXl4+dVaVnfh7A/Cn8180YB3NC2AOZL7UG6exFptgVT62IDg=="
     }
   }
 }

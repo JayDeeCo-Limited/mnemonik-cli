@@ -44,6 +44,56 @@ afterEach(async () => {
   await Promise.all(homes.splice(0).map((home) => rm(home, { recursive: true, force: true })));
 });
 
+it('does not show repository progress between the folder question and its answer', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'joined-scanner-question-'));
+  homes.push(home);
+  const stateDir = join(home, 'state');
+  let text = '';
+  mocks.prepare.mockImplementation(async (options) => {
+    options.output.line('Where do your projects live? [~/projects]');
+    options.output.line('FOLDER ANSWER RECEIVED');
+    throw new Error('question_probe_complete');
+  });
+  mocks.status.mockResolvedValue({
+    ...serializeReadiness({ installation: { conditions: [] } }),
+    cliCredential: { present: true, diagnostics: [] },
+  });
+
+  await joinedInstall(
+    new Map<string, string | true>([
+      ['components', 'scanner'],
+      ['accept-indexing', true],
+      ['apply', true],
+    ]),
+    {
+      home,
+      cwd: home,
+      input: Object.assign(Readable.from([]), { isTTY: true }),
+      installStateDir: stateDir,
+      preflight: {
+        nodeVersion: '24.21.0',
+        fetch: async () => Response.json({}),
+        resolveIdentity: async () => ({
+          kind: 'absent',
+          root: home,
+          repository: { kind: 'plain', root: home },
+          nested: [],
+        }),
+      },
+      launcher: { platform: 'linux' },
+    },
+    new Output({ isTTY: true, write: (chunk) => void (text += chunk) }),
+    async () => 'owner',
+    async () => ({ stateDir, account: 'owner', now: () => 0, sleep: async () => {} })
+  );
+
+  const between = text.slice(
+    text.indexOf('Where do your projects live?'),
+    text.indexOf('FOLDER ANSWER RECEIVED')
+  );
+  expect(between).not.toContain('Connecting your repositories');
+});
+
 it.each([
   ['unresolved project', 'prepared'],
   ['scanner failure', 'prepared'],

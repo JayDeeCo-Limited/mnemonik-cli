@@ -160,6 +160,7 @@ export async function prepareScanner(options, work) {
                     })()
                     : await runScannerBoundaryPicker({
                         input: options.input,
+                        readAnswer: options.readAnswer,
                         output: options.output,
                         currentProject: options.cwd,
                         currentFolder: options.cwd,

@@ -187,6 +187,7 @@ export function journeyAnswers(
   };
   const keys: Key[] = [];
   let questionActive = false;
+  let inputEnded = false;
   let resolveKey: ((key: Key) => void) | undefined;
   const enqueue = (value: Key) => {
     if (resolveKey) {
@@ -201,7 +202,10 @@ export function journeyAnswers(
       else signals.emit?.('SIGINT');
     } else if (questionActive) enqueue(value);
   };
-  const ended = () => questionActive && enqueue({ name: 'end' });
+  const ended = () => {
+    inputEnded = true;
+    if (questionActive) enqueue({ name: 'end' });
+  };
   if (interactive) {
     input.on('keypress', pressed);
     input.once('end', ended);
@@ -210,9 +214,11 @@ export function journeyAnswers(
     const queued = keys.shift();
     return queued
       ? Promise.resolve(queued)
-      : new Promise<Key>((resolve) => {
-          resolveKey = resolve;
-        });
+      : inputEnded
+        ? Promise.resolve({ name: 'end' } as Key)
+        : new Promise<Key>((resolve) => {
+            resolveKey = resolve;
+          });
   };
   const nextAnswer = () =>
     answers?.next() ?? Promise.resolve({ done: true, value: undefined } as IteratorResult<string>);
@@ -304,7 +310,42 @@ export function journeyAnswers(
       }
     },
     async text() {
-      if (interactive) return undefined;
+      if (interactive) {
+        questionActive = true;
+        keys.length = 0;
+        let value = '';
+        try {
+          for (;;) {
+            const answer = await key();
+            if (answer.name === 'return' || answer.name === 'enter') {
+              output?.write('\n');
+              return value.trim();
+            }
+            if (answer.name === 'backspace') {
+              if (value) {
+                value = [...value].slice(0, -1).join('');
+                output?.write('\b \b');
+              }
+              continue;
+            }
+            if (answer.name === 'end' || (answer.ctrl && answer.name === 'c')) return undefined;
+            const sequence = answer.sequence ?? '';
+            if (
+              !answer.ctrl &&
+              !answer.meta &&
+              sequence &&
+              [...sequence].every((character) => character >= ' ' && character !== '\u007f')
+            ) {
+              value += sequence;
+              output?.write(sequence);
+            }
+          }
+        } finally {
+          questionActive = false;
+          keys.length = 0;
+          resolveKey = undefined;
+        }
+      }
       const answer = await nextAnswer();
       return answer.done ? undefined : answer.value.trim();
     },

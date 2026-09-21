@@ -469,6 +469,7 @@ export async function joinedInstall(flags, deps, output, authorize, management) 
                 prepared = scannerPlan;
                 let limitMessage;
                 if (scannerPlan) {
+                    startProgress('Connecting your repositories');
                     if (!executor) {
                         const runtime = await createRealProjectRuntime({
                             stateDir,
@@ -654,12 +655,12 @@ export async function joinedInstall(flags, deps, output, authorize, management) 
             if (scanner) {
                 if (!automatic)
                     renderJourney('scanner', output);
-                startProgress('Connecting your repositories');
                 try {
                     await prepareScanner({
                         stateDir,
                         cwd: root,
                         input: deps.input ?? process.stdin,
+                        readAnswer: answers?.text,
                         output,
                         nonInteractive: automatic,
                         ...(roots.length ? { roots } : {}),

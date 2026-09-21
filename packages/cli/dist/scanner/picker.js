@@ -14,17 +14,30 @@ export async function runScannerBoundaryPicker(options) {
     const shown = home && (guess === home || guess.startsWith(`${home}/`))
         ? `~${guess.slice(home.length)}`
         : guess;
-    const readline = createInterface({ input: options.input, terminal: false });
-    const answers = readline[Symbol.asyncIterator]();
+    const readline = options.readAnswer
+        ? undefined
+        : createInterface({ input: options.input, terminal: false });
+    const answers = readline?.[Symbol.asyncIterator]();
+    const next = async () => {
+        if (options.readAnswer)
+            return options.readAnswer();
+        const response = await answers?.next();
+        return response?.done ? undefined : String(response?.value ?? '');
+    };
     try {
         for (;;) {
             options.output.line(scannerBoundaryPrompt(shown));
-            const response = await answers.next();
-            if (response.done)
+            const response = await next();
+            if (response === undefined)
                 throw new Error('project_folder_required');
-            const answer = String(response.value ?? '').trim();
+            const answer = response.trim();
             const candidate = answer || guess;
-            const absolute = candidate ? resolve(candidate) : '';
+            const expanded = candidate === '~'
+                ? home
+                : home && candidate.startsWith('~/')
+                    ? resolve(home, candidate.slice(2))
+                    : candidate;
+            const absolute = expanded ? resolve(expanded) : '';
             if (!candidate || absolute === resolve(home)) {
                 options.output.line('Choose a project folder inside your home folder.');
                 continue;
@@ -35,7 +48,7 @@ export async function runScannerBoundaryPicker(options) {
             }
             let boundary;
             try {
-                boundary = await canonicalize(candidate);
+                boundary = await canonicalize(expanded);
             }
             catch (error) {
                 options.output.line(error.code === 'ENOENT'
@@ -92,7 +105,7 @@ export async function runScannerBoundaryPicker(options) {
         }
     }
     finally {
-        readline.close();
+        readline?.close();
     }
 }
 function writeChoices(output, currentFolder) {

@@ -2,7 +2,7 @@ import { execFile as execFileCallback } from 'node:child_process';
 import * as fs from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, join, parse } from 'node:path';
-import { Readable } from 'node:stream';
+import { PassThrough, Readable } from 'node:stream';
 import { promisify } from 'node:util';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -22,6 +22,7 @@ vi.mock('node:fs/promises', async (importOriginal) => {
 
 import { resolveProjectIdentity } from '@mnemonik/shared';
 import { Output } from '../src/output.js';
+import { journeyAnswers } from '../src/screens/journey.js';
 import { parseScannerSelection } from '../../../src/server/scannerDisclosure.js';
 import {
   DIRECTORY_LIMIT,
@@ -187,6 +188,65 @@ describe('repository discovery', () => {
     expect(stream.text).toContain('That folder does not exist. Choose another folder.\n');
     expect(stream.text).toContain('No repositories were found there. Choose another folder.\n');
     expect(stream.text.match(/Where do your projects live\?/gu)).toHaveLength(3);
+  });
+
+  it('keeps the next menu alive after an editable project-folder answer', async () => {
+    const home = await temporaryDirectory();
+    const boundary = join(home, 'x');
+    await git(join(boundary, 'app'));
+    const input = Object.assign(new PassThrough(), { isTTY: true, setRawMode: vi.fn() });
+    const stream = capture();
+    const output = new Output(stream, undefined, { home });
+    const answers = journeyAnswers(input, output);
+    const picker = runScannerBoundaryPicker as (
+      options: Parameters<typeof runScannerBoundaryPicker>[0] & {
+        readAnswer: () => Promise<string | undefined>;
+      }
+    ) => ReturnType<typeof runScannerBoundaryPicker>;
+
+    const picked = picker({
+      input,
+      output,
+      currentProject: join(boundary, 'app'),
+      currentFolder: join(boundary, 'app'),
+      home,
+      protectedPaths: [],
+      readAnswer: answers.text,
+    });
+    await vi.waitFor(() => expect(stream.text).toContain('Where do your projects live?'));
+    input.write('~/wrong');
+    input.write('\b\b\b\b\b');
+    input.write('x\r');
+    await expect(
+      Promise.race([picked, new Promise((resolve) => setTimeout(resolve, 500))])
+    ).resolves.toMatchObject({ boundary });
+    expect(stream.text).toContain('~/wrong\b \b\b \b\b \b\b \b\b \bx\n');
+
+    const choice = answers.choose(['Install and upload', 'Back', 'Cancel']);
+    let settled = false;
+    void choice.then(() => (settled = true));
+    await new Promise((resolve) => setTimeout(resolve, 2_000));
+    expect(settled).toBe(false);
+    input.write('\u001b[B\r');
+    await expect(choice).resolves.toBe('Back');
+    answers.close();
+  });
+
+  it('resolves a leading tilde against the home folder', async () => {
+    const home = await temporaryDirectory();
+    const boundary = join(home, 'x');
+    await git(join(boundary, 'app'));
+
+    const picked = await runScannerBoundaryPicker({
+      input: Readable.from('~/x\n'),
+      output: new Output(capture(), undefined, { home }),
+      currentProject: join(boundary, 'app'),
+      currentFolder: join(boundary, 'app'),
+      home,
+      protectedPaths: [],
+    });
+
+    expect(picked).toMatchObject({ boundary });
   });
 
   it('finds real repositories through depth 3, nested roots separately, and never follows links or reads source', async () => {

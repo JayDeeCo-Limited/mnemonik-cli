@@ -51,6 +51,7 @@ export interface EnableOptions extends ScannerServiceOptions {
     cwd: string;
     home?: string;
     input: Readable;
+    readAnswer?: () => Promise<string | undefined>;
     output: Output;
     nonInteractive?: boolean;
     pendingHosts?: boolean;

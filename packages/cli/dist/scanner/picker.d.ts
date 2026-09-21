@@ -40,6 +40,7 @@ interface PickerOptions {
     platform?: NodeJS.Platform;
     home?: string;
     env?: NodeJS.ProcessEnv;
+    readAnswer?: () => Promise<string | undefined>;
 }
 export declare function runScannerBoundaryPicker(options: PickerOptions): Promise<ScannerPickerResult>;
 export declare function runScannerPicker(options: PickerOptions): Promise<ScannerPickerRunResult>;

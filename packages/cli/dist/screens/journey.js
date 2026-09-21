@@ -142,6 +142,7 @@ export function journeyAnswers(input, output, options = {}) {
     };
     const keys = [];
     let questionActive = false;
+    let inputEnded = false;
     let resolveKey;
     const enqueue = (value) => {
         if (resolveKey) {
@@ -162,7 +163,11 @@ export function journeyAnswers(input, output, options = {}) {
         else if (questionActive)
             enqueue(value);
     };
-    const ended = () => questionActive && enqueue({ name: 'end' });
+    const ended = () => {
+        inputEnded = true;
+        if (questionActive)
+            enqueue({ name: 'end' });
+    };
     if (interactive) {
         input.on('keypress', pressed);
         input.once('end', ended);
@@ -171,9 +176,11 @@ export function journeyAnswers(input, output, options = {}) {
         const queued = keys.shift();
         return queued
             ? Promise.resolve(queued)
-            : new Promise((resolve) => {
-                resolveKey = resolve;
-            });
+            : inputEnded
+                ? Promise.resolve({ name: 'end' })
+                : new Promise((resolve) => {
+                    resolveKey = resolve;
+                });
     };
     const nextAnswer = () => answers?.next() ?? Promise.resolve({ done: true, value: undefined });
     const rewriteChoices = (choices, selected) => {
@@ -278,8 +285,42 @@ export function journeyAnswers(input, output, options = {}) {
             }
         },
         async text() {
-            if (interactive)
-                return undefined;
+            if (interactive) {
+                questionActive = true;
+                keys.length = 0;
+                let value = '';
+                try {
+                    for (;;) {
+                        const answer = await key();
+                        if (answer.name === 'return' || answer.name === 'enter') {
+                            output?.write('\n');
+                            return value.trim();
+                        }
+                        if (answer.name === 'backspace') {
+                            if (value) {
+                                value = [...value].slice(0, -1).join('');
+                                output?.write('\b \b');
+                            }
+                            continue;
+                        }
+                        if (answer.name === 'end' || (answer.ctrl && answer.name === 'c'))
+                            return undefined;
+                        const sequence = answer.sequence ?? '';
+                        if (!answer.ctrl &&
+                            !answer.meta &&
+                            sequence &&
+                            [...sequence].every((character) => character >= ' ' && character !== '\u007f')) {
+                            value += sequence;
+                            output?.write(sequence);
+                        }
+                    }
+                }
+                finally {
+                    questionActive = false;
+                    keys.length = 0;
+                    resolveKey = undefined;
+                }
+            }
             const answer = await nextAnswer();
             return answer.done ? undefined : answer.value.trim();
         },

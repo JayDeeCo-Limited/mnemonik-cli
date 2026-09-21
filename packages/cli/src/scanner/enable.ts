@@ -103,6 +103,7 @@ export interface EnableOptions extends ScannerServiceOptions {
   cwd: string;
   home?: string;
   input: Readable;
+  readAnswer?: () => Promise<string | undefined>;
   output: Output;
   nonInteractive?: boolean;
   pendingHosts?: boolean;
@@ -245,6 +246,7 @@ export async function prepareScanner<T>(
             })()
           : await runScannerBoundaryPicker({
               input: options.input,
+              readAnswer: options.readAnswer,
               output: options.output,
               currentProject: options.cwd,
               currentFolder: options.cwd,
