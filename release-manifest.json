@@ -1,30 +1,30 @@
 {
   "schemaVersion": 1,
-  "version": "7.103.3",
+  "version": "7.103.4",
   "packages": {
     "@mnemonik/cli": {
-      "version": "7.103.3",
-      "integrity": "sha512-YIy1F9r3tvk5bAHpCpVMCUvYuzX2U0qnVQdfJnLNiP6haiZwGQXCc8H6P3Wbi8EuJ4LhsY1zQ9G1TY7CxgG/eQ=="
+      "version": "7.103.4",
+      "integrity": "sha512-ohTLmmowXuHDnRu9zeWf2Nq9dvlGMUrz6N4mWTE4UiY6O9sBmr9784qNE3x3GQm4sXD0faoGDmfECRinkyB/Ug=="
     },
     "@mnemonik/claude-code-hooks": {
-      "version": "0.9.208",
-      "integrity": "sha512-tfXKASIubQ6t5JWiRb2WWXXrGwT6OQh/ox9ED1yTyrNhkaPwjVcp45Bju+z8f4WikBqL45WdGkFITpuYJigl9A=="
+      "version": "0.9.209",
+      "integrity": "sha512-lcx/G9xx5Lvgbm9UVJ/cZEHMjvsRhgNCAjYDohet7H8c830ju+6t5VYMmJLMl4wxrIolDJJaJEHahi/JJklJOg=="
     },
     "@mnemonik/codex-hooks": {
-      "version": "0.8.177",
-      "integrity": "sha512-oDH+QPGWwTUHlr9p+CoRtDmQZB+e++UYcCbGbU7JKMxXT8sg2/nDnEq4x7bnWZe+5F6qlSpIdC4pWLuvbEWA9w=="
+      "version": "0.8.178",
+      "integrity": "sha512-/iX4eVpllrYt98XWhrVNY6CC47AOsNqPgsKGRvX36dzLk/i1rX3ZvzPAhqzHY5A8sqgFRa4W6pMz7IJqdyuZPA=="
     },
     "@mnemonik/cursor-hooks": {
-      "version": "0.7.164",
-      "integrity": "sha512-HugzClMrmVvoTxhbtLmgQBimOM33fhybTjfa2SVH2ECv2Q7bzZonzrVugStdweHxkmnSAR6ep0TQS1zu9/T3+Q=="
+      "version": "0.7.165",
+      "integrity": "sha512-vMaofQqDfhabjTSmBdw0GPT/SSvfnSCIxbcQLQeLTce8k7Ppdxvz4I+F+tMQr+Mwo8M7F3aWsQSP8wJSuRCCUA=="
     },
     "@mnemonik/grok-hooks": {
-      "version": "0.1.50",
-      "integrity": "sha512-fxVevr+R/BJBbRmFl05iElp/k+j3b5147RvE/WDY31BKs6nhmEBOCeDD09nnM9PMioyLEm+zdZkOKkTTxDomWg=="
+      "version": "0.1.51",
+      "integrity": "sha512-GT5b4uCkRwhCISGlxx0vm+eePgKx7y/EYAU1lCvSf4IcxpaWHDnxIgmW765o91UIcND6/hkuP6We013lRsp/yA=="
     },
     "@mnemonik/copilot-hooks": {
-      "version": "0.1.41",
-      "integrity": "sha512-mE3VGucZEEVHdgwA5Ek2poNoFNKSBWn4Za3Jj6M5qirIJK88a6XOo5X22dqaIDMbobUA5eVEt+UYClsP7l8j/Q=="
+      "version": "0.1.42",
+      "integrity": "sha512-vv+KYpst+RC7P6lDrM+3YBFzNGUzsmexxr5SnLVwoD3tH1Ywtqyg1YgnQ8dWUIrIdNL/bwJkcrAP0zcFgAagEg=="
     }
   }
 }
