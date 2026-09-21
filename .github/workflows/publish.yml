@@ -3,63 +3,37 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
-  actions: read
 jobs:
-  diagnose:
+  verify:
     runs-on: windows-2025
     steps:
+      - uses: actions/checkout@v5
       - uses: actions/setup-node@v6
         with:
           node-version: '24.21.0'
           package-manager-cache: false
-      - uses: actions/download-artifact@v7
-        with:
-          name: cli-release-evidence
-          run-id: 35608156716
-          github-token: ${{ github.token }}
-      - name: Diagnose exact blocked artifact
+      - name: Verify both volumes and the broken-release control
         shell: pwsh
         run: |
-          $ErrorActionPreference = 'Continue'
           $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
-          Write-Output "USER_SID=$($identity.User.Value) OWNER_SID=$($identity.Owner.Value)"
           if ($identity.Owner.Value -ne 'S-1-5-32-544') { throw 'Wrong token' }
-          $tgz = (Get-ChildItem *.tgz).FullName
+          $tgz = (Get-Item mnemonik-cli-7.104.3.tgz).FullName
           foreach ($state in @((Join-Path $env:RUNNER_TEMP 'cli-state'), (Join-Path $env:LOCALAPPDATA 'Mnemonik'))) {
             $env:MNEMONIK_STATE_DIR = $state
             Write-Output "STATE=$state"
             npm exec --yes --cache "$env:RUNNER_TEMP/cli-cache" --package "$tgz" -- mnemonik --help --json
-            Write-Output "CLI_EXIT=$LASTEXITCODE"
-            foreach ($path in @((Split-Path $state), $state)) {
-              if (Test-Path -LiteralPath $path) {
-                $acl = Get-Acl -LiteralPath $path
-                [pscustomobject]@{Path=$path;Owner=$acl.Owner;Access=@($acl.Access | Select-Object IdentityReference,FileSystemRights,IsInherited,InheritanceFlags,AccessControlType)} | ConvertTo-Json -Depth 5
-              } else { Write-Output "MISSING=$path" }
+            $cliExit = $LASTEXITCODE
+            Write-Output "CANDIDATE_EXIT=$cliExit"
+            foreach ($path in @($state, (Join-Path $state 'audit-tmp'))) {
+              if (Test-Path $path) {
+                $acl=Get-Acl -LiteralPath $path
+                [pscustomobject]@{Path=$path;Owner=$acl.Owner;Access=@($acl.Access | Select-Object IdentityReference,FileSystemRights,IsInherited)} | ConvertTo-Json -Depth 4
+              }
             }
+            if ($cliExit -ne 0) { exit $cliExit }
           }
-          $entry = (Get-ChildItem "$env:RUNNER_TEMP/cli-cache/_npx" -Filter bin.js -Recurse | Where-Object { $_.FullName.EndsWith('\@mnemonik\cli\dist\bin.js') } | Select-Object -First 1).FullName
-          @'
-          import {realpath} from 'node:fs/promises';
-          import cp from 'node:child_process';
-          import {syncBuiltinESMExports} from 'node:module';
-          const original=cp.execFile;
-          cp.execFile=function(...args){ const cb=args.at(-1); if(typeof cb==='function') args[args.length-1]=function(error,stdout,stderr){ if(error) console.log('NATIVE_FAILURE',error.message,stderr); return cb(error,stdout,stderr); }; return original.apply(this,args); };
-          syncBuiltinESMExports();
-          import {dirname,join} from 'node:path';
-          import {pathToFileURL} from 'node:url';
-          const entry=process.argv[2];
-          console.log(JSON.stringify({entry,real:await realpath(entry),root:dirname(dirname(entry)),realRoot:await realpath(dirname(dirname(entry)))}));
-          const {bootstrap}=await import(pathToFileURL(join(dirname(entry),'runtime/bootstrap.js')));
-          try { await bootstrap(['--help','--json'],entry); } catch(e) {console.log('REASON='+e.reason);console.log(e.stack);}
-          '@ | Set-Content -Encoding utf8 trace.mjs
-          $env:MNEMONIK_STATE_DIR = Join-Path $env:RUNNER_TEMP 'traced-fresh-state'
-          node trace.mjs "$entry"
-          $probe = Join-Path $env:RUNNER_TEMP 'native-acl-probe'
-          node -e "require('fs').mkdirSync(process.argv[1],{mode:0o700})" $probe
-          Write-Output "BEFORE=$((Get-Acl $probe).Sddl)"
-          & icacls.exe $probe /inheritance:r /grant:r "*$($identity.User.Value):(OI)(CI)F"
-          Write-Output "AFTER=$((Get-Acl $probe).Sddl)"
-          $export = Join-Path $env:RUNNER_TEMP 'acl-export.txt'
-          & icacls.exe $probe /save $export /l
-          Get-Content -Encoding unicode $export
+          $env:MNEMONIK_STATE_DIR = Join-Path $env:RUNNER_TEMP 'broken-state'
+          npm exec --yes --cache "$env:RUNNER_TEMP/cli-cache" --package '@mnemonik/cli@7.104.0' -- mnemonik --help --json
+          Write-Output "BROKEN_EXIT=$LASTEXITCODE"
+          if ($LASTEXITCODE -eq 0) { throw 'Broken release unexpectedly passed' }
           exit 0
