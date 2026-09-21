@@ -37,3 +37,9 @@ jobs:
           Write-Output "BROKEN_EXIT=$LASTEXITCODE"
           if ($LASTEXITCODE -eq 0) { throw 'Broken release unexpectedly passed' }
           exit 0
+      - name: Native ACL behavior and revert controls
+        shell: pwsh
+        run: |
+          tar -xzf mnemonik-cli-7.104.3.tgz
+          node windows-acl-mutations.mjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
