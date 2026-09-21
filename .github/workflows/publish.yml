@@ -40,6 +40,11 @@ jobs:
           $entry = (Get-ChildItem "$env:RUNNER_TEMP/cli-cache/_npx" -Filter bin.js -Recurse | Where-Object { $_.FullName.EndsWith('\@mnemonik\cli\dist\bin.js') } | Select-Object -First 1).FullName
           @'
           import {realpath} from 'node:fs/promises';
+          import cp from 'node:child_process';
+          import {syncBuiltinESMExports} from 'node:module';
+          const original=cp.execFile;
+          cp.execFile=function(...args){ const cb=args.at(-1); if(typeof cb==='function') args[args.length-1]=function(error,stdout,stderr){ if(error) console.log('NATIVE_FAILURE',error.message,stderr); return cb(error,stdout,stderr); }; return original.apply(this,args); };
+          syncBuiltinESMExports();
           import {dirname,join} from 'node:path';
           import {pathToFileURL} from 'node:url';
           const entry=process.argv[2];
@@ -47,5 +52,14 @@ jobs:
           const {bootstrap}=await import(pathToFileURL(join(dirname(entry),'runtime/bootstrap.js')));
           try { await bootstrap(['--help','--json'],entry); } catch(e) {console.log('REASON='+e.reason);console.log(e.stack);}
           '@ | Set-Content -Encoding utf8 trace.mjs
+          $env:MNEMONIK_STATE_DIR = Join-Path $env:RUNNER_TEMP 'traced-fresh-state'
           node trace.mjs "$entry"
+          $probe = Join-Path $env:RUNNER_TEMP 'native-acl-probe'
+          node -e "require('fs').mkdirSync(process.argv[1],{mode:0o700})" $probe
+          Write-Output "BEFORE=$((Get-Acl $probe).Sddl)"
+          & icacls.exe $probe /inheritance:r /grant:r "*$($identity.User.Value):(OI)(CI)F"
+          Write-Output "AFTER=$((Get-Acl $probe).Sddl)"
+          $export = Join-Path $env:RUNNER_TEMP 'acl-export.txt'
+          & icacls.exe $probe /save $export /l
+          Get-Content -Encoding unicode $export
           exit 0
