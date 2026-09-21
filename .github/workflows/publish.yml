@@ -1,55 +1,11 @@
 name: Publish public CLI
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
-    inputs:
-      dry_run:
-        type: boolean
-        default: true
-        description: Build and pack without npm publish
 permissions:
   contents: read
-  id-token: write
-concurrency:
-  group: npm-cli
-  cancel-in-progress: false
+  actions: read
 jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v6
-        with:
-          node-version: '24.21.0'
-          registry-url: https://registry.npmjs.org
-          package-manager-cache: false
-      - run: npm ci --ignore-scripts
-      - run: node deploy/cli-public/build.mjs
-      - name: Pack and refuse consumer lifecycle scripts
-        run: |
-          set -euo pipefail
-          npm pack ./dist-package --json > pack.json
-          tgz=$(node -p "require('./pack.json')[0].filename")
-          tar -xOf "$tgz" package/package.json | node deploy/cli-public/lifecycle-gate.mjs
-          sudo apt-get update && sudo apt-get install -y minisign
-          minisign -Vm release-manifest.json -x release-manifest.json.minisig -P RWSBYwgbjz0qKB4/ToA3dywBiAlQeBjoQpib4OHdjP2nDbpQnOVqpPm0
-          node -e "const p=require('./pack.json')[0],m=require('./release-manifest.json'),e=m.packages?.['@mnemonik/cli']; if(m.schemaVersion!==1||m.version!==p.version||e?.version!==p.version||e.integrity!==p.integrity) process.exit(1)"
-          sha256sum "$tgz" > cli-digests.txt
-          MNEMONIK_STATE_DIR="$RUNNER_TEMP/cli-state" npm exec --yes --cache "$RUNNER_TEMP/cli-cache" --package "./$tgz" -- mnemonik --help
-      - uses: actions/upload-artifact@v4
-        with:
-          name: cli-release-evidence
-          path: |
-            *.tgz
-            pack.json
-            cli-digests.txt
-            release-manifest.json
-            release-manifest.json.minisig
-            dist-package/dist/sbom.json
-            scanner-release.json
-  windows-smoke:
-    needs: build
+  diagnose:
     runs-on: windows-2025
     steps:
       - uses: actions/setup-node@v6
@@ -59,74 +15,37 @@ jobs:
       - uses: actions/download-artifact@v7
         with:
           name: cli-release-evidence
-      - name: Launch the packed CLI in a fresh Windows profile state
+          run-id: 35608156716
+          github-token: ${{ github.token }}
+      - name: Diagnose exact blocked artifact
         shell: pwsh
         run: |
+          $ErrorActionPreference = 'Continue'
           $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
-          if ($identity.Owner.Value -ne 'S-1-5-32-544') { throw 'Windows smoke requires an Administrators default-owner token' }
-          $env:MNEMONIK_STATE_DIR = Join-Path $env:RUNNER_TEMP 'cli-state'
+          Write-Output "USER_SID=$($identity.User.Value) OWNER_SID=$($identity.Owner.Value)"
+          if ($identity.Owner.Value -ne 'S-1-5-32-544') { throw 'Wrong token' }
           $tgz = (Get-ChildItem *.tgz).FullName
-          npm exec --yes --cache "$env:RUNNER_TEMP/cli-cache" --package "$tgz" -- mnemonik --help
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-  publish:
-    needs: [build, windows-smoke]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/setup-node@v6
-        with:
-          node-version: '24.21.0'
-          registry-url: https://registry.npmjs.org
-          package-manager-cache: false
-      - uses: actions/download-artifact@v7
-        with:
-          name: cli-release-evidence
-      - name: Publish from public source with npm provenance
-        if: inputs.dry_run != true && github.ref == 'refs/heads/main'
-        run: |
-          set -euo pipefail
-          tgz=$(node -p "require('./pack.json')[0].filename")
-          version=$(node -p "require('./pack.json')[0].version")
-          # The private workflow pushes this source, then attaches immutable scanner
-          # assets and publishes the release. This run starts on the push, so the
-          # release can still be a draft, and GitHub keeps answering 404 for a
-          # short while after it is published (public run 35294870622: the assets
-          # were attached at 01:19:48Z, the release published at 01:20:08Z, and a
-          # one-minute retry ending at 01:21:06Z saw nothing but 404). Poll for
-          # up to ten minutes, then fail.
-          asset="https://github.com/JayDeeCo-Limited/mnemonik-cli/releases/download/scanner-v$version/digests.json"
-          for attempt in {1..120}; do
-            if curl --fail --silent --show-error --location "$asset" -o scanner-digests.json; then
-              echo "scanner release assets served on attempt $attempt"
-              break
-            fi
-            if [ "$attempt" -eq 120 ]; then
-              echo "scanner-v$version digests.json was not served within ten minutes" >&2
-              exit 1
-            fi
-            sleep 5
-          done
-          node -e "const fs=require('fs'),c=require('crypto'); if(c.createHash('sha256').update(fs.readFileSync('scanner-digests.json')).digest('hex')!==require('./scanner-release.json').digestsSha256) process.exit(1)"
-          npm publish "$tgz" --access public --provenance
-          # npm accepts a publish before its read path serves the version, and
-          # it does not bound how long that takes ("may take a few minutes").
-          # Public run 35103666890 published 7.99.2 and then failed the job on
-          # an E404 readback of the version it had just published. Poll for
-          # fifteen minutes, then fail. The comparison stays fatal because it
-          # is the only check that what users install is what was packed here.
-          packed_integrity=$(node -p "require('./pack.json')[0].integrity")
-          for attempt in {1..180}; do
-            live_integrity=$(npm view "@mnemonik/cli@$version" dist.integrity 2>/dev/null || true)
-            if [ -n "$live_integrity" ]; then
-              if [ "$live_integrity" != "$packed_integrity" ]; then
-                echo "::error::@mnemonik/cli@$version serves integrity $live_integrity, packed $packed_integrity"
-                exit 1
-              fi
-              echo "OK    @mnemonik/cli@$version is live on the registry with matching integrity"
-              break
-            fi
-            if [ "$attempt" -eq 180 ]; then
-              echo "::error::@mnemonik/cli@$version did not appear on the registry after publish."
-              exit 1
-            fi
-            sleep 5
-          done
+          foreach ($state in @((Join-Path $env:RUNNER_TEMP 'cli-state'), (Join-Path $env:LOCALAPPDATA 'Mnemonik'))) {
+            $env:MNEMONIK_STATE_DIR = $state
+            Write-Output "STATE=$state"
+            npm exec --yes --cache "$env:RUNNER_TEMP/cli-cache" --package "$tgz" -- mnemonik --help --json
+            Write-Output "CLI_EXIT=$LASTEXITCODE"
+            foreach ($path in @((Split-Path $state), $state)) {
+              if (Test-Path -LiteralPath $path) {
+                $acl = Get-Acl -LiteralPath $path
+                [pscustomobject]@{Path=$path;Owner=$acl.Owner;Access=@($acl.Access | Select-Object IdentityReference,FileSystemRights,IsInherited,InheritanceFlags,AccessControlType)} | ConvertTo-Json -Depth 5
+              } else { Write-Output "MISSING=$path" }
+            }
+          }
+          $entry = (Get-ChildItem "$env:RUNNER_TEMP/cli-cache/_npx" -Filter bin.js -Recurse | Where-Object { $_.FullName.EndsWith('\@mnemonik\cli\dist\bin.js') } | Select-Object -First 1).FullName
+          @'
+          import {realpath} from 'node:fs/promises';
+          import {dirname,join} from 'node:path';
+          import {pathToFileURL} from 'node:url';
+          const entry=process.argv[2];
+          console.log(JSON.stringify({entry,real:await realpath(entry),root:dirname(dirname(entry)),realRoot:await realpath(dirname(dirname(entry)))}));
+          const {bootstrap}=await import(pathToFileURL(join(dirname(entry),'runtime/bootstrap.js')));
+          try { await bootstrap(['--help','--json'],entry); } catch(e) {console.log('REASON='+e.reason);console.log(e.stack);}
+          '@ | Set-Content -Encoding utf8 trace.mjs
+          node trace.mjs "$entry"
+          exit 0
