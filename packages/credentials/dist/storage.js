@@ -97,18 +97,17 @@ export class SecureFiles {
         }
     }
     async makeDirectory(path) {
+        let created = false;
         try {
             await mkdir(path, { mode: 0o700 });
+            created = true;
         }
         catch (error) {
             if (!codeIs(error, 'EEXIST'))
                 throw error;
         }
         if (this.platform === 'win32')
-            await windowsCurrentUserAcl(path, true, {
-                execFile: this.execFile,
-                username: this.username,
-            });
+            await windowsCurrentUserAcl(path, true, { execFile: this.execFile, username: this.username }, created);
         await this.inspect(path, false, false);
     }
     async ensureParent(path) {

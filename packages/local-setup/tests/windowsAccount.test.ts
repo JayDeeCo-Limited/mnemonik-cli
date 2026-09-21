@@ -13,10 +13,21 @@ it('uses the cached process-token SID when SSH advertises a workgroup as USERDOM
   vi.stubEnv('USERDOMAIN', 'WORKGROUP');
   vi.stubEnv('USERNAME', 'agent');
   const execFile = vi.fn((_file, _args, callback) => callback(null, '', ''));
-  await windowsCurrentUserAcl('C:\\state', true, { execFile });
+  await windowsCurrentUserAcl('C:\\state', true, { execFile }, true);
+  await windowsCurrentUserAcl('C:\\existing', true, { execFile });
   await windowsCurrentUserAcl('C:\\state\\secret', false, { execFile });
   expect(execFile.mock.calls.map((call) => call[1])).toEqual([
-    ['C:\\state', '/inheritance:r', '/grant:r', '*S-1-5-21-1-2-3-1001:(OI)(CI)F'],
+    // Only the directory this process created gives up its privileged grants.
+    [
+      'C:\\state',
+      '/inheritance:r',
+      '/grant:r',
+      '*S-1-5-21-1-2-3-1001:(OI)(CI)F',
+      '/remove:g',
+      '*S-1-5-32-544',
+      '*S-1-5-18',
+    ],
+    ['C:\\existing', '/inheritance:r', '/grant:r', '*S-1-5-21-1-2-3-1001:(OI)(CI)F'],
     ['C:\\state\\secret', '/inheritance:r', '/grant:r', '*S-1-5-21-1-2-3-1001:F'],
   ]);
   expect(execFileSync).toHaveBeenCalledTimes(1);

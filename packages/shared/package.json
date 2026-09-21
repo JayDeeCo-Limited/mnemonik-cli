@@ -1,6 +1,6 @@
 {
   "name": "@mnemonik/shared",
-  "version": "7.104.3",
+  "version": "7.104.4",
   "description": "Shared constants and utilities for Mnemonik packages",
   "repository": {
     "type": "git",

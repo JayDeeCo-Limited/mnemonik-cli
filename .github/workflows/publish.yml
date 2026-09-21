@@ -66,8 +66,17 @@ jobs:
           if ($identity.Owner.Value -ne 'S-1-5-32-544') { throw 'Windows smoke requires an Administrators default-owner token' }
           $env:MNEMONIK_STATE_DIR = Join-Path $env:RUNNER_TEMP 'cli-state'
           $tgz = (Get-ChildItem *.tgz).FullName
-          npm exec --yes --cache "$env:RUNNER_TEMP/cli-cache" --package "$tgz" -- mnemonik --help
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm exec --yes --cache "$env:RUNNER_TEMP/cli-cache" --package "$tgz" -- mnemonik --help --json
+          $cliExit = $LASTEXITCODE
+          if ($cliExit -ne 0) {
+            foreach ($path in @($env:MNEMONIK_STATE_DIR, (Split-Path $env:MNEMONIK_STATE_DIR))) {
+              if (Test-Path -LiteralPath $path) {
+                $acl = Get-Acl -LiteralPath $path
+                [pscustomobject]@{Path=$path;Owner=$acl.Owner;Access=@($acl.Access | Select-Object IdentityReference,FileSystemRights,AccessControlType,IsInherited)} | ConvertTo-Json -Depth 4
+              } else { Write-Output "State path does not exist: $path" }
+            }
+            exit $cliExit
+          }
   publish:
     needs: [build, windows-smoke]
     runs-on: ubuntu-latest

@@ -50,12 +50,20 @@ export async function syncDirectory(path) {
 }
 /** Resolve the process token: OpenSSH can advertise WORKGROUP as USERDOMAIN. */
 export const windowsCurrentAccount = windowsCurrentAccountSync;
-export async function windowsCurrentUserAcl(path, directory = false, options = {}) {
+/** Only a path this process just created may have privileged grants stripped;
+ *  a pre-existing one must be refused by validation rather than repaired. */
+export async function windowsCurrentUserAcl(path, directory = false, options = {}, created = false) {
     const username = options.username ?? `*${windowsCurrentAccount().sid}`;
     const grant = `${username}:${directory ? '(OI)(CI)F' : 'F'}`;
     const execFile = options.execFile ?? nodeExecFile;
     await new Promise((resolve, reject) => {
-        execFile('icacls.exe', [path, '/inheritance:r', '/grant:r', grant], (error) => {
+        execFile('icacls.exe', [
+            path,
+            '/inheritance:r',
+            '/grant:r',
+            grant,
+            ...(created ? ['/remove:g', '*S-1-5-32-544', '*S-1-5-18'] : []),
+        ], (error) => {
             if (error)
                 reject(error);
             else

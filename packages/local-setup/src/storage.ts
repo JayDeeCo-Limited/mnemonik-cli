@@ -72,19 +72,32 @@ export type ExecFile = (
 ) => unknown;
 /** Resolve the process token: OpenSSH can advertise WORKGROUP as USERDOMAIN. */
 export const windowsCurrentAccount = windowsCurrentAccountSync;
+/** Only a path this process just created may have privileged grants stripped;
+ *  a pre-existing one must be refused by validation rather than repaired. */
 export async function windowsCurrentUserAcl(
   path: string,
   directory = false,
-  options: { execFile?: ExecFile; username?: string } = {}
+  options: { execFile?: ExecFile; username?: string } = {},
+  created = false
 ): Promise<void> {
   const username = options.username ?? `*${windowsCurrentAccount().sid}`;
   const grant = `${username}:${directory ? '(OI)(CI)F' : 'F'}`;
   const execFile = options.execFile ?? (nodeExecFile as unknown as ExecFile);
   await new Promise<void>((resolve, reject) => {
-    execFile('icacls.exe', [path, '/inheritance:r', '/grant:r', grant], (error) => {
-      if (error) reject(error);
-      else resolve();
-    });
+    execFile(
+      'icacls.exe',
+      [
+        path,
+        '/inheritance:r',
+        '/grant:r',
+        grant,
+        ...(created ? ['/remove:g', '*S-1-5-32-544', '*S-1-5-18'] : []),
+      ],
+      (error) => {
+        if (error) reject(error);
+        else resolve();
+      }
+    );
   });
 }
 export async function protectStateFile(

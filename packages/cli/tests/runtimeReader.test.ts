@@ -1,7 +1,7 @@
 import type * as childProcess from 'node:child_process';
 import { chmodSync, readdirSync, lstatSync, writeFileSync } from 'node:fs';
 import { mkdir, mkdtemp, rm, symlink, writeFile, readFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { hostname, tmpdir } from 'node:os';
 import { basename, dirname, join, relative, win32 } from 'node:path';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import {
@@ -1104,7 +1104,15 @@ it('round-trips é and 日本 paths and a Unicode username using explicit native
         '"chcp 65001>nul & "C:\\Windows\\System32\\whoami.exe" /user /fo csv /nh"',
       ],
       ['/u', '/d', '/v:off', '/s', '/c', `dir /q /a "${dirname(root)}"`],
-      [join(root, 'audit-tmp'), '/inheritance:r', '/grant:r', '*S-1-5-21-1-2-3-1001:(OI)(CI)F'],
+      [
+        join(root, 'audit-tmp'),
+        '/inheritance:r',
+        '/grant:r',
+        '*S-1-5-21-1-2-3-1001:(OI)(CI)F',
+        '/remove:g',
+        '*S-1-5-32-544',
+        '*S-1-5-18',
+      ],
       saved(root),
     ]);
   } finally {
@@ -1160,6 +1168,29 @@ it('cleans the export on native failure and keeps artifact directory identities 
   ).rejects.toThrow('save failed');
   expect(readdirSync(join(state, 'audit-tmp'))).toEqual([]);
 });
+
+it.each(['local-admin', 'other-user', 'domain-admin', 'shared-admin', 'shared-system'])(
+  'checks the local Administrator SDDL alias without allowing shared access (%s)',
+  async (mode) => {
+    vi.resetModules();
+    const { verifyWindowsAcl: verify } = await import('../../shared/src/runtimeSigners.js');
+    const sid = `S-1-5-21-1-2-3-${mode === 'other-user' ? '1001' : '500'}`;
+    const account = `${mode === 'domain-admin' ? 'FOREIGN-DOMAIN' : hostname()}\\admin`;
+    const run = async (file: string, args: string[]) => {
+      if (file.endsWith('whoami.exe')) return { stdout: `"${account}","${sid}"` };
+      if (args.includes('/save'))
+        saveFixture(args, [
+          [
+            state,
+            `(A;OICI;FA;;;LA)${mode === 'shared-admin' ? '(A;;FA;;;BA)' : mode === 'shared-system' ? '(A;;FA;;;SY)' : ''}`,
+          ],
+        ]);
+      return { stdout: '' };
+    };
+    if (mode === 'local-admin') await expect(verify(state, run)).resolves.toBeUndefined();
+    else await expect(verify(state, run)).rejects.toThrow('acl_permissions');
+  }
+);
 
 it('fails closed for duplicate SDDL paths and missing or null DACLs', () => {
   const path = basename(state);

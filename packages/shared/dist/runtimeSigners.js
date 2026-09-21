@@ -4,6 +4,7 @@ import { basename, dirname, join, resolve, sep, win32 } from 'node:path';
 import { createHash, createPublicKey, randomUUID, timingSafeEqual, verify as verifySignature, } from 'node:crypto';
 import { execFile, execFileSync } from 'node:child_process';
 import { promisify } from 'node:util';
+import { hostname } from 'node:os';
 export const execute = (file, args, input) => {
     const result = promisify(execFile)(file, args);
     if (input === undefined)
@@ -140,11 +141,12 @@ export async function verifyWindowsAcl(path, run = hookExecute, state) {
     if (!privateEntries((await drive(saveAcl(path, false, [path], state), run)).get(path), user, false))
         throw new Error('acl_permissions');
 }
-const aclArgs = (path, sid) => [
+const aclArgs = (path, sid, created = false) => [
     path,
     '/inheritance:r',
     '/grant:r',
     `*${sid}:(OI)(CI)F`,
+    ...(created ? ['/remove:g', '*S-1-5-32-544', '*S-1-5-18'] : []),
 ];
 // Keep injected runners at the logical-command boundary; native execution owns encoding.
 function hookInvocation(file, args) {
@@ -223,7 +225,10 @@ function privateEntries(entries, user, directory) {
         const ace = /^\(([AD]);((?:OI|CI|NP|IO|ID|SA|FA)*);[A-Za-z0-9]+;;;((?:S-1-(?:\d+-)+\d+)|[A-Z]{2})\)$/.exec(line);
         if (!ace)
             throw new Error('acl_unavailable');
-        return (!directory || !ace[2]?.includes('ID')) && (ace[1] === 'D' || ace[3] === user.sid);
+        const ownAlias = ace[3] === 'LA' &&
+            user.sid.endsWith('-500') &&
+            user.name.toLowerCase().startsWith(hostname().toLowerCase() + '\\');
+        return ((!directory || !ace[2]?.includes('ID')) && (ace[1] === 'D' || ace[3] === user.sid || ownAlias));
     });
 }
 const auditDirectories = new Set();
@@ -249,7 +254,7 @@ function* prepareAclDirectory(state) {
         throw new Error('acl_permissions');
     if (!auditDirectories.has(directory)) {
         currentIdentity ??= readIdentity(yield [windowsCommand('whoami.exe'), identityArgs]);
-        yield [windowsCommand('icacls.exe'), aclArgs(directory, currentIdentity.sid)];
+        yield [windowsCommand('icacls.exe'), aclArgs(directory, currentIdentity.sid, created)];
         if (!created) {
             const temp = join(directory, `.acl-${randomUUID()}.tmp`);
             writeFileSync(temp, '', { flag: 'wx', mode: 0o600 });
@@ -333,7 +338,7 @@ while ($null -ne ($path = [Console]::ReadLine())) {
     if ($LASTEXITCODE -ne 0) { throw 'acl_owner' }
   }`
         : ''}
-  $owner = (Get-Acl -LiteralPath $path).GetOwner([System.Security.Principal.SecurityIdentifier]).Value
+  $owner = [System.IO.File]::GetAccessControl($path).GetOwner([System.Security.Principal.SecurityIdentifier]).Value
   [Console]::WriteLine($path + "\`t" + $owner)
 }`;
     return [
@@ -412,7 +417,7 @@ function* hookPermission(path, created, session, directory = true) {
         throw new Error('acl_owner');
     const icacls = windowsCommand('icacls.exe');
     if (created)
-        yield [icacls, aclArgs(path, user.sid)];
+        yield [icacls, aclArgs(path, user.sid, true)];
     let valid = privateEntries((yield* saveAcl(path, false)).get(path), user, directory);
     if (elevatedOwner) {
         // Existing group-owned paths must already be private. Only a freshly created
@@ -442,10 +447,6 @@ function* hookPermission(path, created, session, directory = true) {
     catch {
         /* A missing receipt costs another audit next process. */
     }
-}
-export async function windowsCurrentUserDirectoryAcl(path, run = hookExecute) {
-    currentIdentity ??= readIdentity(stdout(await run(windowsCommand('whoami.exe'), identityArgs)));
-    await run(windowsCommand('icacls.exe'), aclArgs(path, currentIdentity.sid));
 }
 export async function protectWindowsDirectory(path, created, run = hookExecute, session = path) {
     await drive(hookPermission(path, created, session), run);

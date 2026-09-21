@@ -64,7 +64,7 @@ export class RuntimeStore extends RuntimeReader {
     await mkdir(base, { recursive: true, mode: 0o700 });
     // inspect already proved existing directories private; regranting changes descendant ctimes.
     for (const path of created) {
-      await windowsCurrentUserAcl(path, true);
+      await windowsCurrentUserAcl(path, true, undefined, true);
       await this.recordAclWrite(path);
     }
     await this.inspect(base, true);

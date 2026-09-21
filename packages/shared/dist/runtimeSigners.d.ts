@@ -28,7 +28,6 @@ export declare function verifyWindowsAcl(path: string, run?: Execute, state?: st
 /** icacls /save writes alternating relative paths and SDDL in UTF-16LE. */
 export declare function aclRecords(output: string, root: string, paths: string[], onLookup?: () => void): Map<string, string[]>;
 export declare function prepareWindowsAclDirectory(state: string, run?: Execute): Promise<void>;
-export declare function windowsCurrentUserDirectoryAcl(path: string, run?: Execute): Promise<void>;
 export declare function protectWindowsDirectory(path: string, created: boolean, run?: Execute, session?: string): Promise<void>;
 /** File ACEs may inherit from their already-private parent. */
 export declare function verifyWindowsPermissionSync(path: string): void;

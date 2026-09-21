@@ -9,10 +9,12 @@ export type PermissionStatus = 'private' | 'acl_pending';
 export type ExecFile = (file: string, args: readonly string[], callback: (error: Error | null, stdout: string, stderr: string) => void) => unknown;
 /** Resolve the process token: OpenSSH can advertise WORKGROUP as USERDOMAIN. */
 export declare const windowsCurrentAccount: typeof windowsCurrentAccountSync;
+/** Only a path this process just created may have privileged grants stripped;
+ *  a pre-existing one must be refused by validation rather than repaired. */
 export declare function windowsCurrentUserAcl(path: string, directory?: boolean, options?: {
     execFile?: ExecFile;
     username?: string;
-}): Promise<void>;
+}, created?: boolean): Promise<void>;
 export declare function protectStateFile(path: string, platform?: NodeJS.Platform, aclOptions?: {
     execFile?: ExecFile;
     username?: string;
