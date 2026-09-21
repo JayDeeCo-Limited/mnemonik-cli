@@ -49,7 +49,9 @@ export async function previewDiagnostics(out, dependencies = {}) {
     const binary = dependencies.scannerBinary
         ? await dependencies.scannerBinary()
         : (await new RuntimeStore(stateDir).verifyRuntime('scanner')).entry;
-    const args = ['diagnostics', 'bundle', ...(out ? ['--out', out] : []), '--json'];
+    // The scanner dispatcher consumes the first diagnostics token before
+    // passing the remaining arguments to its diagnostics command parser.
+    const args = ['diagnostics', 'diagnostics', 'bundle', ...(out ? ['--out', out] : []), '--json'];
     const stdout = await new Promise((resolve, reject) => {
         (dependencies.execFile ?? nodeExecFile)(binary, args, { encoding: 'utf8', maxBuffer: 1024 * 1024 }, (error, output) => {
             if (error)

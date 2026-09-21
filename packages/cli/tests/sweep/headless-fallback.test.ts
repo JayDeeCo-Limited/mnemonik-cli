@@ -1,3 +1,5 @@
+import { mkdir, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createCredentialAdapter } from '@mnemonik/credentials';
 import { createCliAuth } from '../../src/auth/index.js';
@@ -12,6 +14,23 @@ async function fixture() {
   fixtures.push(result);
   return result;
 }
+
+/**
+ * connect only speaks about a missing part when it is missing, so a test about
+ * authorizing Codex needs a machine where Codex is declared.
+ */
+async function withCodexDeclared(f: SweepFixture) {
+  await mkdir(join(f.home, '.codex'), { recursive: true });
+  await writeFile(join(f.home, '.codex', 'config.toml'), '[mcp_servers.mnemonik]\n');
+  return f;
+}
+
+// Owner-approved 2026-09: the editors do not ask, so connect names the exact
+// step in each one instead of promising a prompt.
+const CODEX_AUTHORIZATION = [
+  'Codex CLI        run codex mcp login mnemonik',
+  'Codex Desktop    open Settings, Plugins, MCPs, then Authenticate',
+];
 
 function deviceFetch() {
   return vi.fn(async (input: Parameters<typeof fetch>[0]) => {
@@ -60,7 +79,7 @@ function authFor(
 
 describe('headless authentication fallback', () => {
   it('leaves editor sign-in to Codex when Linux has no display', async () => {
-    const f = await fixture();
+    const f = await withCodexDeclared(await fixture());
     const openBrowser = vi.fn(async () => {
       throw new Error('browser must not be invoked');
     });
@@ -68,16 +87,15 @@ describe('headless authentication fallback', () => {
 
     expect(await f.run(['connect', 'codex'])).toBe(3);
     expect(openBrowser).not.toHaveBeenCalled();
-    expect(f.stdout.text).toContain(
-      'Codex will ask you to sign in to Mnemonik the first time you use it.'
-    );
+    for (const row of CODEX_AUTHORIZATION) expect(f.stdout.text).toContain(row);
+    expect(f.stdout.text).not.toContain('will ask you to sign in');
     expect(f.stderr.text).toBe('');
     expect(f.stdout.text).not.toContain('Code: BCDF-GHJK');
     expect(f.stdout.text).not.toContain(DEVICE_WARNING);
   });
 
   it('does not open a browser for editor sign-in when a display is available', async () => {
-    const f = await fixture();
+    const f = await withCodexDeclared(await fixture());
     const openBrowser = vi.fn(async () => {
       throw new Error('xdg-open exited 1');
     });
@@ -85,9 +103,8 @@ describe('headless authentication fallback', () => {
 
     expect(await f.run(['connect', 'codex'])).toBe(3);
     expect(openBrowser).not.toHaveBeenCalled();
-    expect(f.stdout.text).toContain(
-      'Codex will ask you to sign in to Mnemonik the first time you use it.'
-    );
+    for (const row of CODEX_AUTHORIZATION) expect(f.stdout.text).toContain(row);
+    expect(f.stdout.text).not.toContain('will ask you to sign in');
     expect(f.stderr.text).toBe('');
     expect(f.stdout.text).not.toContain('Code: BCDF-GHJK');
     expect(f.stdout.text).not.toContain(DEVICE_WARNING);

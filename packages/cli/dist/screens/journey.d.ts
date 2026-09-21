@@ -23,6 +23,7 @@ export declare const stepProgress: (output: Output, interactive: boolean, text: 
 };
 export declare function renderSetup(items: SetupItem[], output: Output, cursor?: number): number;
 export declare function renderNoSupportedEditors(output: Output): void;
+export declare function editorAuthorizationRows(hosts?: JourneyValues['hosts']): string[];
 /** Browser-owned account, CLI and scanner choices are announced, never duplicated here. */
 export declare function renderJourney(screen: string, output: Output, v?: JourneyValues): number;
 export declare function renderInterrupted(output: Output): void;

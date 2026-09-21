@@ -377,13 +377,16 @@ describe('joined install journal', () => {
 describe('host rulings', () => {
   it('status reports a changed Codex command through the real adapter', async () => {
     const f = await fixture();
+    // Start from a machine a real install leaves behind: both Codex components
+    // and the mnemonik launcher. The changed command is the only fault here.
     await runHosts(
       'install',
-      targets(f, 'hooks').filter(({ host }) => host === 'codex'),
+      [...targets(f, 'hooks'), ...targets(f, 'mcp')].filter(({ host }) => host === 'codex'),
       f.deps
     );
+    await ensureLauncher({ home: f.home, stateDir: f.deps.stateDir });
     const owned = (await readOwnership(f.deps.stateDir)).targets.find(
-      ({ host }) => host === 'codex'
+      ({ host, component }) => host === 'codex' && component === 'hooks'
     )!;
     const { hooksJson } = await readHooksJson(owned.profilePath);
     const states = Object.entries(hooksJson.hooks!)
@@ -396,7 +399,9 @@ describe('host rulings', () => {
         )
       )
       .join('\n');
-    await writeFile(join(dirname(owned.profilePath), 'config.toml'), states);
+    const configPath = join(dirname(owned.profilePath), 'config.toml');
+    // Append the trust table; the Codex MCP declaration lives in this file too.
+    await writeFile(configPath, `${await readFile(configPath, 'utf8')}\n${states}`);
     hooksJson.hooks!.SessionStart![0]!.hooks![0]!.command += ' --harmless';
     await writeFile(owned.profilePath, JSON.stringify(hooksJson));
     for (const args of [['status'], ['status', '--json']]) {
@@ -407,6 +412,8 @@ describe('host rulings', () => {
           cwd: f.projectRoot,
           stdout,
           hostManagement: f.deps,
+          // Otherwise healthy: the untrusted command is the only thing wrong.
+          scannerStatus: async () => ({ roots: [], exclusions: [], repositories: [] }),
           preflight: {
             nodeVersion: '24.21.0',
             pathExists: async () => false,
@@ -420,11 +427,15 @@ describe('host rulings', () => {
           },
         })
       ).toBe(3);
-      expect(stdout.text).toContain(
-        'Run the codex command in a terminal and use its hook trust prompt to allow the Mnemonik hooks; then quit and reopen Codex.'
-      );
       if (args.includes('--json')) expect(stdout.text).toContain('codex_trust_pending');
-      else expect(stdout.text).not.toMatch(/CLI 0\.1\.18\.|CLI credential:|Launcher:/u);
+      else {
+        expect(stdout.text).toContain('Codex has not trusted the Mnemonik hooks yet.');
+        expect(stdout.text).toContain(
+          'Open Codex settings, trust the Mnemonik hooks, then quit and reopen Codex.'
+        );
+        expect(stdout.text).not.toMatch(/allow the Mnemonik hooks|Codex will ask/u);
+        expect(stdout.text).not.toMatch(/CLI 0\.1\.18\.|CLI credential:|Launcher:/u);
+      }
     }
   }, 120_000);
 
@@ -1188,15 +1199,27 @@ describe('host state matrix', () => {
 
   it('policy-disabled: repair requires action before restoring Codex hooks and --apply re-enables them', async () => {
     const f = await fixture();
-    const codex = targets(f, 'hooks').find((selection) => selection.host === 'codex')!;
-    await runHosts('install', [codex], f.deps);
+    // An otherwise healthy machine: both Codex components and the launcher.
+    await runHosts(
+      'install',
+      [...targets(f, 'hooks'), ...targets(f, 'mcp')].filter(({ host }) => host === 'codex'),
+      f.deps
+    );
+    await ensureLauncher({ home: f.home, stateDir: f.deps.stateDir });
     const config = join(f.home, '.codex', 'config.toml');
     await writeFile(
       config,
       (await readFile(config, 'utf8')).replace('hooks = true', 'hooks = false')
     );
     const stdout = capture();
-    const common = { home: f.home, hostManagement: f.deps, stdout };
+    // Otherwise healthy: the hooks policy is the only thing wrong here.
+    const common = {
+      home: f.home,
+      hostManagement: f.deps,
+      stdout,
+      scannerStatus: async () => ({ roots: [], exclusions: [], repositories: [] }),
+      codexTrustConditions: async () => [],
+    };
     expect(
       await runCli(
         ['repair', '--host', 'codex', '--component', 'hooks', '--non-interactive', '--json'],

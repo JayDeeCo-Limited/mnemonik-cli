@@ -100,6 +100,7 @@ export declare class Journal implements AdapterWriter {
     }[]>;
 }
 export declare function interrupted(state?: string): Promise<Journal[]>;
+export declare function abandonInterrupted(state?: string): Promise<void>;
 /** A user-wide lease plus durable generation refuses rollback from an older run. */
 export declare function withInstall<T>(state: string, input: NewInstall, resume: Journal | undefined, work: (journal: Journal) => Promise<T>, afterMutation?: Journal['afterMutation']): Promise<T>;
 //# sourceMappingURL=journal.d.ts.map

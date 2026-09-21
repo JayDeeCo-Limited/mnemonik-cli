@@ -68,17 +68,20 @@ async function fixture() {
   return { deps, stdout, stderr };
 }
 
+const REPAIR_STEP = 'Run mnemonik doctor on this machine and follow the first repair step.';
 it.each([
-  ['diagnostics', 'preview'],
-  ['data', 'delete', '--project', 'test'],
-  ['scanner', 'status'],
-  ['uninstall', '--component', 'scanner', '--confirm'],
-])('gives a next step when %j fails', async (...args) => {
+  // Diagnostics says what failed and what to do about that; the rest fall back
+  // to the general repair step.
+  [['diagnostics', 'preview'], 'Run mnemonik install to try again.'],
+  [['data', 'delete', '--project', 'test'], REPAIR_STEP],
+  [['scanner', 'status'], REPAIR_STEP],
+  [['uninstall', '--component', 'scanner', '--confirm'], REPAIR_STEP],
+])('gives a next step when %j fails', async (args, nextStep) => {
   const f = await fixture();
   expect(await runCli(args, f.deps)).toBeGreaterThan(0);
   const text = f.stdout.text + f.stderr.text;
   expect(text).not.toMatch(/future_reason|permission|scanner_service_unavailable/);
-  expect(text).toContain('Run mnemonik doctor on this machine and follow the first repair step.');
+  expect(text).toContain(nextStep);
 });
 
 it('keeps diagnostics reason codes in JSON', async () => {

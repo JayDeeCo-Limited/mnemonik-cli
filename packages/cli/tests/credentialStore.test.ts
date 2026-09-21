@@ -1,4 +1,4 @@
-import { mkdtemp, rm, readFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
@@ -132,6 +132,25 @@ it('keeps unavailable-keychain detail in auth status but not human installation 
   );
   store.current = Object.assign(new SimulatedSecretStore(false), { kind: 'keychain' });
   const { runCli } = await import('../src/router.js');
+  // Human installation status reads a machine, so give it one: an unreachable
+  // keychain is the only thing wrong here.
+  const { ensureLauncher } = await import('../src/launcher.js');
+  const hook = join(stateDir, 'hook.js');
+  await writeFile(hook, '// hook');
+  await mkdir(join(stateDir, '.claude'), { recursive: true });
+  await writeFile(
+    join(stateDir, '.claude/settings.json'),
+    JSON.stringify({
+      hooks: {
+        start: [{ command: `node ${JSON.stringify(hook)} --mnemonik-owner=claude-code-hooks` }],
+      },
+    })
+  );
+  await writeFile(
+    join(stateDir, '.claude.json'),
+    JSON.stringify({ mcpServers: { mnemonik: { type: 'http' } } })
+  );
+  await ensureLauncher({ home: stateDir, stateDir });
   for (const [args, code, installationConditions] of [
     [['auth', 'status'], 3, undefined],
     [['status'], 3, undefined],

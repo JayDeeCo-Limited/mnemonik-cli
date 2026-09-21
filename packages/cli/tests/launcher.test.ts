@@ -24,6 +24,7 @@ import {
   type LauncherOptions,
 } from '../src/launcher.js';
 import { runCli, type CliDependencies } from '../src/router.js';
+import { withInstall } from '../src/install/journal.js';
 
 const homes: string[] = [];
 afterEach(async () => {
@@ -220,6 +221,28 @@ it.each(['update', 'repair'] as const)(
 it('plain uninstall removes the launcher even when no hosts or scanner remain', async () => {
   const f = await fixture();
   await ensureLauncher(f.options);
+  const retained = join(f.home, 'retained-after-interruption');
+  await writeFile(retained, 'before');
+  let staleRun = '';
+  await withInstall(
+    f.options.stateDir!,
+    {
+      account: 'owner',
+      components: [],
+      hosts: [],
+      scopes: {},
+      roots: [],
+      credentials: [],
+    },
+    undefined,
+    async (journal) => {
+      staleRun = journal.data.runId;
+      const target = await journal.plan(retained, Buffer.from('after'), { kind: 'host' });
+      await journal.commit(target);
+      journal.data.phase = 'applying';
+      await journal.save();
+    }
+  );
   const deps = dependencies(f);
   let text = '';
   deps.stdout = {
@@ -232,9 +255,24 @@ it('plain uninstall removes the launcher even when no hosts or scanner remain', 
     'Stopped collection; removed local software. Credentials, cloud data and consent retained.\n'
   );
   expect((await launcherStatus(f.options)).ownership).toBe('missing');
+  expect(await readFile(retained, 'utf8')).toBe('after');
+  expect(
+    JSON.parse(
+      await readFile(join(f.options.stateDir!, 'install', staleRun, 'journal.json'), 'utf8')
+    )
+  ).toMatchObject({
+    phase: 'complete',
+    state: 'FAILED',
+    reports: expect.arrayContaining(['installation_abandoned']),
+  });
   await expect(readFile(join(f.options.stateDir!, 'launcher.json'))).rejects.toMatchObject({
     code: 'ENOENT',
   });
+
+  delete deps.projectHookConditions;
+  text = '';
+  expect(await runCli(['status'], deps)).toBe(1);
+  expect(text).not.toContain('installed and working');
 
   text = '';
   expect(await runCli(['uninstall', '--non-interactive', '--confirm', '--json'], deps)).toBe(0);

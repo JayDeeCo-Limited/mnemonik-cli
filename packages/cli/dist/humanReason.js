@@ -1,6 +1,8 @@
+// Codex hooks are trusted in Codex settings and Codex never asks, so this
+// never says "allow the hooks" or promises a prompt.
 export const CODEX_TRUST_MESSAGE = {
-    sentence: 'Codex needs permission to use the Mnemonik hooks.',
-    nextStep: 'Open Codex, allow the Mnemonik hooks, then quit and reopen Codex.',
+    sentence: 'Codex has not trusted the Mnemonik hooks yet.',
+    nextStep: 'Open Codex settings, trust the Mnemonik hooks, then quit and reopen Codex.',
 };
 const readinessMessages = [
     [
@@ -151,12 +153,22 @@ export const genericReadinessMessage = {
     nextStep: 'Run mnemonik doctor on this machine and follow the first repair step.',
 };
 export function messageFor(reason, actions = []) {
-    const message = readinessMessages.find(([pattern]) => pattern.test(reason))?.[1] ?? genericReadinessMessage;
-    if (!/host_trust_pending|trust_pending/iu.test(reason))
-        return message;
-    const nextStep = actions.find((action) => action.startsWith('Run the codex command in a terminal ') ||
-        action.startsWith('Open the ChatGPT app '));
-    return nextStep ? { ...message, nextStep } : message;
+    if (/^(?:The mnemonik command|No editor connections|.+ (?:hooks|connection)) .+\.$/u.test(reason)) {
+        const prefix = reason.startsWith('The mnemonik command')
+            ? 'Run npx '
+            : reason.startsWith('Claude Code connection is turned off')
+                ? 'In Claude Code'
+                : reason.startsWith('Codex connection is turned off')
+                    ? 'Open ~/.codex'
+                    : reason.startsWith('Cursor connection is turned off')
+                        ? 'Open Cursor '
+                        : 'Run mnemonik install ';
+        return {
+            sentence: reason,
+            nextStep: actions.find((action) => action.startsWith(prefix)) ?? genericReadinessMessage.nextStep,
+        };
+    }
+    return (readinessMessages.find(([pattern]) => pattern.test(reason))?.[1] ?? genericReadinessMessage);
 }
 /** Keep internal diagnostics in JSON and logs; human errors use the approved status copy. */
 export function humanReason(reason) {

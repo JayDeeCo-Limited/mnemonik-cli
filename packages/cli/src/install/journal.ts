@@ -350,6 +350,25 @@ export async function interrupted(state = stateDirectory()): Promise<Journal[]> 
   }
   return result;
 }
+
+export async function abandonInterrupted(state = stateDirectory()): Promise<void> {
+  const pending = (await interrupted(state))[0];
+  // Only an interrupted install is abandoned. An interrupted uninstall is
+  // resumed and finished by running uninstall again.
+  if (!pending || pending.data.hostRequest?.command === 'uninstall') return;
+  await withInstall(state, pending.data, pending, async (journal) => {
+    const latest = (await interrupted(state)).find(
+      (candidate) => candidate.data.runId === journal.data.runId
+    );
+    if (!latest) return;
+    Object.assign(journal.data, latest.data);
+    if (!journal.data.reports.includes('installation_abandoned'))
+      journal.data.reports.push('installation_abandoned');
+    journal.data.phase = 'complete';
+    journal.data.state = 'FAILED';
+    await journal.event('complete');
+  });
+}
 /** A user-wide lease plus durable generation refuses rollback from an older run. */
 export async function withInstall<T>(
   state: string,

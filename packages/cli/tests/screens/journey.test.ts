@@ -598,7 +598,7 @@ it('shows only the Claude Code authorization row when only Claude Code was set u
   expect(text).toBe(`  One step is left in each editor: Authorize the Mnemonik MCP connection.
   You may need to restart your editor after authorizing.
 
-  Claude Code   type /mcp, choose mnemonik, then Authenticate
+  Claude Code      type /mcp, choose mnemonik, then Authenticate
 
 `);
 });
@@ -622,7 +622,7 @@ it('puts scanner failure before the editor authorization block', () => {
   One step is left in each editor: Authorize the Mnemonik MCP connection.
   You may need to restart your editor after authorizing.
 
-  Claude Code   type /mcp, choose mnemonik, then Authenticate
+  Claude Code      type /mcp, choose mnemonik, then Authenticate
 
 `);
 });

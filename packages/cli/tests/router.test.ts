@@ -314,7 +314,7 @@ describe('command router', () => {
       kind: 'git_unavailable',
       detail: 'not a project',
     });
-    expect(await runCli(['status'], omitted.deps)).toBe(3);
+    expect(await runCli(['status'], omitted.deps)).toBe(1);
     expect(omitted.stdout.text).toContain('The scanner has not checked in yet.');
     expect(omitted.stdout.text).not.toContain('background_indexing_not_verified');
     expect(omitted.stdout.text).not.toContain('hooks are not installed.');
@@ -329,9 +329,7 @@ describe('command router', () => {
       },
     ];
     expect(await runCli(['status'], trust.deps)).not.toBe(0);
-    expect(trust.stdout.text).toContain(
-      'Open Codex, allow the Mnemonik hooks, then quit and reopen Codex.'
-    );
+    expect(trust.stdout.text).not.toContain('allow the Mnemonik hooks');
     expect(trust.stdout.text).not.toContain('codex_trust_pending');
   });
 
@@ -357,8 +355,6 @@ describe('command router', () => {
     signedIn.deps.scannerStatus = async () => ({ roots: [], exclusions: [], repositories: [] });
     signedIn.deps.grantFetch = vi.fn(async (input, init) => {
       const path = new URL(String(input)).pathname;
-      if (path === '/api/v1/auth/grants')
-        return Response.json({ account: 'owner', deviceInstallationId: 'device', grants: [] });
       expect(path).toBe('/api/v1/installations/current/readiness');
       expect(JSON.parse(String(init?.body)).readiness).toEqual(
         serializeReadiness(JSON.parse(signedIn.stdout.text))
@@ -398,33 +394,24 @@ describe('command router', () => {
     expect(isReadinessDocument(posted)).toBe(true);
   });
 
-  it.each(['repair'])(
-    '%s posts after its terminal result without replacing stdout',
-    async (command) => {
-      const f = fixture();
-      f.deps.configuredHosts = [];
-      f.deps.projectHookConditions = [];
-      f.deps.scannerStatus = async () => ({ roots: [], exclusions: [], repositories: [] });
-      f.deps.grantFetch = vi.fn(async (input) => {
-        const path = new URL(String(input)).pathname;
-        if (path === '/api/v1/auth/grants')
-          return Response.json({ account: 'owner', deviceInstallationId: 'device', grants: [] });
-        expect(path).toBe('/api/v1/installations/current/readiness');
-        return new Response('{}', { status: 500 });
-      });
-      const args =
-        command === 'update' ? [command, '--host', 'codex', '--json'] : [command, '--json'];
-      const code = await runCli(args, f.deps);
-      expect(code).toBe(command === 'repair' ? 0 : 3);
-      expect(JSON.parse(f.stdout.text)).toMatchObject(
-        command === 'repair'
-          ? { status: 'READY', targets: [] }
-          : { status: 'ACTION_REQUIRED', reason: 'no_recorded_targets' }
-      );
-      expect(f.stderr.text).toBe('The final installation status could not be uploaded.\n');
-      expect(f.deps.grantFetch).toHaveBeenCalledOnce();
-    }
-  );
+  it('repair posts after its local recheck and a refusal changes nothing it printed', async () => {
+    const f = fixture();
+    f.deps.configuredHosts = [];
+    f.deps.projectHookConditions = [];
+    f.deps.scannerStatus = async () => ({ roots: [], exclusions: [], repositories: [] });
+    f.deps.grantFetch = vi.fn(async (input) => {
+      expect(new URL(String(input)).pathname).toBe('/api/v1/installations/current/readiness');
+      return new Response('{}', { status: 500 });
+    });
+    expect(await runCli(['repair', '--json'], f.deps)).toBe(0);
+    expect(JSON.parse(f.stdout.text)).toMatchObject({
+      status: 'READY',
+      targets: [],
+      remaining: { installation: { state: 'READY' } },
+    });
+    expect(f.stderr.text).toBe('');
+    expect(f.deps.grantFetch).toHaveBeenCalledOnce();
+  });
 });
 
 it('auth login signs in without starting installation', async () => {
@@ -492,69 +479,42 @@ it('forced install reopen reports an active session without starting authorizati
   expect(deps.grantFetch).toHaveBeenCalledOnce();
 });
 
-it('connect runs only the editor native login', async () => {
-  const { mkdtemp, writeFile, rm } = await import('node:fs/promises');
+it('connect reports local editor setup consistently in plain text and JSON', async () => {
+  const { mkdir, mkdtemp, readFile, writeFile, rm } = await import('node:fs/promises');
   const { tmpdir } = await import('node:os');
   const { join } = await import('node:path');
-  const { RuntimeStore } = await import('../src/runtime/store.js');
-  const { SimulatedHostAdapter } = await import('../src/install/adapters.js');
-  const stateDir = await mkdtemp(join(tmpdir(), 'connect-host-'));
-  const verified = vi
-    .spyOn(RuntimeStore.prototype, 'verifyRuntime')
-    .mockResolvedValue({ entry: join(stateDir, 'hook.js') } as Awaited<
-      ReturnType<InstanceType<typeof RuntimeStore>['verifyRuntime']>
-    >);
+  const home = await mkdtemp(join(tmpdir(), 'connect-host-'));
+  const config = join(home, '.codex/config.toml');
   try {
-    await writeFile(
-      join(stateDir, 'host-ownership.json'),
-      JSON.stringify({
-        schemaVersion: 1,
-        generation: 0,
-        targets: [
-          {
-            id: 'codex:mcp:user',
-            host: 'codex',
-            component: 'mcp',
-            scope: 'user',
-            home: stateDir,
-            profilePath: join(stateDir, 'config.toml'),
-            files: [],
-          },
-        ],
-      })
-    );
-    const adapter = new SimulatedHostAdapter('codex', {
-      path: '/unused',
-      content: Buffer.from('{}'),
-      staging: 'inactive',
-      requestedScope: 'user',
-      effectiveScope: 'user',
-      version: '1',
-      artifactDigest: 'a',
-    });
-    adapter.launch = vi.fn(async () => 'native login');
-    const grants = {
-      list: vi.fn(async () => {
-        throw new Error('must not poll grants');
-      }),
-    };
     const { deps, stdout } = fixture();
-    deps.hostManagement = {
-      stateDir,
-      account: 'owner',
-      imports: {
-        codex: async () => ({ createHostAdapter: () => adapter }),
-        'claude-code': async () => ({ createHostAdapter: () => adapter }),
-        cursor: async () => ({ createHostAdapter: () => adapter }),
-      },
-      grants: grants as never,
-    };
-    expect(await runCli(['connect', 'codex'], deps)).toBe(0);
-    expect(adapter.launch).toHaveBeenCalledOnce();
-    expect(grants.list).not.toHaveBeenCalled();
-    expect(stdout.text).toContain('native login');
+    deps.home = home;
+    expect(await runCli(['connect', 'codex'], deps)).toBe(3);
+    expect(stdout.text).toBe(
+      'Codex connection is missing.\nRun mnemonik install to set it up again.\n'
+    );
+    await expect(readFile(config)).rejects.toMatchObject({ code: 'ENOENT' });
+
+    await mkdir(join(home, '.codex'));
+    await writeFile(config, '[mcp_servers.mnemonik]\nenabled = true\n');
+    stdout.text = '';
+    expect(await runCli(['connect', 'codex'], deps)).toBe(3);
+    expect(stdout.text).toBe(
+      'Finish signing in to Mnemonik in the editor.\n' +
+        'Codex CLI        run codex mcp login mnemonik\n' +
+        'Codex Desktop    open Settings, Plugins, MCPs, then Authenticate\n'
+    );
+
+    stdout.text = '';
+    expect(await runCli(['connect', 'codex', '--json'], deps)).toBe(3);
+    expect(JSON.parse(stdout.text)).toEqual({
+      status: 'ACTION_REQUIRED',
+      reason: 'Finish signing in to Mnemonik in the editor.',
+      actions: [
+        'Codex CLI        run codex mcp login mnemonik',
+        'Codex Desktop    open Settings, Plugins, MCPs, then Authenticate',
+      ],
+    });
   } finally {
-    verified.mockRestore();
-    await rm(stateDir, { recursive: true, force: true });
+    await rm(home, { recursive: true, force: true });
   }
 });

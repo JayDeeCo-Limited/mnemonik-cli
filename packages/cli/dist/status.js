@@ -4,8 +4,10 @@ import { cliCredentialStatus } from './auth/credentials.js';
 import { readOwnership } from './install/ownership.js';
 import { scannerReceipt } from './scanner/control.js';
 import { stateDirectory } from '@mnemonik/local-setup';
-import { readFile } from 'node:fs/promises';
+import { readFile, stat } from 'node:fs/promises';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { parse as parseToml } from 'smol-toml';
 import { devReadiness } from './runtime/releaseSource.js';
 import { pendingProjectSetup } from '@mnemonik/shared/hook-runtime';
 import { basename, isAbsolute, relative, resolve } from 'node:path';
@@ -15,6 +17,114 @@ import { runProjectCommand, } from './project.js';
 import { hostOrder } from './install/adapters.js';
 import { hookStatusConditions } from './install/hosts.js';
 import { launcherStatus } from './launcher.js';
+const editorFiles = [
+    ['claude-code', 'Claude Code', '.claude/settings.json', '.claude.json'],
+    ['codex', 'Codex', '.codex/hooks.json', '.codex/config.toml'],
+    ['cursor', 'Cursor', '.cursor/hooks.json', '.cursor/mcp.json'],
+];
+const object = (value) => !!value && typeof value === 'object' && !Array.isArray(value);
+function hookCommands(value, owner) {
+    if (Array.isArray(value))
+        return value.flatMap((entry) => hookCommands(entry, owner));
+    if (!object(value))
+        return [];
+    return [
+        ...(typeof value.command === 'string' && value.command.includes(`--mnemonik-owner=${owner}`)
+            ? [value.command]
+            : []),
+        ...Object.values(value).flatMap((entry) => hookCommands(entry, owner)),
+    ];
+}
+function hookTarget(command) {
+    try {
+        const plain = /^node ("(?:[^"\\]|\\.)*")/u.exec(command)?.[1];
+        if (plain) {
+            const parsed = JSON.parse(plain);
+            if (typeof parsed === 'string')
+                return parsed;
+        }
+        const token = /^node -e .* -- ([A-Za-z0-9_-]+)(?:\s|$)/u.exec(command)?.[1];
+        if (token)
+            return fileURLToPath(Buffer.from(token, 'base64url').toString('utf8'));
+    }
+    catch {
+        /* Invalid commands are not usable launchers. */
+    }
+    return undefined;
+}
+export async function localEditorStatus(home) {
+    return Promise.all(editorFiles.map(async ([host, name, hooksFile, mcpFile]) => {
+        const read = (file) => readFile(join(home, file), 'utf8').catch((error) => error.code === 'ENOENT' ? null : '');
+        const [hooksRaw, mcpRaw] = await Promise.all([read(hooksFile), read(mcpFile)]);
+        let commands = [];
+        try {
+            commands = hookCommands(JSON.parse(hooksRaw ?? '{}'), `${host}-hooks`);
+        }
+        catch {
+            /* Report the hooks as missing below. */
+        }
+        const hooks = commands.length > 0 &&
+            (await Promise.all(commands.map(async (command) => {
+                const target = hookTarget(command);
+                return !!target && (await stat(target).catch(() => null))?.isFile() === true;
+            }))).every(Boolean);
+        let declaration;
+        try {
+            const config = host === 'codex' ? parseToml(mcpRaw ?? '') : JSON.parse(mcpRaw ?? '{}');
+            declaration = object(config.mcp_servers)
+                ? config.mcp_servers.mnemonik
+                : object(config.mcpServers)
+                    ? config.mcpServers.mnemonik
+                    : undefined;
+        }
+        catch {
+            /* Report the connection as missing below. */
+        }
+        return {
+            host,
+            name,
+            // Only a Mnemonik mark in the editor's own settings counts. The mere
+            // presence of ~/.codex or a project-local .cursor is not a choice.
+            marked: commands.length > 0 || object(declaration),
+            hooks,
+            mcp: !object(declaration)
+                ? 'missing'
+                : declaration.enabled === false || declaration.disabled === true
+                    ? 'disabled'
+                    : 'ready',
+        };
+    }));
+}
+/** What a person can really do to switch a declared connection back on. */
+export const mcpTurnOnAction = {
+    'claude-code': 'In Claude Code, type /mcp, choose mnemonik, then turn it on.',
+    codex: 'Open ~/.codex/config.toml, find mnemonik and set enabled = true.',
+    cursor: 'Open Cursor Settings, Customize, MCPs, then turn on mnemonik.',
+};
+export async function localInstallationConditions(home, stateDir, launcherOptions) {
+    const conditions = [];
+    const issue = (reason, action, component) => conditions.push({
+        kind: 'selected_component_failed',
+        reason,
+        action,
+        ...(component ? { component } : {}),
+    });
+    if ((await launcherStatus({ stateDir, home, ...launcherOptions })).ownership !== 'ours')
+        issue('The mnemonik command is missing.', 'Run npx -y @mnemonik/cli@latest install to restore it.');
+    const owned = (await readOwnership(stateDir)).targets.map((target) => target.host);
+    const editors = (await localEditorStatus(home)).filter((editor) => editor.marked || owned.includes(editor.host));
+    if (!editors.length)
+        issue('No editor connections were found.', 'Run mnemonik install to set them up again.');
+    for (const editor of editors) {
+        if (!editor.hooks)
+            issue(`${editor.name} hooks are missing.`, 'Run mnemonik install to set them up again.', editor.host);
+        if (editor.mcp !== 'ready')
+            issue(`${editor.name} connection is ${editor.mcp === 'disabled' ? 'turned off' : 'missing'}.`, editor.mcp === 'missing'
+                ? 'Run mnemonik install to set it up again.'
+                : mcpTurnOnAction[editor.host], editor.host);
+    }
+    return conditions;
+}
 const contains = (parent, child) => {
     const path = relative(resolve(parent), resolve(child));
     return path === '' || (!path.startsWith('..') && !isAbsolute(path));
@@ -248,17 +358,7 @@ export async function collectStatusDocument(input) {
                 reason: 'scanner_paused',
                 action: 'mnemonik install',
             };
-        let alive = false;
-        if (snapshot?.lifecycle.pid)
-            try {
-                process.kill(snapshot.lifecycle.pid, 0);
-                alive = true;
-            }
-            catch {
-                /* stale receipt */
-            }
         if (state &&
-            alive &&
             (snapshot?.lifecycle.state === 'running' || snapshot?.lifecycle.state === 'starting') &&
             heartbeat &&
             Date.now() - heartbeat < 360000) {

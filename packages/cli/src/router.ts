@@ -15,7 +15,6 @@ import {
   runHosts,
   hostSource,
   codexTrustConditions,
-  connectHost,
   logoutHost,
   selectOwned,
   type HostDependencies,
@@ -59,7 +58,7 @@ import { createCliAuth } from './auth/index.js';
 import { currentInstallSession, ensureInstallSession } from './auth/installSession.js';
 import { runIdentityMigration } from './identity/migrate.js';
 import { renderScannerStatus, type ScannerPickerResult } from './scanner/picker.js';
-import { interrupted } from './install/journal.js';
+import { abandonInterrupted, interrupted } from './install/journal.js';
 import {
   installFailureReason,
   runInstall,
@@ -69,10 +68,14 @@ import { chooseHostProfile, simulatedInstall, terminalInstallUI } from './instal
 import {
   CODEX_TRUST_MESSAGE,
   collectStatusDocument,
+  localEditorStatus,
+  localInstallationConditions,
+  mcpTurnOnAction,
   renderStatusSummaries,
   statusExitCode,
   type StatusDocumentInput,
 } from './status.js';
+import { editorAuthorizationRows } from './screens/journey.js';
 import {
   DiagnosticsError,
   previewDiagnostics,
@@ -391,6 +394,7 @@ async function runHostCommand(
     (component && !['hooks', 'mcp'].includes(String(component)))
   )
     return (output.error('Invalid host, scope or component'), 2);
+  if (command === 'uninstall') await abandonInterrupted(state);
   let selections: HostSelection[];
   if (command === 'install') {
     const names = String(parsed.flags.get('hosts') ?? hostOrder.join(',')).split(',');
@@ -540,6 +544,14 @@ async function runHostCommand(
     }
     let failed = scanner?.status === 'FAILED' || cli?.status === 'FAILED';
     const hostExit = maintenanceExitCode(result.results);
+    const remaining =
+      command === 'repair' ? await collectCurrentInstallation(deps, output) : undefined;
+    const remainingExit =
+      remaining?.installation.state === 'FAILED'
+        ? 1
+        : remaining?.installation.state === 'READY' || !remaining
+          ? 0
+          : 3;
     const hostsFailed = hostUpdateFailed(result);
     const codexTrustPending = result.results.some(
       (target) => target.reason === 'codex_trust_pending'
@@ -572,16 +584,20 @@ async function runHostCommand(
     }
     if (json)
       output.json({
-        status: failed
-          ? 'FAILED'
-          : scanner?.status === 'uninstalled'
-            ? 'uninstalled'
-            : result.journal.state,
+        status:
+          failed || remainingExit === 1
+            ? 'FAILED'
+            : remainingExit === 3
+              ? 'ACTION_REQUIRED'
+              : scanner?.status === 'uninstalled'
+                ? 'uninstalled'
+                : result.journal.state,
         targets: result.results,
         reports: result.reports,
         ...(scanner ? { scanner } : {}),
         ...(launcher ? { launcher } : {}),
         ...(cli ? { cli } : {}),
+        ...(remaining ? { remaining } : {}),
       });
     else if (command === 'update') {
       if (failed || hostsFailed) output.error(updateFailureMessage);
@@ -600,7 +616,9 @@ async function runHostCommand(
       for (const target of result.results)
         output.line(target.status === 'READY' ? 'Done.' : humanReason(target.reason));
       for (const report of result.reports) output.line(humanReport(report));
-      if (!selections.length && !fullUninstall) output.line('No recorded host targets.');
+      if (remaining) renderStatusSummaries(remaining, output);
+      if (!selections.length && !fullUninstall && !remaining)
+        output.line('No recorded host targets.');
       if (fullUninstall && !failed && hostExit === 0)
         output.line(
           'Stopped collection; removed local software. Credentials, cloud data and consent retained.'
@@ -619,7 +637,8 @@ async function runHostCommand(
       if (json) output.error(reason, false);
       else output.error(humanReason(reason));
     }
-    return failed ? 1 : hostExit;
+    if (failed || remainingExit === 1) return 1;
+    return hostExit || remainingExit;
   } catch (error) {
     if (command === 'update' && !json) {
       output.error(updateFailureMessage);
@@ -766,6 +785,8 @@ async function installCommand(
       : deps.install;
   if (!install) return actionRequired(output, false, 'Install adapters are unavailable');
   try {
+    // A stale install journal is recovered here, not abandoned: runInstall
+    // offers Resume or Rollback. Only uninstall abandons one.
     const pending = await interrupted(install.stateDir);
     const result = await runInstall(install, pending[0]);
     output.line(`${result.state}: install ${result.runId}`);
@@ -836,21 +857,32 @@ async function collectCurrentInstallation(
   deps: CliDependencies,
   output: Output
 ): Promise<Awaited<ReturnType<typeof collectStatusDocument>>> {
-  const result = await runPreflight({ cwd: deps.cwd, home: deps.home, ...deps.preflight });
+  const result = await runPreflight({
+    cwd: deps.cwd,
+    home: deps.home,
+    ...deps.preflight,
+    fetch: async () => new Response(null, { status: 204 }),
+  });
   output.setContext({ home: deps.home ?? homedir(), projectRoot: result.project.root });
   const hostStateDir =
     deps.hostManagement?.stateDir ??
     deps.installStateDir ??
     stateDirectory(process.platform, process.env, deps.home);
-  const trustConditions = await (
-    deps.codexTrustConditions ??
-    (() =>
-      codexTrustConditions({
-        stateDir: hostStateDir,
-        env: deps.hostManagement?.env,
-        imports: deps.hostManagement?.imports,
-      }))
-  )();
+  const localConditions = deps.projectHookConditions
+    ? []
+    : [
+        ...(await localInstallationConditions(deps.home ?? homedir(), hostStateDir, deps.launcher)),
+        // Installed Codex hooks that Codex has not trusted cannot run.
+        ...(await (
+          deps.codexTrustConditions ??
+          (() =>
+            codexTrustConditions({
+              stateDir: hostStateDir,
+              env: deps.hostManagement?.env,
+              imports: deps.hostManagement?.imports,
+            }))
+        )()),
+      ];
   const document = await collectStatusDocument({
     preflight: result,
     cwd: deps.cwd ?? process.cwd(),
@@ -863,11 +895,13 @@ async function collectCurrentInstallation(
         ? { resolveProjectIdentity: deps.preflight.resolveIdentity }
         : undefined),
     stateDir: deps.projectStateDir ?? deps.installStateDir,
+    // The project section reports project access, as doctor and the console
+    // route do. Local evidence still decides the installation verdict.
     getCliBearer: deps.getCliBearer,
     transport: deps.projectTransport,
     scannerStatus: deps.scannerStatus,
-    installationConditions: [...(deps.installationConditions ?? []), ...trustConditions],
-    projectHookConditions: deps.projectHookConditions,
+    installationConditions: [...(deps.installationConditions ?? []), ...localConditions],
+    projectHookConditions: deps.projectHookConditions ?? [],
     configuredHosts: deps.configuredHosts ?? deps.install?.input.hosts,
     details: deps.statusDetails,
     generatedAt: deps.statusGeneratedAt,
@@ -881,6 +915,11 @@ async function collectCurrentInstallation(
   return { ...document, versions };
 }
 
+/**
+ * The web console's devices page reads the row this writes. Local evidence has
+ * already decided the verdict and the exit code, so the upload is best effort:
+ * it is bounded like the update hint and changes nothing a person sees.
+ */
 async function reportCurrentInstallation(
   deps: CliDependencies,
   output: Output,
@@ -890,15 +929,14 @@ async function reportCurrentInstallation(
     .getCliBearer()
     .catch(() => undefined);
   if (typeof bearer !== 'string') return;
-  try {
-    await postCurrentReadiness(
-      bearer,
-      baseReadiness(document ?? (await collectCurrentInstallation(deps, output))),
-      deps.grantFetch
-    );
-  } catch {
-    output.error('The final installation status could not be uploaded.');
-  }
+  const send = deps.grantFetch ?? globalThis.fetch;
+  await postCurrentReadiness(
+    bearer,
+    baseReadiness(document ?? (await collectCurrentInstallation(deps, output))),
+    (url, options) => send(url, { ...options, signal: AbortSignal.timeout(2500) })
+  ).catch(() => {
+    /* An unreachable server says nothing about this machine. */
+  });
 }
 
 export async function runCli(args: string[], deps: CliDependencies = {}): Promise<number> {
@@ -1228,9 +1266,28 @@ export async function runCli(args: string[], deps: CliDependencies = {}): Promis
       }
       return 0;
     } catch (error) {
-      const code = error instanceof DiagnosticsError ? error.code : 'diagnostics_failed';
+      const nativeCode = (error as NodeJS.ErrnoException).code;
+      const code =
+        error instanceof DiagnosticsError
+          ? error.code
+          : typeof nativeCode === 'string'
+            ? nativeCode
+            : 'diagnostics_failed';
       if (parsed.flags.has('json')) output.json({ status: 'error', error: code });
-      else output.error(humanReason(code));
+      else if (
+        /^(?:bundle_id_invalid|bundle_hash_mismatch|diagnostics_preview_invalid|ENOENT)$/u.test(
+          code
+        )
+      )
+        output.error(
+          'Saved diagnostics could not be used.\nRun mnemonik diagnostics preview, then try again.'
+        );
+      else
+        output.error(
+          subcommand === 'preview'
+            ? 'Diagnostics could not be created.\nRun mnemonik install to try again.'
+            : 'Diagnostics could not be sent.\nCheck your internet connection, then try again.'
+        );
       return 1;
     }
   }
@@ -1258,45 +1315,30 @@ export async function runCli(args: string[], deps: CliDependencies = {}): Promis
     if (invalid) return (output.error(invalid), 2);
     if (!subcommand || rest.length || !hostOrder.includes(subcommand as never))
       return (output.error(`Usage: mnemonik connect <${hostOrder.join('|')}>`), 2);
-    const state =
-      deps.hostManagement?.stateDir ??
-      deps.installStateDir ??
-      stateDirectory(process.platform, process.env, deps.home);
-    const owned = await selectOwned(
-      state,
-      subcommand,
-      parsed.flags.get('scope') as string | undefined,
-      'mcp'
+    const host = subcommand as (typeof hostOrder)[number];
+    const editor = (await localEditorStatus(deps.home ?? homedir())).find(
+      (candidate) => candidate.host === host
     );
-    if (!owned.selected.length && !parsed.flags.has('json')) {
-      output.line(
-        `${launchHostLabels[subcommand as keyof typeof launchHostLabels]} will ask you to sign in to Mnemonik the first time you use it.`
-      );
-      return 3;
+    const reason =
+      editor?.mcp === 'disabled'
+        ? `${editor.name} connection is turned off.`
+        : editor?.mcp === 'ready'
+          ? 'Finish signing in to Mnemonik in the editor.'
+          : `${launchHostLabels[host]} connection is missing.`;
+    const actions =
+      editor?.mcp === 'ready'
+        ? editorAuthorizationRows([host])
+        : [
+            editor?.mcp === 'disabled'
+              ? mcpTurnOnAction[host]
+              : 'Run mnemonik install to set it up again.',
+          ];
+    if (parsed.flags.has('json')) output.json({ status: 'ACTION_REQUIRED', reason, actions });
+    else {
+      output.line(reason);
+      for (const action of actions) output.line(action);
     }
-    if (owned.selected.length !== 1)
-      return actionRequired(
-        output,
-        parsed.flags.has('json'),
-        owned.selected.length ? 'ambiguous_profile' : 'no_recorded_targets'
-      );
-    const managed = deps.hostManagement ?? { stateDir: state, account: '' };
-    const selected = owned.selected[0];
-    if (!selected) throw new Error('no_recorded_targets');
-    let instructionShown = false;
-    const result = await connectHost(selected, {
-      ...managed,
-      instruction: (text) => {
-        if (!parsed.flags.has('json')) {
-          output.line(text);
-          instructionShown = true;
-        }
-      },
-    });
-    if (parsed.flags.has('json')) output.json(result);
-    else if (!instructionShown)
-      output.line(result.status === 'READY' ? 'Done.' : humanReason(result.reason));
-    return result.status === 'READY' ? 0 : 3;
+    return 3;
   }
   if (command === 'project') {
     if (!subcommand || !['init', 'setup', 'status', 'link', 'ensure'].includes(subcommand))

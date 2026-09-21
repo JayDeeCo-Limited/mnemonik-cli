@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { CliDependencies } from '../src/router.js';
 import type { ReadinessCondition } from '@mnemonik/shared';
 import { buildStatusDocument, renderStatusSummaries } from '../src/status.js';
 
@@ -144,7 +145,7 @@ it('hides launcher paths, credential diagnostics and readiness reason codes', ()
   );
 });
 
-it('keeps a plain host-specific next step', () => {
+it('says Codex has not trusted the hooks without promising a prompt', () => {
   const lines: string[] = [];
   const action =
     'Run the codex command in a terminal and use its hook trust prompt to allow the Mnemonik hooks; then quit and reopen Codex.';
@@ -161,9 +162,10 @@ it('keeps a plain host-specific next step', () => {
 
   expect(lines).toEqual([
     'Installation: Needs attention.',
-    'Codex needs permission to use the Mnemonik hooks.',
-    action,
+    'Codex has not trusted the Mnemonik hooks yet.',
+    'Open Codex settings, trust the Mnemonik hooks, then quit and reopen Codex.',
   ]);
+  expect(lines.join('\n')).not.toMatch(/allow the .*hooks|will ask/u);
 });
 
 it('keeps installed hooks READY before an editor has signed in', async () => {
@@ -268,7 +270,7 @@ it.each([
         scannerStatus: async () => ({ roots: [], exclusions: [], repositories: [] }),
         stdout: { write: (chunk) => void (status += chunk) },
       })
-    ).toBe(0);
+    ).toBe(1);
     expect(JSON.parse(status).versions.hosts).toEqual([]);
     expect(status.toLowerCase()).not.toContain(name.toLowerCase());
 
@@ -281,7 +283,7 @@ it.each([
         scannerStatus: async () => ({ roots: [], exclusions: [], repositories: [] }),
         stdout: { write: (chunk) => void (status += chunk) },
       })
-    ).toBe(0);
+    ).toBe(1);
     expect(status.toLowerCase()).not.toContain(name.toLowerCase());
 
     let doctor = '';
@@ -443,6 +445,217 @@ it.each(['starting', 'running'])(
     }
   }
 );
+
+const localFixtures: string[] = [];
+afterEach(async () => {
+  const { rm } = await import('node:fs/promises');
+  vi.unstubAllGlobals();
+  for (const path of localFixtures.splice(0)) await rm(path, { recursive: true, force: true });
+});
+
+/**
+ * A machine as status finds it: a real home, a real project folder and real
+ * files, so the editor judgement is made from evidence rather than fixtures.
+ */
+async function localMachine() {
+  const { enableHostDiscovery } = await import('./setup/hostDiscovery.js');
+  // Preflight must really see ~/.codex and the project's .cursor folder; the
+  // point of these cases is that finding them is not a reason to judge them.
+  await enableHostDiscovery();
+  const { mkdir, mkdtemp, writeFile } = await import('node:fs/promises');
+  const { tmpdir } = await import('node:os');
+  const { dirname, join } = await import('node:path');
+  const { runCli } = await import('../src/router.js');
+  const home = await mkdtemp(join(tmpdir(), 'local-status-'));
+  localFixtures.push(home);
+  const stateDir = join(home, 'state');
+  const cwd = join(home, 'project');
+  await mkdir(cwd, { recursive: true });
+  const put = async (path: string, value: unknown) => {
+    await mkdir(dirname(path), { recursive: true });
+    await writeFile(path, typeof value === 'string' ? value : JSON.stringify(value));
+  };
+  const hookEntry = join(home, 'hook.js');
+  const hooksFile = (host: string, target = hookEntry) => ({
+    hooks: {
+      start: [{ command: `node ${JSON.stringify(target)} --mnemonik-owner=${host}-hooks` }],
+    },
+  });
+  const invoke = async (command = 'status', extra: Partial<CliDependencies> = {}) => {
+    let text = '';
+    const code = await runCli([command], {
+      home,
+      cwd,
+      installStateDir: stateDir,
+      stdout: { write: (value) => void (text += value) },
+      preflight: {
+        nodeVersion: '24.21.0',
+        resolveIdentity: async () => ({ kind: 'git_unavailable', detail: 'fixture' }),
+      },
+      scannerStatus: async () => ({ roots: [], exclusions: [], repositories: [] }),
+      ...extra,
+    });
+    return { code, text };
+  };
+  return { home, stateDir, cwd, put, hookEntry, hooksFile, invoke };
+}
+
+/** Claude Code alone, in a repository that merely contains another editor's folder. */
+async function claudeCodeOnly() {
+  const { join } = await import('node:path');
+  const { ensureLauncher } = await import('../src/launcher.js');
+  const machine = await localMachine();
+  await machine.put(machine.hookEntry, '// hook');
+  await machine.put(join(machine.home, '.claude/settings.json'), machine.hooksFile('claude-code'));
+  await machine.put(join(machine.home, '.claude.json'), {
+    mcpServers: { mnemonik: { type: 'http' } },
+  });
+  // Codex is installed on this machine but was never chosen for Mnemonik.
+  await machine.put(join(machine.home, '.codex/config.toml'), 'model = "gpt-5"\n');
+  // The repository carries a Cursor folder; nobody set Cursor up.
+  await machine.put(join(machine.cwd, '.cursor/rules/team.mdc'), '# rules\n');
+  await ensureLauncher({ home: machine.home, stateDir: machine.stateDir });
+  return machine;
+}
+
+it('reads as working with one editor set up beside editors nobody chose', async () => {
+  const machine = await claudeCodeOnly();
+  expect(await machine.invoke()).toMatchObject({
+    code: 0,
+    text: expect.stringContaining('Mnemonik is installed and working.'),
+  });
+  const repair = await machine.invoke('repair');
+  expect(repair.code).toBe(0);
+  expect(repair.text).not.toMatch(/Cursor|Codex/u);
+}, 15_000);
+
+it('keeps the same verdict and words when the network cannot be reached', async () => {
+  const machine = await claudeCodeOnly();
+  const reached: string[] = [];
+  vi.stubGlobal('fetch', async (input: unknown) => {
+    reached.push(new URL(String(input)).pathname);
+    throw new Error('network unreachable');
+  });
+  const offline = await machine.invoke('status', {
+    cliAuth: {
+      signIn: async () => undefined,
+      getCliBearer: async () => 'access-token',
+      logout: async () => undefined,
+    },
+    grantFetch: async (input) => {
+      reached.push(new URL(String(input)).pathname);
+      throw new Error('network unreachable');
+    },
+  });
+  expect(offline).toMatchObject({
+    code: 0,
+    text: expect.stringContaining('Mnemonik is installed and working.'),
+  });
+  expect(offline.text).not.toContain('could not be uploaded');
+  // The readiness upload is the only authenticated call status makes: no
+  // credential rotation, no grant listing, no server verification.
+  expect(reached.filter((path) => path !== '/api/v1/installations/current/readiness')).toEqual([
+    '/%40mnemonik%2Fcli/latest',
+  ]);
+  // A reachable network reaches exactly the same verdict, word for word.
+  vi.stubGlobal('fetch', async () => Response.json({}));
+  const online = await machine.invoke('status', {
+    cliAuth: {
+      signIn: async () => undefined,
+      getCliBearer: async () => 'access-token',
+      logout: async () => undefined,
+    },
+    grantFetch: async () => Response.json({ status: 'recorded' }),
+  });
+  expect(online.code).toBe(offline.code);
+  expect(online.text).toBe(offline.text);
+}, 20_000);
+
+it('reports a hook entry whose launcher is gone', async () => {
+  const { join } = await import('node:path');
+  const machine = await claudeCodeOnly();
+  await machine.put(
+    join(machine.home, '.claude/settings.json'),
+    machine.hooksFile('claude-code', join(machine.home, 'removed-hook.js'))
+  );
+  const result = await machine.invoke();
+  expect(result.code).toBe(1);
+  expect(result.text).toContain('Claude Code hooks are missing.');
+  expect(result.text).toContain('Run mnemonik install to set them up again.');
+}, 15_000);
+
+it('reports a Codex connection turned off with an action a person can take', async () => {
+  const { join } = await import('node:path');
+  const machine = await claudeCodeOnly();
+  await machine.put(
+    join(machine.home, '.codex/config.toml'),
+    '[mcp_servers.mnemonik]\nenabled = false\n'
+  );
+  await machine.put(join(machine.home, '.codex/hooks.json'), machine.hooksFile('codex'));
+  const result = await machine.invoke();
+  expect(result.code).toBe(1);
+  expect(result.text).toContain('Codex connection is turned off.');
+  expect(result.text).toContain('Open ~/.codex/config.toml, find mnemonik and set enabled = true.');
+  expect(result.text).not.toContain('codex mcp enable');
+}, 15_000);
+
+it('reports Codex hooks that Codex has not trusted', async () => {
+  const machine = await claudeCodeOnly();
+  const result = await machine.invoke('status', {
+    codexTrustConditions: async () => [
+      { kind: 'host_trust_pending', reason: 'codex_trust_pending', component: 'codex' },
+    ],
+  });
+  expect(result.code).not.toBe(0);
+  expect(result.text).not.toContain('Mnemonik is installed and working.');
+  expect(result.text).toContain('Codex has not trusted the Mnemonik hooks yet.');
+  expect(result.text).toContain(
+    'Open Codex settings, trust the Mnemonik hooks, then quit and reopen Codex.'
+  );
+}, 15_000);
+
+it('reports default editor files locally, including a disabled Cursor connection', async () => {
+  const { join } = await import('node:path');
+  const { ensureLauncher } = await import('../src/launcher.js');
+  const machine = await localMachine();
+  await machine.put(machine.hookEntry, '// hook');
+  for (const [host, file] of [
+    ['claude-code', '.claude/settings.json'],
+    ['codex', '.codex/hooks.json'],
+    ['cursor', '.cursor/hooks.json'],
+  ] as const)
+    await machine.put(join(machine.home, file), machine.hooksFile(host));
+  await machine.put(join(machine.home, '.claude.json'), {
+    mcpServers: { mnemonik: { type: 'http' } },
+  });
+  await machine.put(
+    join(machine.home, '.codex/config.toml'),
+    '[mcp_servers.mnemonik]\nenabled = true\n'
+  );
+  await machine.put(join(machine.home, '.cursor/mcp.json'), { mcpServers: { mnemonik: {} } });
+  await ensureLauncher({ home: machine.home, stateDir: machine.stateDir });
+
+  expect(await machine.invoke()).toMatchObject({
+    code: 0,
+    text: expect.stringContaining('Mnemonik is installed and working.'),
+  });
+  expect(await machine.invoke('repair')).toMatchObject({
+    code: 0,
+    text: expect.stringContaining('Mnemonik is installed and working.'),
+  });
+
+  await machine.put(join(machine.home, '.cursor/mcp.json'), {
+    mcpServers: { mnemonik: { disabled: true } },
+  });
+  expect(await machine.invoke()).toMatchObject({
+    code: 1,
+    text: expect.stringContaining('Cursor connection is turned off.'),
+  });
+  expect(await machine.invoke('repair')).toMatchObject({
+    code: 1,
+    text: expect.stringContaining('Cursor connection is turned off.'),
+  });
+}, 20_000);
 
 it.each(['duplicate_project_id', 'fingerprint_mismatch'])(
   'maps installer %s diagnostics to human status text while preserving JSON',

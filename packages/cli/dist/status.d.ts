@@ -7,6 +7,17 @@ import { type ProjectCommandDependencies, type ProjectExecutor, type ProjectRead
 import type { ScannerPickerResult } from './scanner/picker.js';
 import type { PreflightResult } from './preflight.js';
 import { type LauncherOptions, type LauncherStatus } from './launcher.js';
+declare const editorFiles: readonly [readonly ['claude-code', 'Claude Code', '.claude/settings.json', '.claude.json'], readonly ['codex', 'Codex', '.codex/hooks.json', '.codex/config.toml'], readonly ['cursor', 'Cursor', '.cursor/hooks.json', '.cursor/mcp.json']];
+export declare function localEditorStatus(home: string): Promise<{
+    host: "claude-code" | "codex" | "cursor";
+    name: "Claude Code" | "Codex" | "Cursor";
+    marked: boolean;
+    hooks: boolean;
+    mcp: string;
+}[]>;
+/** What a person can really do to switch a declared connection back on. */
+export declare const mcpTurnOnAction: Record<(typeof editorFiles)[number][0], string>;
+export declare function localInstallationConditions(home: string, stateDir: string, launcherOptions?: LauncherOptions): Promise<ReadinessCondition[]>;
 export interface ProjectStatusResult {
     resolvedRoot: string;
     projectId: string | null;

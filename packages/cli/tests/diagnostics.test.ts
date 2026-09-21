@@ -1,9 +1,12 @@
 import { appendFile, mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { execFile as nodeExecFile } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { runDiagnosticsCommand } from '../../scanner/src/diagnostics/cli.js';
 import { DiagnosticsError, previewDiagnostics, sendDiagnostics } from '../src/diagnostics.js';
+import { runCli } from '../src/router.js';
 
 describe('diagnostics commands', () => {
   const temporary: string[] = [];
@@ -40,7 +43,7 @@ describe('diagnostics commands', () => {
         callback: (error: Error | null, stdout: string, stderr: string) => void
       ) => {
         let stdout = '';
-        void runDiagnosticsCommand(args, {
+        void runDiagnosticsCommand(args.slice(1), {
           stateDir,
           now: () => Date.parse('2026-09-11T00:00:00.000Z'),
           stdout: { write: (value) => (stdout += value) },
@@ -85,6 +88,50 @@ describe('diagnostics commands', () => {
     });
     expect(f.uploaded()?.equals(expected)).toBe(true);
     expect(sent).toMatchObject({ stored: true, bytes: expected.length, sha256: preview.sha256 });
+  });
+
+  it('creates a preview through the scanner dispatcher', async () => {
+    const f = await fixture();
+    const result = await previewDiagnostics(undefined, {
+      stateDir: f.stateDir,
+      scannerBinary: async () => 'scanner',
+      execFile: ((
+        _file: string,
+        args: string[],
+        options: object,
+        callback: (error: Error | null, stdout: string, stderr: string) => void
+      ) =>
+        nodeExecFile(
+          process.execPath,
+          [
+            '--import',
+            import.meta.resolve('tsx'),
+            fileURLToPath(new URL('../../scanner/src/index.ts', import.meta.url)),
+            ...args,
+          ],
+          { ...options, env: { ...process.env, MNEMONIK_STATE_DIR: f.stateDir } },
+          callback
+        )) as never,
+    });
+    expect(result.manifest.bundleId).toMatch(/^diag-/u);
+  });
+
+  it('explains a preview failure without internal storage words', async () => {
+    const f = await fixture();
+    let text = '';
+    expect(
+      await runCli(['diagnostics', 'preview'], {
+        stderr: { write: (value) => void (text += value) },
+        diagnostics: {
+          stateDir: f.stateDir,
+          scannerBinary: async () => {
+            throw new DiagnosticsError('manifest_missing');
+          },
+        },
+      })
+    ).toBe(1);
+    expect(text).toBe('Diagnostics could not be created.\nRun mnemonik install to try again.\n');
+    expect(text).not.toMatch(/bundle|manifest/iu);
   });
 
   it('refuses a modified preview without making a request', async () => {

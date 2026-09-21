@@ -26,30 +26,32 @@ export function renderNoSupportedEditors(output) {
     output.line('Learn more about supported editors:');
     output.line('https://mnemonik.ai/editor-support');
 }
-function editorAuthorizationLines(hosts = []) {
+export function editorAuthorizationRows(hosts = []) {
     const selected = new Set(hosts);
-    const rows = [
+    return [
         ...(selected.has('claude-code')
-            ? [['Claude Code', 'type /mcp, choose mnemonik, then Authenticate']]
+            ? ['Claude Code      type /mcp, choose mnemonik, then Authenticate']
             : []),
         ...(selected.has('codex')
             ? [
-                ['Codex CLI', 'run codex mcp login mnemonik'],
-                ['Codex Desktop', 'open Settings, Plugins, MCPs, then Authenticate'],
+                'Codex CLI        run codex mcp login mnemonik',
+                'Codex Desktop    open Settings, Plugins, MCPs, then Authenticate',
             ]
             : []),
         ...(selected.has('cursor')
-            ? [['Cursor Desktop', 'open Cursor Settings, Customize, MCPs, then Authenticate']]
+            ? ['Cursor Desktop   open Cursor Settings, Customize, MCPs, then Authenticate']
             : []),
     ];
+}
+function editorAuthorizationLines(hosts = []) {
+    const rows = editorAuthorizationRows(hosts);
     if (!rows.length)
         return [];
-    const width = Math.max(...rows.map(([editor]) => editor.length)) + 3;
     return [
         '  One step is left in each editor: Authorize the Mnemonik MCP connection.',
         '  You may need to restart your editor after authorizing.',
         '',
-        ...rows.map(([editor, instruction]) => `  ${editor.padEnd(width)}${instruction}`),
+        ...rows.map((row) => `  ${row}`),
         '',
     ];
 }

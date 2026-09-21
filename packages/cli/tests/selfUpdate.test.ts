@@ -494,8 +494,8 @@ it('reports a completed host update before the pending Codex trust action', asyn
     code: 3,
     text:
       'Mnemonik updated.\n' +
-      'Codex needs permission to use the Mnemonik hooks.\n' +
-      'Open Codex, allow the Mnemonik hooks, then quit and reopen Codex.\n',
+      'Codex has not trusted the Mnemonik hooks yet.\n' +
+      'Open Codex settings, trust the Mnemonik hooks, then quit and reopen Codex.\n',
     errors: '',
     report: undefined,
   });
