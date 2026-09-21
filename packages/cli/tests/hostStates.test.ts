@@ -1,5 +1,5 @@
 import { codexHookHash, readHooksJson } from '../../codex-hooks/dist/install.js';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, readFile, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
@@ -20,7 +20,7 @@ import {
 import { hostReadinessConditions } from '../src/install/journey.js';
 import { hookStatusConditions, runHosts } from '../src/install/hosts.js';
 import { bytesAt, interrupted, withInstall } from '../src/install/journal.js';
-import { readOwnership } from '../src/install/ownership.js';
+import { ownershipPath, readOwnership } from '../src/install/ownership.js';
 import { runCli } from '../src/router.js';
 import { createCliCredentials } from '../src/auth/credentials.js';
 import { RuntimeStore, type Verified } from '../src/runtime/store.js';
@@ -119,6 +119,84 @@ async function replaceJson(path: string, mutate: (value: Record<string, any>) =>
   mutate(value);
   await writeFile(path, JSON.stringify(value, null, 2) + '\n');
 }
+
+const hookFamily = (id: string) => ({
+  id,
+  access_token: `access-${id}`,
+  refresh_token: `refresh-${id}`,
+  token_type: 'Bearer' as const,
+  expires_in: 3600,
+  refresh_expires_in: 7200,
+  scope: 'hooks:use',
+  display_prefix: id,
+});
+
+describe('hook credential convergence', () => {
+  const editors = ['claude-code', 'codex', 'cursor'] as const;
+
+  it('installs all editors with one hook component family', async () => {
+    const f = await fixture();
+    let issued = 0;
+    f.deps.credentialFetch = vi.fn(async () => Response.json(hookFamily(`family-${++issued}`)));
+
+    await runHosts(
+      'install',
+      targets(f, 'hooks').filter(({ host }) => editors.includes(host as (typeof editors)[number])),
+      f.deps
+    );
+
+    const owned = (await readOwnership(f.deps.stateDir)).targets;
+    expect(issued).toBe(1);
+    expect(owned.map(({ credentialFamily }) => credentialFamily)).toEqual(
+      editors.map(() => 'family-1')
+    );
+    for (const target of owned)
+      expect(await readFile(target.profilePath, 'utf8')).toContain('--credential-family family-1');
+  }, 120_000);
+
+  it('automatic update converges split editor hook families', async () => {
+    const f = await fixture();
+    const selected = targets(f, 'hooks').filter(({ host }) =>
+      editors.includes(host as (typeof editors)[number])
+    );
+    await runHosts('install', selected, f.deps);
+    const credentials = createCredentialAdapter({ stateDir: f.deps.stateDir });
+    const split = {
+      'claude-code': 'claude-family',
+      codex: 'codex-family',
+      cursor: 'cursor-family',
+    } as const;
+    const ownership = await readOwnership(f.deps.stateDir);
+    for (const target of ownership.targets) {
+      const family = split[target.host as keyof typeof split];
+      await credentials.putFamily('hook', hookFamily(family));
+      const contents = (await readFile(target.profilePath, 'utf8')).replace(
+        /--credential-family [A-Za-z0-9_-]+/g,
+        `--credential-family ${family}`
+      );
+      await writeFile(target.profilePath, contents);
+      target.credentialFamily = family;
+      const file = target.files.find(({ path }) => path === target.profilePath)!;
+      file.hash = createHash('sha256').update(contents).digest('hex');
+    }
+    await writeFile(ownershipPath(f.deps.stateDir), JSON.stringify(ownership, null, 2) + '\n');
+    f.deps.credentialFetch = vi.fn(async () => {
+      throw new Error('automatic update must not issue a component family');
+    });
+
+    await runHosts('update', ownership.targets, f.deps);
+
+    const updated = (await readOwnership(f.deps.stateDir)).targets;
+    expect(updated.map(({ credentialFamily }) => credentialFamily)).toEqual(
+      editors.map(() => 'cursor-family')
+    );
+    expect(f.deps.credentialFetch).not.toHaveBeenCalled();
+    for (const target of updated)
+      expect(await readFile(target.profilePath, 'utf8')).toContain(
+        '--credential-family cursor-family'
+      );
+  }, 180_000);
+});
 
 describe('joined install journal', () => {
   it('re-reads pending Codex trust before the completion document and final host result', async () => {

@@ -327,10 +327,9 @@ export async function runHosts(command, selections, deps, allowMigration = false
                 if (target.component === 'hooks') {
                     const credentials = createCliCredentials({ stateDir: deps.stateDir });
                     target.credentialFamily =
-                        old?.credentialFamily ??
-                            record.targets.find((candidate) => candidate.host === selection.host &&
-                                candidate.component === 'hooks' &&
-                                candidate.home === selection.home)?.credentialFamily ??
+                        record.targets.filter((candidate) => candidate.component === 'hooks').at(-1)
+                            ?.credentialFamily ??
+                            old?.credentialFamily ??
                             '';
                     if (command !== 'update' &&
                         command !== 'uninstall' &&

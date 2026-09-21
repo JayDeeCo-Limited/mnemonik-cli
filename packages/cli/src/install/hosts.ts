@@ -439,13 +439,9 @@ export async function runHosts(
           if (target.component === 'hooks') {
             const credentials = createCliCredentials({ stateDir: deps.stateDir });
             target.credentialFamily =
+              record.targets.filter((candidate) => candidate.component === 'hooks').at(-1)
+                ?.credentialFamily ??
               old?.credentialFamily ??
-              record.targets.find(
-                (candidate) =>
-                  candidate.host === selection.host &&
-                  candidate.component === 'hooks' &&
-                  candidate.home === selection.home
-              )?.credentialFamily ??
               '';
             if (
               command !== 'update' &&
