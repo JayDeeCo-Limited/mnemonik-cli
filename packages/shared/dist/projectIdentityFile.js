@@ -68,7 +68,7 @@ export function parseIdentityFile(text) {
         },
     };
 }
-export async function readIdentityFile(dir) {
+export async function readIdentityFile(dir, options = {}) {
     const path = join(dir, '.mnemonik.json');
     try {
         const stat = await lstat(path);
@@ -76,7 +76,20 @@ export async function readIdentityFile(dir) {
             return { kind: 'malformed', detail: 'symlink' };
         if (!stat.isFile())
             return { kind: 'malformed', detail: 'identity path is not a regular file' };
-        return parseIdentityFile(await readFile(path, 'utf8'));
+        const text = await readFile(path, 'utf8');
+        if (options.selectedRoot) {
+            // A ticked folder with configuration but no identity is a new project.
+            // Keep invalid identities and non-regular files on the strict refusal path.
+            try {
+                const value = JSON.parse(text);
+                if (value && typeof value === 'object' && !Array.isArray(value) && !('projectId' in value))
+                    return { kind: 'absent' };
+            }
+            catch {
+                /* The strict parser supplies the diagnostic. */
+            }
+        }
+        return parseIdentityFile(text);
     }
     catch (error) {
         if (error.code === 'ENOENT')

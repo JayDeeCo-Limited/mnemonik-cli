@@ -51,6 +51,7 @@ export type ProjectIdentityResolution = (ResolvedBase & {
 export declare function resolveRepositoryRoot(cwd: string): Promise<RepositoryRootResult>;
 export declare function resolveProjectIdentity(cwd: string, options?: {
     allowNestedInherit?: boolean;
+    selectedRoot?: boolean;
 }): Promise<ProjectIdentityResolution>;
 export {};
 //# sourceMappingURL=repositoryRoot.d.ts.map

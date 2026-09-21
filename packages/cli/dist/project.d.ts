@@ -23,6 +23,8 @@ export interface ProjectReadTransport {
     }>;
 }
 export interface RealProjectRuntimeOptions {
+    /** Roots individually approved by the person for this install. */
+    selectedRoots?: boolean;
     apiBase?: string;
     resource?: string;
     fetch?: typeof fetch;

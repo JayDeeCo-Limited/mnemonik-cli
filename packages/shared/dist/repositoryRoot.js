@@ -164,7 +164,9 @@ export async function resolveProjectIdentity(cwd, options = {}) {
     if (repository.kind === 'git_unavailable')
         return repository;
     if (repository.kind === 'plain') {
-        const { root, result } = await readPlainIdentity(repository.root);
+        const { root, result } = options.selectedRoot
+            ? { root: repository.root, result: await readIdentityFile(repository.root, options) }
+            : await readPlainIdentity(repository.root);
         const base = withBase(repository, root, []);
         if (result.kind === 'ok')
             return { ...base, ...result };
@@ -178,8 +180,8 @@ export async function resolveProjectIdentity(cwd, options = {}) {
     const outer = repository.isLinkedWorktree
         ? undefined
         : await containingRepository(repository.root);
-    const own = await readIdentityFile(ownRoot);
-    if (!outer) {
+    const own = await readIdentityFile(ownRoot, options);
+    if (!outer || options.selectedRoot || own.kind === 'ok') {
         const base = withBase(repository, ownRoot, repository.nested);
         if (own.kind === 'ok')
             return { ...base, ...own };
@@ -201,17 +203,6 @@ export async function resolveProjectIdentity(cwd, options = {}) {
         return { ...base, ...parent, path: parentRoot };
     if (parent.kind === 'malformed')
         return { ...base, ...parent, path: parentRoot };
-    if (own.kind === 'ok' && parent.kind === 'ok') {
-        return {
-            ...base,
-            kind: 'conflict',
-            rootIdentity: parent.identity,
-            nestedIdentity: own.identity,
-        };
-    }
-    if (own.kind === 'ok') {
-        return { ...withBase(repository, ownRoot, nested), kind: 'ok', identity: own.identity };
-    }
     if (!options.allowNestedInherit) {
         return {
             ...base,

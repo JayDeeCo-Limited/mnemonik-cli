@@ -285,7 +285,9 @@ it.each([
       expect(await readFile(scannerFile, 'utf8')).toBe('scanner installed');
       const document = JSON.parse(text);
       expect(document.installation.state).toBe('ACTION_REQUIRED');
-      expect(document.installation.reasons).toContain(`project_setup_required: ~/foreign-project`);
+      expect(document.installation.reasons).toEqual([
+        expect.stringMatching(/^project_setup_required: .+: ~\/foreign-project$/),
+      ]);
       expect(document.projects).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
@@ -593,7 +595,12 @@ it('leaves a fingerprint mismatch out while connecting a matching identity', asy
   expect(code).toBe(3);
   expect(consumeSetupRequest).not.toHaveBeenCalled();
   expect(scannerApply).toHaveBeenCalledWith(expect.anything(), [matching]);
-  expect(text.match(/mnemonik project init/g)).toHaveLength(1);
+  expect(text).not.toContain('mnemonik project init');
+  expect(text).toContain(
+    'mismatch was not connected. Its Git remote does not match the repository this project was set up with.'
+  );
+  expect(text).not.toContain(home);
+  expect(text).not.toContain('fingerprint_mismatch');
   expect(await readFile(join(matching, '.mnemonik.json'), 'utf8')).toContain(matchingProjectId);
   expect(await readFile(join(mismatch, '.mnemonik.json'), 'utf8')).toBe(
     JSON.stringify({ schemaVersion: 1, projectId: mismatchProjectId })
@@ -608,7 +615,7 @@ it.each([
     nonGit: 'w/devops',
   },
   {
-    name: 'prefers a stored-fingerprint match over a lexically earlier copy',
+    name: 'prefers a local-fingerprint match when ordering duplicate attempts',
     paths: ['w/a-copy', 'w/z-original'],
     expected: 'w/z-original',
     matchingFingerprint: 'w/z-original',
@@ -710,8 +717,12 @@ it.each([
   expect(executor.apply).toHaveBeenCalledTimes(1);
   expect(scannerApply).toHaveBeenCalledWith(expect.anything(), [selectedRoot]);
   expect(text).toContain('  ✓ Connected 1 repository.');
-  expect(text.match(/mnemonik project init/g)).toHaveLength(1);
-  expect(text).toContain(`mnemonik project init "~/${leftoverPath}"`);
+  expect(text).not.toContain('mnemonik project init');
+  expect(text).toContain(
+    `${leftoverPath.split('/').at(-1)} was not connected. It belongs to the same project as ${expected.split('/').at(-1)}, which is already connected.`
+  );
+  expect(text).not.toContain(home);
+  expect(text).not.toContain('duplicate_project_id');
 });
 
 it('leaves one inaccessible identity for the person and reports it once', async () => {
@@ -778,7 +789,7 @@ it('leaves one inaccessible identity for the person and reports it once', async 
   expect(executor.stage).toHaveBeenCalledWith(
     expect.objectContaining({ intent: { action: 'link', projectId } })
   );
-  expect(text.match(/mnemonik project init/g)).toHaveLength(1);
+  expect(text).not.toContain('mnemonik project init');
   expect(executor.apply).not.toHaveBeenCalled();
 });
 
@@ -816,7 +827,7 @@ it('keeps earlier projects and reports the skipped count when the plan limit is 
   );
   const executor = {
     stage: vi.fn(async ({ cwd }: { cwd: string }) => {
-      if (cwd === shop)
+      if ([shop, docs, api].includes(cwd))
         return {
           status: 'ACTION_REQUIRED',
           state: 'project_limit_reached',

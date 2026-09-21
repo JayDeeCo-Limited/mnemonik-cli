@@ -1044,3 +1044,52 @@ describe('durable local setup', () => {
       expect((await stat(recordPath(f.root, f.stateDir))).mode & 0o777).toBe(0o600);
   });
 });
+
+it('reinstalls an earlier-created identity and rolls back to the current bytes', async () => {
+  const f = await fixture();
+  const executor = createProjectSetupExecutor(f.deps);
+  expect(await executor.ensureProject(f.options)).toHaveProperty('status', 'done');
+  const firstOperation = (await f.record()).operationId;
+  const current = Buffer.from(
+    `{ "schemaVersion": 1, "projectId": "${projectId}", "projectName": "renamed" }\r\n`
+  );
+  await writeFile(f.file, current);
+  f.resolver.resolution = {
+    kind: 'ok',
+    root: f.root,
+    repository: { kind: 'plain', root: f.root },
+    nested: [],
+    identity: { schemaVersion: 1, projectId },
+  };
+  const options = { ...f.options, intent: { action: 'link' as const, projectId } };
+  expect(await executor.stage(options)).toHaveProperty('status', 'staged');
+  expect((await f.record()).operationId).not.toBe(firstOperation);
+  expect(await executor.apply(options)).toHaveProperty('status', 'done');
+  expect(f.operations.size).toBe(1);
+  expect(f.transport.issueSetupRequest).toHaveBeenCalledTimes(2);
+  expect(await executor.rollback(options)).toHaveProperty('status', 'rolled_back');
+  expect(await readFile(f.file)).toEqual(current);
+});
+
+it('rechecks a completed identity on a new stage and refuses a changed fingerprint', async () => {
+  const f = await fixture();
+  const executor = createProjectSetupExecutor(f.deps);
+  expect(await executor.ensureProject(f.options)).toHaveProperty('status', 'done');
+  f.resolver.resolution = {
+    kind: 'ok',
+    root: f.root,
+    repository: { kind: 'plain', root: f.root },
+    nested: [],
+    identity: { schemaVersion: 1, projectId },
+  };
+  const before = await readFile(f.file);
+  f.transport.issueSetupRequest.mockResolvedValue({
+    status: 'project_setup_required',
+    state: 'fingerprint_mismatch',
+    allowedActions: ['link', 'cancel'],
+    requestId: randomUUID(),
+  });
+  expect(await executor.stage(f.options)).toHaveProperty('state', 'fingerprint_mismatch');
+  expect(await readFile(f.file)).toEqual(before);
+  expect(f.transport.consumeSetupRequest).toHaveBeenCalledTimes(1);
+});

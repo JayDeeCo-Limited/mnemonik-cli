@@ -41,7 +41,9 @@ async function repositoryRemotes(path) {
 }
 export async function classifyRepository(path, options = {}) {
     const canonical = await (options.canonicalizePath ?? realpath)(path);
-    const resolution = await (options.resolveIdentity ?? resolveProjectIdentity)(canonical);
+    const resolution = await (options.resolveIdentity ?? resolveProjectIdentity)(canonical, {
+        selectedRoot: true,
+    });
     const resolvedPath = resolution.kind === 'git_unavailable'
         ? canonical
         : await (options.canonicalizePath ?? realpath)(resolution.repository.kind === 'git' ? resolution.repository.root : resolution.root);

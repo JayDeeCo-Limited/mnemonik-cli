@@ -443,3 +443,22 @@ it.each(['starting', 'running'])(
     }
   }
 );
+
+it.each(['duplicate_project_id', 'fingerprint_mismatch'])(
+  'maps installer %s diagnostics to human status text while preserving JSON',
+  (state) => {
+    const reason = `project_setup_required: ${state}: /home/alice/projects/a-copy`;
+    const document = buildStatusDocument({
+      installationConditions: [{ kind: 'project_identity_choice_pending', reason }],
+      scannerStatus: { roots: [], exclusions: [], repositories: [] },
+      projectHookConditions: [],
+    });
+    const lines: string[] = [];
+    renderStatusSummaries(document, { line: (line = '') => lines.push(line) });
+    expect(lines).toContain('A project on this machine still needs to be connected.');
+    expect(lines.join('\n')).not.toMatch(
+      /project_setup_required|duplicate_project_id|fingerprint_mismatch|\/home\/alice/
+    );
+    expect(JSON.parse(JSON.stringify(document)).installation.reasons).toEqual([reason]);
+  }
+);

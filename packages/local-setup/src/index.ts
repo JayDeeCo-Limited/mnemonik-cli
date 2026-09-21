@@ -207,6 +207,20 @@ export function createProjectSetupExecutor(deps: ExecutorDependencies) {
           (record.remote && hash(JSON.stringify(record.remote)) !== record.steps.remote.afterHash)
         )
           return actionRequired('record_invalid');
+        // A new install of a completed identity is a new local operation. Preserve
+        // today's bytes for rollback and recheck access/evidence on the server.
+        if (
+          mode === 'stage' &&
+          record.scopeKey === hash(deps.scopeKey) &&
+          record.steps.identity.complete &&
+          !record.steps.rollback.started &&
+          resolution.kind === 'ok' &&
+          resolution.identity.projectId === record.remote?.projectId &&
+          (!options.intent || options.intent.projectId === record.remote.projectId)
+        ) {
+          record = freshRecord();
+          recordIsNew = true;
+        }
         if (
           record.scopeKey !== hash(deps.scopeKey) ||
           (options.owner !== undefined &&

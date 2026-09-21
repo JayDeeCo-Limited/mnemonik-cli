@@ -1,5 +1,5 @@
 import { appendFile, mkdir, readFile, rm } from 'node:fs/promises';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { homedir } from 'node:os';
 import { setTimeout as delay } from 'node:timers/promises';
 import { apiOrigin, remainingReadinessCount, serializeReadiness, } from '@mnemonik/shared';
@@ -459,11 +459,16 @@ export async function joinedInstall(flags, deps, output, authorize, management) 
             const projectConditions = [];
             const projectReadiness = [];
             const linkIntents = new Map();
-            const leaveProjectForPerson = (root, identityFile) => {
+            const leaveProjectForPerson = (root, identityFile, state, connectedRoot) => {
+                let action = `${basename(root)} was not connected.`;
+                if (state === 'duplicate_project_id' && connectedRoot)
+                    action += ` It belongs to the same project as ${basename(connectedRoot)}, which is already connected.`;
+                else if (state === 'fingerprint_mismatch')
+                    action += ' Its Git remote does not match the repository this project was set up with.';
                 const condition = {
                     kind: 'project_identity_choice_pending',
-                    reason: `project_setup_required: ${root}`,
-                    action: `mnemonik project init "${root}"`,
+                    reason: `project_setup_required: ${state}: ${root}`,
+                    action,
                 };
                 projectConditions.push(condition);
                 projectReadiness.push(...(serializeReadiness({
@@ -478,6 +483,7 @@ export async function joinedInstall(flags, deps, output, authorize, management) 
                     startProgress('Connecting your repositories');
                     if (!executor) {
                         const runtime = await createRealProjectRuntime({
+                            selectedRoots: true,
                             stateDir,
                             getCliBearer: managed.getCliBearer,
                         });
@@ -488,6 +494,7 @@ export async function joinedInstall(flags, deps, output, authorize, management) 
                     if (!projectExecutor)
                         throw new Error('no_project');
                     const connectedRoots = [];
+                    const limitedRoots = [];
                     const selectedRepositories = await Promise.all(scannerPlan.roots.map(async (selectedRoot) => {
                         const repo = await classifyRepository(selectedRoot);
                         const resolution = repo.state === 'existing_project'
@@ -499,7 +506,8 @@ export async function joinedInstall(flags, deps, output, authorize, management) 
                             linkProjectId: resolution?.kind === 'ok' ? resolution.identity.projectId : undefined,
                         };
                     }));
-                    const firstRootByProject = new Map();
+                    const stagedRootByProject = new Map();
+                    const candidateOrder = new Map();
                     const rootsByProject = new Map();
                     for (const selected of selectedRepositories) {
                         if (!selected.linkProjectId)
@@ -508,13 +516,9 @@ export async function joinedInstall(flags, deps, output, authorize, management) 
                         roots.push(selected);
                         rootsByProject.set(selected.linkProjectId, roots);
                     }
-                    for (const [projectId, candidates] of rootsByProject) {
-                        if (candidates.length === 1) {
-                            const only = candidates[0];
-                            if (only)
-                                firstRootByProject.set(projectId, only.repo.path);
+                    for (const candidates of rootsByProject.values()) {
+                        if (candidates.length === 1)
                             continue;
-                        }
                         const ranked = await Promise.all(candidates.map(async (candidate) => {
                             const resolution = candidate.resolution;
                             const git = resolution?.kind === 'ok' && resolution.repository.kind === 'git';
@@ -533,13 +537,16 @@ export async function joinedInstall(flags, deps, output, authorize, management) 
                             Number(right.git) - Number(left.git) ||
                             left.repo.path.length - right.repo.path.length ||
                             (left.repo.path < right.repo.path ? -1 : left.repo.path > right.repo.path ? 1 : 0));
-                        const preferred = ranked[0];
-                        if (preferred)
-                            firstRootByProject.set(projectId, preferred.repo.path);
+                        ranked.forEach((candidate, index) => candidateOrder.set(candidate.repo.path, index));
                     }
-                    for (const [rootIndex, { repo, linkProjectId }] of selectedRepositories.entries()) {
-                        if (linkProjectId && firstRootByProject.get(linkProjectId) !== repo.path) {
-                            leaveProjectForPerson(repo.path, join(repo.path, '.mnemonik.json'));
+                    // Local evidence only orders attempts. A server-validated stage reserves the UUID.
+                    selectedRepositories.sort((left, right) => (candidateOrder.get(left.repo.path) ?? 0) - (candidateOrder.get(right.repo.path) ?? 0));
+                    for (const { repo, linkProjectId } of selectedRepositories) {
+                        const connectedRoot = linkProjectId
+                            ? stagedRootByProject.get(linkProjectId)
+                            : undefined;
+                        if (connectedRoot) {
+                            leaveProjectForPerson(repo.path, join(repo.path, '.mnemonik.json'), 'duplicate_project_id', connectedRoot);
                             continue;
                         }
                         if (linkProjectId)
@@ -559,13 +566,18 @@ export async function joinedInstall(flags, deps, output, authorize, management) 
                         await journal.event('project_stage_intent', repo.path);
                         const staged = await projectExecutor.stage(options);
                         if (staged.status !== 'staged') {
-                            limitMessage = projectLimitMessage(staged, scannerPlan.roots.slice(rootIndex))?.join('\n');
+                            const message = projectLimitMessage(staged, [...limitedRoots, repo.path]);
                             await journal.restore(target);
-                            if (limitMessage)
-                                break;
-                            leaveProjectForPerson(repo.path, target.path);
+                            if (message) {
+                                limitedRoots.push(repo.path);
+                                limitMessage = message.join('\n');
+                                continue;
+                            }
+                            leaveProjectForPerson(repo.path, target.path, 'state' in staged ? staged.state : staged.status);
                             continue;
                         }
+                        if (linkProjectId)
+                            stagedRootByProject.set(linkProjectId, repo.path);
                         connectedRoots.push(repo.path);
                         if (!journal.data.projects.some((p) => p.root === repo.path))
                             journal.data.projects.push({

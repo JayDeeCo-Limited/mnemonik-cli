@@ -103,6 +103,8 @@ export interface ProjectReadTransport {
 }
 
 export interface RealProjectRuntimeOptions {
+  /** Roots individually approved by the person for this install. */
+  selectedRoots?: boolean;
   apiBase?: string;
   resource?: string;
   fetch?: typeof fetch;
@@ -163,6 +165,8 @@ export async function repositoryFingerprint(root: string): Promise<RepositoryFin
 }
 
 export async function createRealProjectRuntime(options: RealProjectRuntimeOptions = {}) {
+  const resolveIdentity: typeof resolveProjectIdentity = (cwd, resolverOptions) =>
+    resolveProjectIdentity(cwd, { ...resolverOptions, selectedRoot: options.selectedRoots });
   const credentials =
     options.credentials ??
     createCliCredentials(options.stateDir ? { stateDir: options.stateDir } : {});
@@ -194,7 +198,7 @@ export async function createRealProjectRuntime(options: RealProjectRuntimeOption
     const [binding, fingerprint, resolution] = await Promise.all([
       credentials.hmacRootBinding(1, root),
       repositoryFingerprint(root),
-      resolveProjectIdentity(root, { allowNestedInherit: false }),
+      resolveIdentity(root, { allowNestedInherit: false }),
     ]);
     const evidence = {
       deviceRootContext: {
@@ -222,7 +226,7 @@ export async function createRealProjectRuntime(options: RealProjectRuntimeOption
     transport,
     getCliBearer: transport.getCliBearer,
     executor: projectExecutor({
-      resolver: { resolveProjectIdentity },
+      resolver: { resolveProjectIdentity: resolveIdentity },
       transport,
       scopeKey: `${account.userId}:${account.deviceInstallationId}`,
       bindContext,

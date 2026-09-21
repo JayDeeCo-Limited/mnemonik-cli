@@ -21,5 +21,7 @@ export type IdentityFileResult = {
 export declare function parseIdentityFile(text: string): Exclude<IdentityFileResult, {
     kind: 'absent';
 }>;
-export declare function readIdentityFile(dir: string): Promise<IdentityFileResult>;
+export declare function readIdentityFile(dir: string, options?: {
+    selectedRoot?: boolean;
+}): Promise<IdentityFileResult>;
 //# sourceMappingURL=projectIdentityFile.d.ts.map

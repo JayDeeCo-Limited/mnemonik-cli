@@ -54,3 +54,31 @@ test('schema-v1 requires canonical RFC 4122 UUID spelling', () => {
     );
   }
 });
+
+test('only a selected regular JSON object without a project id is treated as unassigned', async () => {
+  const { mkdtemp, writeFile, rm, symlink } = await import('node:fs/promises');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const root = await mkdtemp(join(tmpdir(), 'selected-identity-'));
+  const path = join(root, '.mnemonik.json');
+  try {
+    for (const text of ['{}', '{"scan":{"enabled":true}}', '{"schemaVersion":1}']) {
+      await writeFile(path, text);
+      assert.notEqual((await readIdentityFile(root)).kind, 'absent');
+      assert.equal((await readIdentityFile(root, { selectedRoot: true })).kind, 'absent');
+    }
+    for (const text of ['{', 'null', '[]', '{"projectId":null}', '{"projectId":"invalid"}']) {
+      await writeFile(path, text);
+      assert.notEqual((await readIdentityFile(root, { selectedRoot: true })).kind, 'absent');
+    }
+    if (process.platform !== 'win32') {
+      await rm(path);
+      const target = join(root, 'other.json');
+      await writeFile(target, '{}');
+      await symlink(target, path);
+      assert.equal((await readIdentityFile(root, { selectedRoot: true })).kind, 'malformed');
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

@@ -419,7 +419,7 @@ describe('repository discovery', () => {
 });
 
 describe('repository states', () => {
-  it('maps identity, remote-only, bare, v0, and nested conflict states', async () => {
+  it('maps identity, remote-only, bare, v0, and individually selectable nested identities', async () => {
     const root = await temporaryDirectory();
     const existing = join(root, 'existing');
     const remote = join(root, 'remote');
@@ -427,7 +427,8 @@ describe('repository states', () => {
     const legacy = join(root, 'legacy');
     const malformed = join(root, 'malformed');
     const outer = join(root, 'outer');
-    const conflict = join(outer, 'nested');
+    const nested = join(outer, 'nested');
+    const unassigned = join(outer, 'unassigned');
     await git(existing);
     await identity(existing, uuid('1'));
     await git(remote, 'git@github.com:mnemonik/remote.git');
@@ -438,8 +439,10 @@ describe('repository states', () => {
     await fs.writeFile(join(malformed, '.mnemonik.json'), '{');
     await git(outer);
     await identity(outer, uuid('3'));
-    await git(conflict);
-    await identity(conflict, uuid('4'));
+    await git(nested);
+    await identity(nested, uuid('4'));
+    await git(unassigned, 'git@github.com:mnemonik/unassigned.git');
+    await fs.writeFile(join(unassigned, '.mnemonik.json'), JSON.stringify({ scan: {} }));
 
     expect((await classifyRepository(existing)).state).toBe('existing_project');
     expect((await classifyRepository(remote)).state).toBe('remote_setup');
@@ -452,9 +455,13 @@ describe('repository states', () => {
       state: 'action_required',
       reason: 'malformed',
     });
-    expect(await classifyRepository(conflict)).toMatchObject({
-      state: 'action_required',
-      reason: 'conflict',
+    expect(await classifyRepository(nested)).toMatchObject({
+      path: nested,
+      state: 'existing_project',
+    });
+    expect(await classifyRepository(unassigned)).toMatchObject({
+      path: unassigned,
+      state: 'remote_setup',
     });
   });
 });

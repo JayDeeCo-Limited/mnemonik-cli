@@ -86,13 +86,28 @@ export function parseIdentityFile(text: string): Exclude<IdentityFileResult, { k
   };
 }
 
-export async function readIdentityFile(dir: string): Promise<IdentityFileResult> {
+export async function readIdentityFile(
+  dir: string,
+  options: { selectedRoot?: boolean } = {}
+): Promise<IdentityFileResult> {
   const path = join(dir, '.mnemonik.json');
   try {
     const stat = await lstat(path);
     if (stat.isSymbolicLink()) return { kind: 'malformed', detail: 'symlink' };
     if (!stat.isFile()) return { kind: 'malformed', detail: 'identity path is not a regular file' };
-    return parseIdentityFile(await readFile(path, 'utf8'));
+    const text = await readFile(path, 'utf8');
+    if (options.selectedRoot) {
+      // A ticked folder with configuration but no identity is a new project.
+      // Keep invalid identities and non-regular files on the strict refusal path.
+      try {
+        const value: unknown = JSON.parse(text);
+        if (value && typeof value === 'object' && !Array.isArray(value) && !('projectId' in value))
+          return { kind: 'absent' };
+      } catch {
+        /* The strict parser supplies the diagnostic. */
+      }
+    }
+    return parseIdentityFile(text);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { kind: 'absent' };
     return { kind: 'malformed', detail: `cannot read identity file: ${(error as Error).message}` };

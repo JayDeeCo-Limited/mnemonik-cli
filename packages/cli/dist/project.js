@@ -82,6 +82,7 @@ export async function repositoryFingerprint(root) {
         : null;
 }
 export async function createRealProjectRuntime(options = {}) {
+    const resolveIdentity = (cwd, resolverOptions) => resolveProjectIdentity(cwd, { ...resolverOptions, selectedRoot: options.selectedRoots });
     const credentials = options.credentials ??
         createCliCredentials(options.stateDir ? { stateDir: options.stateDir } : {});
     const contexts = new Map();
@@ -109,7 +110,7 @@ export async function createRealProjectRuntime(options = {}) {
         const [binding, fingerprint, resolution] = await Promise.all([
             credentials.hmacRootBinding(1, root),
             repositoryFingerprint(root),
-            resolveProjectIdentity(root, { allowNestedInherit: false }),
+            resolveIdentity(root, { allowNestedInherit: false }),
         ]);
         const evidence = {
             deviceRootContext: {
@@ -135,7 +136,7 @@ export async function createRealProjectRuntime(options = {}) {
         transport,
         getCliBearer: transport.getCliBearer,
         executor: projectExecutor({
-            resolver: { resolveProjectIdentity },
+            resolver: { resolveProjectIdentity: resolveIdentity },
             transport,
             scopeKey: `${account.userId}:${account.deviceInstallationId}`,
             bindContext,

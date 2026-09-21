@@ -118,7 +118,7 @@ export function runIdentityFixtureSuite(register, adapter) {
     })
   );
 
-  register('nested repository with its own identity is a conflict', () =>
+  register('nested repository uses its own valid identity across consumers', () =>
     fixture(async (base) => {
       const main = join(base, 'main');
       const nested = join(main, 'vendor', 'nested');
@@ -128,12 +128,11 @@ export function runIdentityFixtureSuite(register, adapter) {
       await identity(nested, NESTED_ID, 'nested');
 
       const result = await adapter.resolve(nested);
-      assert.equal(result.kind, 'conflict');
-      assert.equal(result.root, main);
-      assert.equal(result.rootIdentity.projectId, ROOT_ID);
-      assert.equal(result.nestedIdentity.projectId, NESTED_ID);
+      assert.equal(result.kind, 'ok');
+      assert.equal(result.root, nested);
+      assert.equal(result.identity.projectId, NESTED_ID);
       assert.ok(result.nested.some((entry) => entry.path === nested));
-      if (adapter.find) assert.equal(await adapter.find(nested), null);
+      if (adapter.find) assert.equal((await adapter.find(nested)).projectId, NESTED_ID);
     })
   );
 
