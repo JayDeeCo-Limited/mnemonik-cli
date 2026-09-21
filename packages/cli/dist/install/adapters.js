@@ -1,12 +1,12 @@
 import { pathToFileURL } from 'node:url';
 import { dirname, join } from 'node:path';
 import { bytesAt } from './journal.js';
-export const hostOrder = ['claude-code', 'codex', 'grok', 'cursor'];
-export const hostPackages = {
-    'claude-code': '@mnemonik/claude-code-hooks',
-    codex: '@mnemonik/codex-hooks',
-    grok: '@mnemonik/grok-hooks',
-    cursor: '@mnemonik/cursor-hooks',
+export const launchHosts = ['claude-code', 'codex', 'cursor'];
+export const hostOrder = launchHosts;
+export const launchHostLabels = {
+    'claude-code': 'Claude Code',
+    codex: 'Codex',
+    cursor: 'Cursor',
 };
 // The caller supplies a freshly verified store result, never an npm cache path.
 const loadAdapter = (runtime) => import(pathToFileURL(join(dirname(runtime.entry), 'adapter.js')).href);
@@ -14,7 +14,6 @@ export const hostPackageImports = {
     'claude-code': loadAdapter,
     codex: loadAdapter,
     cursor: loadAdapter,
-    grok: loadAdapter,
 };
 export class SimulatedHostAdapter {
     name;

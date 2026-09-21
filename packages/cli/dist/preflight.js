@@ -2,6 +2,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { apiOrigin, resolveProjectIdentity, } from '@mnemonik/shared';
 import { hostDiscovery } from './hostDiscovery.js';
+import { launchHostLabels, launchHosts } from './install/adapters.js';
 const osName = (platform) => platform === 'darwin'
     ? 'macOS'
     : platform === 'win32'
@@ -19,66 +20,43 @@ export function nodeVersionHelp(version, platform) {
                 : 'Install Node 24: https://nodejs.org/en/download',
     ];
 }
-const hostPaths = (home, project) => [
-    {
-        name: 'Claude Code',
-        supported: true,
-        paths: [
-            join(home, '.claude', 'settings.json'),
-            join(home, '.claude.json'),
-            join(home, '.claude'),
-            join(project, '.claude', 'settings.json'),
-            join(project, '.mcp.json'),
-            join(project, '.claude'),
-        ],
-    },
-    {
-        name: 'Codex',
-        supported: true,
-        paths: [
-            join(home, '.codex', 'config.toml'),
-            join(home, '.codex', 'hooks.json'),
-            join(home, '.codex'),
-            join(project, '.codex', 'config.toml'),
-            join(project, '.codex', 'hooks.json'),
-            join(project, '.codex'),
-        ],
-    },
-    {
-        name: 'Cursor',
-        supported: true,
-        paths: [
-            join(home, '.cursor', 'mcp.json'),
-            join(home, '.cursor', 'hooks.json'),
-            join(home, '.cursor'),
-            join(project, '.cursor', 'mcp.json'),
-            join(project, '.cursor', 'hooks.json'),
-            join(project, '.cursor'),
-        ],
-    },
-    {
-        name: 'Grok',
-        supported: true,
-        paths: [
-            join(home, '.grok', 'config.toml'),
-            join(home, '.grok', 'hooks', 'mnemonik.json'),
-            join(home, '.grok'),
-            join(project, '.grok', 'config.toml'),
-            join(project, '.grok', 'hooks', 'mnemonik.json'),
-            join(project, '.grok'),
-        ],
-    },
-];
+const hostPaths = (home, project) => ({
+    'claude-code': [
+        join(home, '.claude', 'settings.json'),
+        join(home, '.claude.json'),
+        join(home, '.claude'),
+        join(project, '.claude', 'settings.json'),
+        join(project, '.mcp.json'),
+        join(project, '.claude'),
+    ],
+    codex: [
+        join(home, '.codex', 'config.toml'),
+        join(home, '.codex', 'hooks.json'),
+        join(home, '.codex'),
+        join(project, '.codex', 'config.toml'),
+        join(project, '.codex', 'hooks.json'),
+        join(project, '.codex'),
+    ],
+    cursor: [
+        join(home, '.cursor', 'mcp.json'),
+        join(home, '.cursor', 'hooks.json'),
+        join(home, '.cursor'),
+        join(project, '.cursor', 'mcp.json'),
+        join(project, '.cursor', 'hooks.json'),
+        join(project, '.cursor'),
+    ],
+});
 export async function runPreflight(deps = {}) {
     const home = deps.home ?? homedir();
     const resolution = await (deps.resolveIdentity ?? resolveProjectIdentity)(deps.cwd ?? process.cwd());
     const root = 'root' in resolution ? resolution.root : (deps.cwd ?? process.cwd());
     const pathExists = deps.pathExists ?? hostDiscovery.pathExists;
     const hosts = [];
-    for (const candidate of hostPaths(home, root)) {
-        for (const path of candidate.paths) {
+    const paths = hostPaths(home, root);
+    for (const host of launchHosts) {
+        for (const path of paths[host]) {
             if (await pathExists(path)) {
-                hosts.push({ name: candidate.name, supported: candidate.supported, path });
+                hosts.push({ name: launchHostLabels[host], supported: true, path });
                 break;
             }
         }
@@ -87,23 +65,28 @@ export async function runPreflight(deps = {}) {
     const discoveryUrl = deps.discoveryUrl ??
         new URL('/.well-known/oauth-protected-resource', deps.resource ?? apiOrigin()).href;
     let network;
-    try {
-        const response = await (deps.fetch ?? globalThis.fetch)(discoveryUrl, {
-            method: 'GET',
-            signal: AbortSignal.timeout(5_000),
-        });
-        network = {
-            reachable: response.ok,
-            discoveryUrl,
-            ...(!response.ok ? { detail: `HTTP ${response.status}` } : {}),
-        };
+    if (deps.skipNetworkWithoutHosts && !hosts.length) {
+        network = { reachable: false, discoveryUrl };
     }
-    catch (error) {
-        network = {
-            reachable: false,
-            discoveryUrl,
-            detail: error instanceof Error ? error.message : String(error),
-        };
+    else {
+        try {
+            const response = await (deps.fetch ?? globalThis.fetch)(discoveryUrl, {
+                method: 'GET',
+                signal: AbortSignal.timeout(5_000),
+            });
+            network = {
+                reachable: response.ok,
+                discoveryUrl,
+                ...(!response.ok ? { detail: `HTTP ${response.status}` } : {}),
+            };
+        }
+        catch (error) {
+            network = {
+                reachable: false,
+                discoveryUrl,
+                detail: error instanceof Error ? error.message : String(error),
+            };
+        }
     }
     const version = (deps.nodeVersion ?? process.versions.node).replace(/^v/, '');
     const supported = Number(version.split('.')[0]) >= 24;

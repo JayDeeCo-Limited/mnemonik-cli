@@ -1,6 +1,7 @@
 import { type AdapterDependencies, resolveProjectIdentity, type ProjectIdentityResolution } from '@mnemonik/shared';
 import type { Output } from './output.js';
-export type HostName = 'Claude Code' | 'Codex' | 'Cursor' | 'Grok' | 'VS Code Copilot';
+import { launchHostLabels, launchHosts } from './install/adapters.js';
+export type HostName = (typeof launchHostLabels)[(typeof launchHosts)[number]];
 export interface DetectedHost {
     name: HostName;
     supported: boolean;
@@ -34,6 +35,7 @@ export interface PreflightDependencies {
     pathExists?: (path: string) => Promise<boolean>;
     discoveryUrl?: string;
     resource?: string;
+    skipNetworkWithoutHosts?: boolean;
     /** Retained for injected callers; editor discovery no longer executes binaries. */
     execFile?: AdapterDependencies['execFile'];
     binaryExists?: AdapterDependencies['binaryExists'];

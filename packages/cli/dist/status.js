@@ -152,14 +152,12 @@ export function buildStatusDocument(input) {
         generatedAt: input.generatedAt,
     });
 }
+export const CODEX_TRUST_MESSAGE = {
+    sentence: 'Codex needs permission to use the Mnemonik hooks.',
+    nextStep: 'Open Codex, allow the Mnemonik hooks, then quit and reopen Codex.',
+};
 const readinessMessages = [
-    [
-        /host_trust_pending|trust_pending/iu,
-        {
-            sentence: 'Codex needs permission to use the Mnemonik hooks.',
-            nextStep: 'Open Codex, allow the Mnemonik hooks, then quit and reopen Codex.',
-        },
-    ],
+    [/host_trust_pending|trust_pending/iu, CODEX_TRUST_MESSAGE],
     [
         /vendor_policy_pending|vendor policy/iu,
         {

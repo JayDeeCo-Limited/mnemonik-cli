@@ -86,9 +86,7 @@ const releaseManifest = (version: string) => ({
       '@mnemonik/cli',
       '@mnemonik/claude-code-hooks',
       '@mnemonik/codex-hooks',
-      '@mnemonik/copilot-hooks',
       '@mnemonik/cursor-hooks',
-      '@mnemonik/grok-hooks',
     ].map((name) => [
       name,
       {
@@ -183,6 +181,26 @@ async function update(json = true) {
     stderr: { write: (value) => (errors += value) },
   });
   return { code, text, errors, report: json ? JSON.parse(text) : undefined };
+}
+
+function selectCodexHooks() {
+  vi.spyOn(hosts, 'selectOwned').mockResolvedValue({
+    ambiguous: [],
+    selected: [
+      {
+        id: 'codex-hooks',
+        host: 'codex',
+        component: 'hooks',
+        scope: 'user',
+        home: state,
+        profilePath: join(state, 'codex/config.toml'),
+        files: [],
+        version: '0.8.177',
+        artifactDigest: 'fixture',
+        runtimePointer: 'fixture',
+      },
+    ],
+  });
 }
 it('plain update --json installs latest, retaining the old CLI as previous', async () => {
   const { code, report } = await update();
@@ -353,13 +371,194 @@ it('manual and automatic updates use the customer output contract', async () => 
   expect({ stdout: stdout.text, stderr: stderr.text }).toEqual({ stdout: '', stderr: '' });
 });
 
-it('manual update failure gives one retry action without internal detail', async () => {
+it.each([
+  ['Grok', 'grok', '.grok'],
+  ['Copilot', 'vscode-copilot', '.copilot'],
+])('automatic update ignores ownership left by an earlier %s install', async (_name, host, dir) => {
+  const id = `${host}:hooks:user`;
+  await writeFile(
+    join(state, 'host-ownership.json'),
+    JSON.stringify({
+      schemaVersion: 1,
+      generation: 0,
+      targets: [
+        {
+          id,
+          host,
+          component: 'hooks',
+          scope: 'user',
+          home: state,
+          profilePath: join(state, dir, 'hooks', 'hooks.json'),
+          version: '0.1.49',
+          artifactDigest: 'legacy',
+          runtimePointer: join(state, 'runtimes', host, 'current'),
+          files: [],
+        },
+      ],
+    })
+  );
+  const stdout = {
+    text: '',
+    write(value: string) {
+      this.text += value;
+    },
+  };
+  const stderr = {
+    text: '',
+    write(value: string) {
+      this.text += value;
+    },
+  };
+
+  expect(
+    await runCli(['update', '--automatic'], {
+      installStateDir: state,
+      home: state,
+      stdout,
+      stderr,
+    })
+  ).toBe(0);
+  expect({ stdout: stdout.text, stderr: stderr.text }).toEqual({ stdout: '', stderr: '' });
+  expect(await readFile(join(state, 'host-ownership.json'), 'utf8')).toContain(id);
+});
+
+it.each([
+  ['Grok', 'grok', '.grok'],
+  ['Copilot', 'vscode-copilot', '.copilot'],
+])('uninstall leaves earlier %s hooks alone without naming them', async (name, host, dir) => {
+  const hook = join(state, dir, 'hooks', 'hooks.json');
+  await mkdir(join(state, dir, 'hooks'), { recursive: true });
+  await writeFile(hook, '{"mnemonik":"legacy"}\n');
+  await writeFile(
+    join(state, 'host-ownership.json'),
+    JSON.stringify({
+      schemaVersion: 1,
+      generation: 0,
+      targets: [
+        {
+          id: `${host}:hooks:user`,
+          host,
+          component: 'hooks',
+          scope: 'user',
+          home: state,
+          profilePath: hook,
+          version: '0.1.49',
+          artifactDigest: 'legacy',
+          runtimePointer: join(state, 'runtimes', host, 'current'),
+          files: [{ path: hook, hash: 'legacy' }],
+          credentialFamily: `legacy-${host}-hook-family`,
+          grant: {
+            installationId: '11111111-1111-4111-8111-111111111111',
+            id: `legacy-${host}-grant`,
+            account: 'owner',
+            scopes: ['hooks:use'],
+          },
+        },
+      ],
+    })
+  );
+  let text = '';
+  const grantFetch = vi.fn(async () => {
+    throw new Error('legacy credentials must not be read');
+  });
+
+  expect(
+    await runCli(['uninstall', '--non-interactive', '--confirm'], {
+      installStateDir: state,
+      home: state,
+      stdout: { write: (value) => void (text += value) },
+      grantFetch,
+    })
+  ).toBe(0);
+  expect(await readFile(hook, 'utf8')).toBe('{"mnemonik":"legacy"}\n');
+  expect(text.toLowerCase()).not.toContain(name.toLowerCase());
+  expect(grantFetch).not.toHaveBeenCalled();
+});
+
+it('reports a completed host update before the pending Codex trust action', async () => {
+  selectCodexHooks();
+  vi.spyOn(hosts, 'runHosts').mockResolvedValue({
+    results: [
+      {
+        target: 'codex-hooks',
+        elapsedMs: 1,
+        status: 'ACTION_REQUIRED',
+        reason: 'codex_trust_pending',
+      },
+    ],
+    reports: ['shared runtime updated codex to 0.8.177'],
+    journal: { state: 'ACTION_REQUIRED' } as never,
+  });
+
+  expect(await update(false)).toEqual({
+    code: 3,
+    text:
+      'Mnemonik updated.\n' +
+      'Codex needs permission to use the Mnemonik hooks.\n' +
+      'Open Codex, allow the Mnemonik hooks, then quit and reopen Codex.\n',
+    errors: '',
+    report: undefined,
+  });
+});
+
+it('retries a failed host update once and reports the successful second attempt', async () => {
+  selectCodexHooks();
+  const runHosts = vi
+    .spyOn(hosts, 'runHosts')
+    .mockResolvedValueOnce({
+      results: [
+        {
+          target: 'codex-hooks',
+          elapsedMs: 1,
+          status: 'ACTION_REQUIRED',
+          reason: 'hooks_missing',
+        },
+      ],
+      reports: [],
+      journal: { state: 'ACTION_REQUIRED' } as never,
+    })
+    .mockResolvedValueOnce({
+      results: [
+        { target: 'codex-hooks', elapsedMs: 1, status: 'READY', reason: 'hooks installed' },
+      ],
+      reports: ['shared runtime updated codex to 0.8.177'],
+      journal: { state: 'READY' } as never,
+    });
+
+  expect(await update(false)).toMatchObject({ code: 0, text: 'Mnemonik updated.\n', errors: '' });
+  expect(runHosts).toHaveBeenCalledTimes(2);
+});
+
+it('reports one failure after both host update attempts fail', async () => {
+  selectCodexHooks();
+  const runHosts = vi.spyOn(hosts, 'runHosts').mockResolvedValue({
+    results: [
+      {
+        target: 'codex-hooks',
+        elapsedMs: 1,
+        status: 'ACTION_REQUIRED',
+        reason: 'hooks_missing',
+      },
+    ],
+    reports: [],
+    journal: { state: 'ACTION_REQUIRED' } as never,
+  });
+
+  expect(await update(false)).toMatchObject({
+    code: 3,
+    text: '',
+    errors: 'Mnemonik could not update. It will try again automatically tomorrow.\n',
+  });
+  expect(runHosts).toHaveBeenCalledTimes(2);
+});
+
+it('manual update failure reports one automatic-follow-up line without internal detail', async () => {
   corrupt = true;
   const result = await update(false);
   expect(result).toMatchObject({
     code: 1,
     text: '',
-    errors: 'Mnemonik could not update. Run mnemonik update again.\n',
+    errors: 'Mnemonik could not update. It will try again automatically tomorrow.\n',
   });
 });
 
@@ -439,7 +638,7 @@ it('uses the dev release index, records its source, and makes no registry calls'
   expect((await update()).report.cli).toMatchObject({ status: 'UPDATED', devReleaseSource: true });
   expect(registry).not.toHaveBeenCalled();
 });
-it('refuses exact metadata that disagrees with the latest integrity pin', async () => {
+it('retries after exact metadata disagrees with the latest integrity pin', async () => {
   registry.mockImplementationOnce(async () =>
     Response.json({
       name: '@mnemonik/cli',
@@ -447,12 +646,9 @@ it('refuses exact metadata that disagrees with the latest integrity pin', async 
       dist: { ...dist(latest), integrity: 'sha512-wrong' },
     })
   );
-  expect((await update()).report.cli).toMatchObject({
-    status: 'FAILED',
-    reason: 'digest_mismatch',
-  });
-  expect((await store.verifyRuntime('cli')).reference.version).toBe('1.0.0');
-  expect(registry).toHaveBeenCalledTimes(2);
+  expect((await update()).report.cli).toMatchObject({ status: 'UPDATED', newVersion: '1.1.0' });
+  expect((await store.verifyRuntime('cli')).reference.version).toBe('1.1.0');
+  expect(registry).toHaveBeenCalledTimes(7);
 });
 
 it('plain update uses the new CLI pins for hooks in the same invocation; explicit scanner update stays scanner-only', async () => {

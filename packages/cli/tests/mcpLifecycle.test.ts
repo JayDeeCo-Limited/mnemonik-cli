@@ -34,7 +34,7 @@ afterEach(async () => {
   await Promise.all(homes.splice(0).map((home) => rm(home, { recursive: true, force: true })));
 });
 
-it('installs hooks and MCP declarations for four editors without launching or listing grants', async () => {
+it('installs hooks and MCP declarations for three editors without launching or listing grants', async () => {
   const fixture = await hostFixture(packed.sources);
   homes.push(fixture.home);
   await saveInstallation(fixture.deps.stateDir, '11111111-1111-4111-8111-111111111111');
@@ -128,19 +128,18 @@ it('installs hooks and MCP declarations for four editors without launching or li
   expect(exit, stdout).toBe(0);
   expect(launch).not.toHaveBeenCalled();
   expect(list).not.toHaveBeenCalled();
-  expect(
-    stdout.match(/Your editors will ask you to sign in to Mnemonik the first time you use it\./g)
-  ).toHaveLength(1);
+  expect(stdout.match(/One step is left in each editor/g)).toHaveLength(1);
+  expect(stdout).toContain('Claude Code      type /mcp, choose mnemonik, then Authenticate');
+  expect(stdout).toContain('Codex CLI        run codex mcp login mnemonik');
+  expect(stdout).toContain(
+    'Cursor Desktop   open Cursor Settings, Customize, MCPs, then Authenticate'
+  );
   const targets = (await readOwnership(fixture.deps.stateDir)).targets;
-  expect(targets).toHaveLength(8);
+  expect(targets).toHaveLength(6);
   const declarations = await Promise.all(
     targets
       .filter((target) => target.component === 'mcp')
       .map((target) => readFile(target.profilePath, 'utf8'))
   );
   expect(declarations.every((raw) => raw.includes('x-mnemonik-installation-id'))).toBe(true);
-  const grok = declarations.find((raw) => raw.includes('x-mcp-session-id'))!;
-  const headerLines = grok.match(/^headers\s*=.*$/gm) ?? [];
-  expect(headerLines).toHaveLength(1);
-  expect(headerLines[0]).toContain('x-mnemonik-installation-id');
 }, 300_000);

@@ -128,7 +128,7 @@ async function fixture() {
   return { home, root, deps, adapters, original };
 }
 
-it('orders Recommended install and keeps every host hash unchanged until Apply', async () => {
+it('orders the default install and keeps every host hash unchanged until Apply', async () => {
   const f = await fixture();
   f.deps.fault = async (event, current) => {
     if (!current.data.mutations.some((m) => m.event === 'apply'))
@@ -154,7 +154,7 @@ it('orders Recommended install and keeps every host hash unchanged until Apply',
   ];
   for (let i = 1; i < ordered.length; i++)
     expect(events.indexOf(ordered[i]!)).toBeGreaterThan(events.indexOf(ordered[i - 1]!));
-  expect(f.adapters.map((adapter) => adapter.launches)).toEqual([0, 0, 0, 0]);
+  expect(f.adapters.map((adapter) => adapter.launches)).toEqual([0, 0, 0]);
   expect(JSON.parse(await readFile(join(f.root, '.mnemonik.json'), 'utf8')).projectId).toBe(uuid);
   for (const adapter of f.adapters)
     expect((await stat(adapter.declaration.path)).mode & 0o777).toBe(0o640);

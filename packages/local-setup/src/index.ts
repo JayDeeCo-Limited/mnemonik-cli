@@ -400,7 +400,12 @@ export function createProjectSetupExecutor(deps: ExecutorDependencies) {
         let remote;
         let outcome: 'created' | 'linked' | 'restored' = 'linked';
         if (issued.status === 'complete') remote = issued;
-        else if (options.intent && issued.requestId && issued.allowedActions.includes('link')) {
+        else if (
+          options.intent &&
+          issued.state === 'confirmation_required' &&
+          issued.requestId &&
+          issued.allowedActions.includes('link')
+        ) {
           remote = await deps.transport.consumeSetupRequest({
             ...evidence,
             requestId: issued.requestId,

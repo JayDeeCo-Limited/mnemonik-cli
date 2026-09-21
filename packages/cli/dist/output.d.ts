@@ -13,14 +13,19 @@ export declare class Output {
     private readonly stdout;
     private readonly stderr;
     private context;
+    private installationLayout;
+    private lastHumanLineBlank;
     private progress?;
     constructor(stdout: Writable, stderr?: Writable, context?: OutputContext);
     setContext(context: OutputContext): void;
-    line(value?: string): void;
+    beginInstallation(): void;
+    installSection(): void;
+    inputPrefix(): void;
+    line(value?: string): number;
     write(value: string): void;
     /** Deliberate local-only identity display; never use for logs, JSON, or errors. */
     signedIn(email: string): void;
-    error(value: unknown): void;
+    error(value: unknown): number;
     json(value: unknown): void;
     progressLine(text: string, animated: boolean): {
         complete(result: string): void;

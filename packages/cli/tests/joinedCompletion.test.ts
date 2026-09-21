@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, readFile, stat, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readdir, rm, readFile, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -6,6 +6,7 @@ import { Readable } from 'node:stream';
 import { afterEach, expect, it, vi } from 'vitest';
 import { joinedInstall } from '../src/install/journey.js';
 import { Output } from '../src/output.js';
+import type { HostDependencies, HostSelection } from '../src/install/hosts.js';
 const run = vi.hoisted(() => vi.fn());
 vi.mock('../src/install/hosts.js', async (original) => ({
   ...(await original<typeof import('../src/install/hosts.js')>()),
@@ -16,6 +17,86 @@ afterEach(async () => {
   vi.clearAllMocks();
   vi.unstubAllEnvs();
   await Promise.all(homes.splice(0).map((home) => rm(home, { recursive: true, force: true })));
+});
+
+it('configures only the three launch editors when retired editors are also installed', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'joined-no-grok-'));
+  homes.push(home);
+  vi.stubEnv('PATH', join(home, '.local/bin'));
+  await Promise.all(
+    ['.claude', '.codex', '.cursor', '.grok', '.copilot'].map((name) =>
+      mkdir(join(home, name), { recursive: true })
+    )
+  );
+  let selected: HostSelection[] = [];
+  run.mockImplementationOnce(
+    async (_command: string, selections: HostSelection[], deps: HostDependencies) => {
+      selected = selections;
+      const data = {
+        state: 'READY',
+        phase: 'complete',
+        runId: 'run',
+        components: [],
+        roots: [],
+        projects: [],
+        targets: [],
+        reports: [],
+      };
+      await deps.afterHosts?.({ data } as never, [], async () => {});
+      return { journal: data, results: [], reports: [] };
+    }
+  );
+  const fetcher = vi.fn(async (_url: unknown, init?: Parameters<typeof fetch>[1]) =>
+    init?.method === 'POST'
+      ? Response.json({ status: 'completed' })
+      : Response.json({ id: 'active-session' })
+  );
+  let text = '';
+
+  expect(
+    await joinedInstall(
+      new Map<string, string | true>([
+        ['components', 'hooks,mcp'],
+        ['without-scanner', true],
+        ['accept-limited', true],
+        ['apply', true],
+        ['non-interactive', true],
+      ]),
+      {
+        cwd: home,
+        home,
+        installStateDir: home,
+        grantFetch: fetcher,
+        preflight: {
+          nodeVersion: '24.21.0',
+          fetch: async () => Response.json({}),
+          pathExists: async (path) =>
+            access(path).then(
+              () => true,
+              () => false
+            ),
+          resolveIdentity: async () => ({
+            kind: 'absent',
+            root: home,
+            repository: { kind: 'plain', root: home },
+            nested: [],
+          }),
+        },
+      },
+      new Output({ write: (chunk) => void (text += chunk) }),
+      async () => 'owner',
+      async () => ({ stateDir: home, account: 'owner', getCliBearer: async () => 'fixture' })
+    )
+  ).toBe(3);
+  expect(text).toContain('3 editors configured');
+  expect([...new Set(selected.map(({ host }) => host))]).toEqual([
+    'claude-code',
+    'codex',
+    'cursor',
+  ]);
+  expect(selected).toHaveLength(6);
+  expect(await readdir(join(home, '.grok'))).toEqual([]);
+  expect(await readdir(join(home, '.copilot'))).toEqual([]);
 });
 it.each([
   ['READY', 0, undefined, undefined],
@@ -127,10 +208,7 @@ it.each([
         expect.stringContaining('Move the existing'),
       ]);
     }
-    if (!flags.has('json'))
-      expect(
-        text.match(/Your editors will ask you to sign in to Mnemonik the first time you use it\./g)
-      ).toHaveLength(1);
+    if (!flags.has('json')) expect(text.match(/One step is left in each editor/g)).toHaveLength(1);
     if (state === 'LIMITED') {
       expect(text).toContain('Indexing was skipped. Run mnemonik install to set it up later.');
       expect(text).not.toContain('thing left');

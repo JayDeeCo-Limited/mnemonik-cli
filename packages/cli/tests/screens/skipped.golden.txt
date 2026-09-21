@@ -1,3 +1,10 @@
-  Your editors will ask you to sign in to Mnemonik the first time you use it.
+  One step is left in each editor: Authorize the Mnemonik MCP connection.
+  You may need to restart your editor after authorizing.
+
+  Claude Code      type /mcp, choose mnemonik, then Authenticate
+  Codex CLI        run codex mcp login mnemonik
+  Codex Desktop    open Settings, Plugins, MCPs, then Authenticate
+  Cursor Desktop   open Cursor Settings, Customize, MCPs, then Authenticate
+
   Done, with one thing left.
   1. Background indexing was skipped.

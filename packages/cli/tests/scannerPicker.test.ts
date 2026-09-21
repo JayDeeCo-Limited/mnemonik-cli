@@ -83,7 +83,7 @@ afterEach(async () => {
 });
 
 describe('repository discovery', () => {
-  it('turns git and identity folders into candidates while skipping dependency and dot folders', async () => {
+  it('selects Git and resolved identity folders by default while skipping hidden folders', async () => {
     const home = await temporaryDirectory();
     const cwd = join(home, 'empty');
     const boundary = join(home, 'Projects');
@@ -99,7 +99,7 @@ describe('repository discovery', () => {
     const discovered = await scannerCandidates(boundary);
     expect(discovered.candidates).toEqual([
       { path: app, name: 'app', kind: 'git' },
-      { path: notes, name: 'notes', kind: 'folder' },
+      { path: notes, name: 'notes', kind: 'git' },
     ]);
 
     const stream = capture();
@@ -116,6 +116,10 @@ describe('repository discovery', () => {
       roots: [],
       exclusions: [],
       candidates: discovered.candidates,
+      repositories: [
+        { path: app, state: 'not_set_up', selected: true },
+        { path: notes, state: 'existing_project', selected: true },
+      ],
     });
     expect(stream.text).toBe('Where do your projects live? [~/Projects]\n');
   });

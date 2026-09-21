@@ -108,7 +108,7 @@ describe('interruption after every install mutation boundary', () => {
       expect(new Set(complete.targets.map((target) => target.path)).size).toBe(
         complete.targets.length
       );
-      expect(complete.targets.filter((target) => target.kind === 'host')).toHaveLength(4);
+      expect(complete.targets.filter((target) => target.kind === 'host')).toHaveLength(3);
       await assertJournalMatchesDisk(resumed, complete);
 
       const rolledBack = await fixture();

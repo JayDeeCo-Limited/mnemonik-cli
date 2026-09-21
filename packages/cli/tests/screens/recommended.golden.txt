@@ -1,8 +1,0 @@
-Mnemonik
-
-Step 1 of 5: Choose setup
-  Claude Code, Cursor, Codex; background indexing
-  Use the Up/Down arrow keys and Enter.
-
-  > Recommended
-    Customize

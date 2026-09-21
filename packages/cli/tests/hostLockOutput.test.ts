@@ -6,7 +6,7 @@ import { runCli } from '../src/router.js';
 
 vi.mock('../src/install/hosts.js', async (original) => ({
   ...(await original<typeof import('../src/install/hosts.js')>()),
-  selectOwned: async () => ({ selected: [{}], ambiguous: [] }),
+  selectOwned: async () => ({ selected: [{ host: 'codex' }], ambiguous: [] }),
   runHosts: async () => {
     const { RuntimeError } = await import('@mnemonik/shared/hook-runtime');
     throw new RuntimeError('lock_held');

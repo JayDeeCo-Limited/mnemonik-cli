@@ -137,6 +137,46 @@ describe('command router', () => {
     });
   });
 
+  it.each([false, true])('auth status omits retired host grants (json=%s)', async (json) => {
+    const f = fixture();
+    const stateDir = f.deps.installStateDir;
+    if (!stateDir) throw new Error('fixture state directory missing');
+    const grant = (id: string, clientName: string) => ({
+      id,
+      clientId: `https://${id}.example.test/client`,
+      clientName,
+      softwareId: null,
+      scopes: ['mcp:use'],
+      resource: 'https://api.mnemonik.dev/mcp',
+      createdAt: '2026-09-21T00:00:00.000Z',
+      activatedAt: '2026-09-21T00:01:00.000Z',
+      lastUsedAt: null,
+    });
+    f.deps.hostManagement = {
+      stateDir,
+      account: 'owner',
+      grants: {
+        list: async () => ({
+          account: 'owner',
+          grants: [
+            grant('codex', 'Codex'),
+            grant('grok', 'Grok'),
+            grant('copilot', 'GitHub Copilot'),
+          ],
+        }),
+        revoke: async () => undefined,
+      },
+    };
+
+    expect(await runCli(['auth', 'status', ...(json ? ['--json'] : [])], f.deps)).toBe(0);
+    expect(f.stdout.text).toContain('codex');
+    expect(f.stdout.text.toLowerCase()).not.toMatch(/grok|copilot/u);
+    if (json)
+      expect(JSON.parse(f.stdout.text).grants.map(({ id }: { id: string }) => id)).toEqual([
+        'codex',
+      ]);
+  });
+
   it('maps completed maintenance target states to the documented exit codes', () => {
     expect(maintenanceExitCode([])).toBe(0);
     expect(maintenanceExitCode([{ status: 'READY' }])).toBe(0);
@@ -506,7 +546,6 @@ it('connect runs only the editor native login', async () => {
         codex: async () => ({ createHostAdapter: () => adapter }),
         'claude-code': async () => ({ createHostAdapter: () => adapter }),
         cursor: async () => ({ createHostAdapter: () => adapter }),
-        grok: async () => ({ createHostAdapter: () => adapter }),
       },
       grants: grants as never,
     };

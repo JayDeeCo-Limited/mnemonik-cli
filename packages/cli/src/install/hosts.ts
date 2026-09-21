@@ -6,6 +6,8 @@ import { readFile, rm } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import {
   hostPackageImports,
+  hostOrder,
+  launchHosts,
   type HostPackageImports,
   type Target,
   type FileChange,
@@ -121,15 +123,13 @@ function environment(selection: HostSelection, env = process.env, owned = false)
   if (owned) result.MNEMONIK_CLI_OWNED_TARGET = '1';
   if (selection.scope === 'user' && selection.profilePath) {
     if (selection.host === 'codex') result.CODEX_HOME = dirname(selection.profilePath);
-    if (selection.host === 'grok')
-      result.GROK_HOME =
-        selection.component === 'mcp'
-          ? dirname(selection.profilePath)
-          : dirname(dirname(selection.profilePath));
   }
-  for (const key of ['CODEX_HOME', 'GROK_HOME'])
-    if (result[key]) result[key] = resolve(result[key]);
+  for (const key of ['CODEX_HOME']) if (result[key]) result[key] = resolve(result[key]);
   return result;
+}
+function packageImport(imports: HostPackageImports | undefined, host: HostArtifact) {
+  if (!hostOrder.includes(host as never)) throw new Error('unsupported_host');
+  return (imports ?? hostPackageImports)[host as (typeof hostOrder)[number]];
 }
 async function stage(journal: Journal, run: HostRun, changes: FileChange[], runtime: Verified) {
   for (const change of changes)
@@ -416,7 +416,7 @@ export async function runHosts(
             if (command !== 'uninstall' && !target.installationId)
               throw new Error('installation_required');
           }
-          const module = await (deps.imports ?? hostPackageImports)[selection.host](runtime);
+          const module = await packageImport(deps.imports, selection.host)(runtime);
           const adapter = module.createHostAdapter({
             target,
             env: environment(selection, deps.env, !!selection.profilePath && !!old),
@@ -439,8 +439,12 @@ export async function runHosts(
           if (target.component === 'hooks') {
             const credentials = createCliCredentials({ stateDir: deps.stateDir });
             target.credentialFamily =
-              record.targets.filter((candidate) => candidate.component === 'hooks').at(-1)
-                ?.credentialFamily ??
+              record.targets
+                .filter(
+                  (candidate) =>
+                    candidate.component === 'hooks' && launchHosts.includes(candidate.host as never)
+                )
+                .at(-1)?.credentialFamily ??
               old?.credentialFamily ??
               '';
             if (
@@ -833,12 +837,10 @@ export async function codexTrustConditions(
     try {
       const runtime = await store.verifyRuntime('codex');
       const target = targetFor(owned, runtime, store);
-      const adapter = (await (deps.imports ?? hostPackageImports).codex(runtime)).createHostAdapter(
-        {
-          target,
-          env: environment(owned, deps.env),
-        }
-      );
+      const adapter = (await packageImport(deps.imports, 'codex')(runtime)).createHostAdapter({
+        target,
+        env: environment(owned, deps.env),
+      });
       const inspection = await adapter.inspect(target);
       if (inspection.trustPending)
         return [
@@ -880,12 +882,10 @@ export async function hookStatusConditions(
       const runtime = await store.verifyRuntime(host);
       const target = targetFor(record, runtime, store);
       target.credentialFamily = record.credentialFamily ?? '';
-      const adapter = (await (deps.imports ?? hostPackageImports)[host](runtime)).createHostAdapter(
-        {
-          target,
-          env: environment(record, deps.env),
-        }
-      );
+      const adapter = (await packageImport(deps.imports, host)(runtime)).createHostAdapter({
+        target,
+        env: environment(record, deps.env),
+      });
       inspection = await adapter.verify(target);
     } catch {
       conditions.push({
@@ -948,9 +948,10 @@ export async function logoutHost(host: HostArtifact, deps: HostDependencies) {
   )) {
     try {
       const runtime = await store.verifyRuntime(host);
-      const adapter = (await (deps.imports ?? hostPackageImports)[host](runtime)).createHostAdapter(
-        { target: targetFor(owned, runtime, store), env: environment(owned, deps.env) }
-      );
+      const adapter = (await packageImport(deps.imports, host)(runtime)).createHostAdapter({
+        target: targetFor(owned, runtime, store),
+        env: environment(owned, deps.env),
+      });
       if (!owned.grant || !adapter.revoke || !(await adapter.revoke(owned.grant)))
         deps.instruction?.(adapter.revokeAction);
     } catch {
@@ -972,9 +973,10 @@ export async function connectHost(
   const store = new RuntimeStore(deps.stateDir);
   const runtime = await store.verifyRuntime(current.host);
   const target = targetFor(current, runtime, store);
-  const adapter = (
-    await (deps.imports ?? hostPackageImports)[current.host](runtime)
-  ).createHostAdapter({ target, env: environment(current, deps.env) });
+  const adapter = (await packageImport(deps.imports, current.host)(runtime)).createHostAdapter({
+    target,
+    env: environment(current, deps.env),
+  });
   // Keep native login behind this single boundary; a later SSH relay can replace the invocation.
   const instruction = await adapter.launch();
   if (instruction) deps.instruction?.(instruction);

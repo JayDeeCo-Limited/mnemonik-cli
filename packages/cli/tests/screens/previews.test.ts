@@ -3,8 +3,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
 import { expect, it } from 'vitest';
-import { DEVICE_WARNING, runDeviceFlow } from '../../src/auth/device.js';
-import { browserFallbackLines } from '../../src/auth/pkce.js';
+import {
+  DEVICE_WARNING,
+  REPOSITORY_APPROVAL_INSTRUCTION,
+  runDeviceFlow,
+} from '../../src/auth/device.js';
 import { Output } from '../../src/output.js';
 import { nodeVersionHelp } from '../../src/preflight.js';
 import { connectedProjectsMessage, projectLimitMessage } from '../../src/project.js';
@@ -26,9 +29,10 @@ import {
   completedStep,
   INSTALLATION_STOPPED,
   journeyAnswers,
-  renderCustomize,
+  renderSetup,
   renderInterrupted,
   renderJourney,
+  renderNoSupportedEditors,
   renderRollbackResult,
   stepProgress,
 } from '../../src/screens/journey.js';
@@ -45,48 +49,66 @@ function capture() {
 
 it('renders the W3 owner previews from the production screen code', async () => {
   const normal = capture();
-  normal.output.line(completedStep(1, 'Recommended setup selected'));
+  normal.output.beginInstallation();
+  normal.output.line(completedLine('Computer checked'));
+  normal.output.line(completedStep(1, 'Choose what to set up'));
+  normal.output.line(completedLine('Claude Code, Codex, Cursor, automatic project indexing'));
   renderJourney('account', normal.output);
-  for (const line of browserFallbackLines('https://auth.mnemonik.ai/oauth/authorize?...'))
-    normal.output.line(line);
+  normal.output.line('https://auth.mnemonik.ai/oauth/device?user_code=XCDM-KZGJ');
+  normal.output.line(DEVICE_WARNING);
   normal.output.line(completedLine('Signed in'));
   normal.output.line(completedStep(3, 'Configure editors'));
-  normal.output.line(completedLine('2 editors configured'));
+  normal.output.line(completedLine('3 editors configured'));
   renderJourney('scanner', normal.output);
   normal.output.line(scannerBoundaryPrompt('~/Projects'));
-  for (const line of browserFallbackLines('https://auth.mnemonik.ai/approve?...'))
-    normal.output.line(line);
+  normal.output.line('~/Projects');
+  normal.output.line(REPOSITORY_APPROVAL_INSTRUCTION);
+  normal.output.line('https://auth.mnemonik.ai/oauth/device?user_code=WKSG-ZKHW');
+  normal.output.line(DEVICE_WARNING);
+  normal.output.line(completedLine('Connected 15 repositories.'));
+  normal.output.line(ADD_ANOTHER_FOLDER);
   normal.output.line(completedStep(5, 'Finish'));
-  normal.output.line(
-    connectedProjectsMessage(['/Projects/app', '/Projects/shop', '/Projects/api'])
-  );
-  renderJourney('done', normal.output);
-  expect(normal.text().split('\n').filter(Boolean)).toHaveLength(15);
+  normal.output.line(completedLine('Installation finished'));
+  normal.output.installSection();
+  renderJourney('done', normal.output, { hosts: ['claude-code', 'codex', 'cursor'] });
+  expect(normal.text()).not.toMatch(/Waiting for|Repositories connected|Recommended/u);
   expect(normal.text().indexOf(scannerBoundaryPrompt('~/Projects'))).toBeLessThan(
-    normal.text().indexOf('https://auth.mnemonik.ai/approve?...')
+    normal.text().indexOf('https://auth.mnemonik.ai/oauth/device?user_code=WKSG-ZKHW')
   );
+
+  const scannerFailure = capture();
+  scannerFailure.output.beginInstallation();
+  scannerFailure.output.line(completedStep(5, 'Finish'));
+  scannerFailure.output.installSection();
+  renderJourney('scanner_failed', scannerFailure.output, {
+    hosts: ['claude-code', 'codex', 'cursor'],
+  });
+  const scannerFailureEnding = scannerFailure
+    .text()
+    .slice(scannerFailure.text().indexOf(completedStep(5, 'Finish')))
+    .trimEnd();
+  expect(scannerFailureEnding).not.toMatch(/✓|Repositories connected/u);
+
+  const noEditors = capture();
+  noEditors.output.beginInstallation();
+  noEditors.output.line(completedLine('Computer checked'));
+  noEditors.output.installSection();
+  renderNoSupportedEditors(noEditors.output);
 
   const choice = capture();
-  renderJourney('recommended', choice.output, {
-    hosts: ['Claude Code', 'Codex'],
-    project: '~/Projects',
-    node: '24.21.0',
-    os: 'macOS',
-  });
-
-  const customize = capture();
-  renderCustomize(
+  renderSetup(
     [
       { value: 'claude-code', label: 'Claude Code', checked: true },
       { value: 'codex', label: 'Codex', checked: true },
-      { value: 'scanner', label: 'Indexing of your projects', checked: true },
+      { value: 'cursor', label: 'Cursor', checked: true },
+      { value: 'scanner', label: 'Automatic project indexing', checked: true },
     ],
-    customize.output
+    choice.output
   );
 
   const cancelled = capture();
   const answers = journeyAnswers(Readable.from([]), cancelled.output);
-  await answers.choose(['Recommended', 'Customize']);
+  await answers.choose(['Continue', 'Cancel']);
   answers.close();
 
   const limit = projectLimitMessage(
@@ -128,14 +150,17 @@ it('renders the W3 owner previews from the production screen code', async () => 
   );
 
   const preview = [
-    '=== Normal install, finished transcript (15 lines) ===',
+    '=== Normal install, finished transcript ===',
     normal.text().trimEnd(),
     '',
-    '=== Choice screen ===',
-    choice.text().trimEnd(),
+    '=== Scanner failure ending ===',
+    scannerFailureEnding,
     '',
-    '=== Customize ===',
-    customize.text().trimEnd(),
+    '=== No supported editors ===',
+    noEditors.text().trimEnd(),
+    '',
+    '=== Step 1 checklist ===',
+    choice.text().trimEnd(),
     '',
     '=== Cancel ===',
     cancelled.text().trimEnd(),
@@ -287,7 +312,7 @@ it('renders the L-60 to L-64 wording from production code', async () => {
   const gettingReady = stepProgress(indexingProgress.output, false, 'Getting ready');
   gettingReady.complete(completedLine('Ready'));
   const anotherFolder = capture();
-  anotherFolder.output.line(completedLine('Repositories connected'));
+  anotherFolder.output.line(completedLine('Connected 3 repositories.'));
   anotherFolder.output.line(`  ${ADD_ANOTHER_FOLDER}`);
 
   const preview = [

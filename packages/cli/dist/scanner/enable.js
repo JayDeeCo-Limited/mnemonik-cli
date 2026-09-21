@@ -5,6 +5,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { atomicWrite, withLock } from '@mnemonik/local-setup';
 import { apiOrigin, serializeReadiness, } from '@mnemonik/shared';
 import { createCliAuth } from '../auth/index.js';
+import { REPOSITORY_APPROVAL_INSTRUCTION } from '../auth/device.js';
 import { createCliCredentials } from '../auth/credentials.js';
 import { readInstallVersions } from '../install/ownership.js';
 import { grantTransport } from '../auth/status.js';
@@ -194,8 +195,8 @@ export async function prepareScanner(options, work) {
                 if (!installation)
                     throw new Error('scanner_installation_missing');
                 // Browser approval reuses this installation's active session. Never cancel the hosts' session.
-                if (!options.nonInteractive && !options.approvalAnnounced)
-                    options.output.line(SCANNER_APPROVAL_WAIT);
+                if (!options.nonInteractive)
+                    options.output.line(options.approvalAnnounced ? REPOSITORY_APPROVAL_INSTRUCTION : SCANNER_APPROVAL_WAIT);
                 bearer = await authorize(consentDraft(picked), installation);
                 session = (await request('GET', '/api/v1/install-sessions/current'));
                 remote = (await request('GET', '/api/v1/scanner-consent/current'));

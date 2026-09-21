@@ -5,7 +5,7 @@ export interface ReleaseManifest {
     digestsSha256: string;
     platforms: Record<string, Manifest>;
 }
-export declare const releasePackageNames: readonly ['@mnemonik/cli', '@mnemonik/claude-code-hooks', '@mnemonik/codex-hooks', '@mnemonik/copilot-hooks', '@mnemonik/cursor-hooks', '@mnemonik/grok-hooks'];
+export declare const releasePackageNames: readonly ['@mnemonik/cli', '@mnemonik/claude-code-hooks', '@mnemonik/codex-hooks', '@mnemonik/cursor-hooks'];
 export interface SignedReleaseManifest {
     schemaVersion: 1;
     version: string;
@@ -21,7 +21,7 @@ export declare function devReadiness(document: ReadinessDocument): ReadinessDocu
     devReleaseSource?: true;
 };
 /** Validate before each request; only GitHub release downloads get one pinned CDN hop. */
-export declare function releaseBytes(address: string, fetcher?: Fetch): Promise<Buffer>;
+export declare function releaseBytes(address: string, fetcher?: Fetch, stallTimeoutMs?: number): Promise<Buffer>;
 export declare function signedReleaseManifest(version: string, fetcher?: Fetch, identity?: string): Promise<SignedReleaseManifest>;
 export declare function scannerReleaseSource(trusted: ReleaseManifest, fetcher?: Fetch, platform?: string): Promise<RuntimeSource>;
 interface NpmDist {

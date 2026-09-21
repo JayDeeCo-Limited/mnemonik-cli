@@ -270,6 +270,24 @@ describe('verified runtime transactions', () => {
       version: '2.0.0',
     });
   });
+  it('reports the automatic follow-up after both runtime update attempts fail', async () => {
+    const source = vi.fn(async () => {
+      throw new Error('private runtime failure');
+    });
+    let stdout = '';
+    let stderr = '';
+
+    expect(
+      await runCli(['update'], {
+        stdout: { write: (value) => void (stdout += value) },
+        stderr: { write: (value) => void (stderr += value) },
+        runtimeUpdate: { store, source, restartManagedServices: async () => {} },
+      })
+    ).toBe(3);
+    expect(source).toHaveBeenCalledTimes(2);
+    expect(stdout).toBe('');
+    expect(stderr).toBe('Mnemonik could not update. It will try again automatically tomorrow.\n');
+  });
   it('reuses a verified version when a fresh npm prefix changes only its receipt path', async () => {
     await store.installRuntime('cli', '1.0.0', source('1.0.0'));
     const before = await readFile(store.pointerPath('cli'));

@@ -115,6 +115,55 @@ export interface AdapterDependencies {
   ) => Promise<{ stdout: string; stderr: string }>;
 }
 
+const MCP_OAUTH_STORE_KEY =
+  /^(\s*(?:mcp_oauth_credentials_store|"mcp_oauth_credentials_store"|'mcp_oauth_credentials_store')\s*=\s*)/;
+const CODEX_MCP_TABLE =
+  /^\s*\[\s*(?:mcp_servers|"mcp_servers"|'mcp_servers')\s*\.\s*(?:mnemonik|"mnemonik"|'mnemonik')\s*\]\s*(?:#.*)?$/;
+
+function ensureCodexFileMcpCredentials(raw: string): string {
+  const newline = raw.includes('\r\n') ? '\r\n' : '\n';
+  const lines = raw.match(/[^\n]*\n|[^\n]+$/g) ?? [];
+  const firstTable = lines.findIndex((line) => /^\s*\[/.test(line.trimEnd()));
+  const rootEnd = firstTable < 0 ? lines.length : firstTable;
+  const rootKeys = lines
+    .slice(0, rootEnd)
+    .map((line, index) => (MCP_OAUTH_STORE_KEY.test(line) ? index : -1))
+    .filter((index) => index >= 0);
+  const tableStart = lines.findIndex((line) => CODEX_MCP_TABLE.test(line.trimEnd()));
+  const tableEnd =
+    tableStart < 0
+      ? -1
+      : lines.findIndex((line, index) => index > tableStart && /^\s*\[/.test(line.trimEnd()));
+  const misplaced = new Set<number>();
+  if (tableStart >= 0)
+    for (let index = tableStart + 1; index < (tableEnd < 0 ? lines.length : tableEnd); index += 1)
+      if (MCP_OAUTH_STORE_KEY.test(lines[index] ?? '')) misplaced.add(index);
+
+  const rootKey = rootKeys[0];
+  if (rootKey !== undefined) {
+    const line = lines[rootKey] ?? '';
+    if (!MCP_OAUTH_STORE_KEY.test(line)) throw new Error('invalid_mcp_oauth_store');
+    const ending = line.match(/\r?\n$/)?.[0] ?? '';
+    const body = ending ? line.slice(0, -ending.length) : line;
+    const comment = body.match(/([ \t]*#.*)$/)?.[1] ?? '';
+    const prefix = body.match(MCP_OAUTH_STORE_KEY)?.[1] ?? '';
+    lines[rootKey] = `${prefix}"file"${comment}${ending}`;
+    for (const duplicate of rootKeys.slice(1)) misplaced.add(duplicate);
+  }
+
+  const next = lines.filter((_line, index) => !misplaced.has(index));
+  if (rootKey !== undefined) return next.join('');
+  const insertion = next.findIndex((line) => /^\s*\[/.test(line.trimEnd()));
+  const setting = `mcp_oauth_credentials_store = "file"${newline}`;
+  if (insertion >= 0) next.splice(insertion, 0, setting);
+  else if (next.length === 0) next.push(setting);
+  else {
+    if (!next.at(-1)?.endsWith('\n')) next.push(newline);
+    next.push(setting);
+  }
+  return next.join('');
+}
+
 /** Common read/propose/stage lifecycle; the host's installer still owns its bytes. */
 export function createFileHostAdapter(
   deps: AdapterDependencies,
@@ -287,21 +336,29 @@ export function createFileHostAdapter(
       config.mcpServers = servers;
       content = JSON.stringify(config, null, 2) + '\n';
     } else {
+      const tomlRaw =
+        install &&
+        host.name === 'codex' &&
+        target.scope === 'user' &&
+        (deps.platform ?? process.platform) === 'darwin'
+          ? ensureCodexFileMcpCredentials(raw)
+          : raw;
       // Preserve unrelated TOML bytes. Refuse layouts whose table boundaries are ambiguous.
       if (
-        /'''|"""/.test(raw) ||
-        /^\s*(?:mcp_servers\s*=|mcp_servers\s*\.)/m.test(raw) ||
-        /=\s*\[[^\]\n]*$/m.test(raw)
+        /'''|"""/.test(tomlRaw) ||
+        /^\s*(?:mcp_servers\s*=|mcp_servers\s*\.)/m.test(tomlRaw) ||
+        /=\s*\[[^\]\n]*$/m.test(tomlRaw)
       )
         throw new Error('unsupported_mcp_toml_layout');
       if (
-        /^\s*\[\s*["']?mcp_servers["']?\s*\]/m.test(raw) ||
-        /^\s*\[\[\s*["']?mcp_servers/m.test(raw)
+        /^\s*\[\s*["']?mcp_servers["']?\s*\]/m.test(tomlRaw) ||
+        /^\s*\[\[\s*["']?mcp_servers/m.test(tomlRaw)
       )
         throw new Error('unsupported_mcp_toml_layout');
       const table =
         /^\s*\[\s*(?:mcp_servers|"mcp_servers"|'mcp_servers')\s*\.\s*(?:mnemonik|"mnemonik"|'mnemonik')(?:\s*\.[^\]]+)?\s*\]\s*(?:#.*)?$/;
-      const lines = raw.match(/[^\n]*\n|[^\n]+$/g) ?? [];
+      const newline = tomlRaw.includes('\r\n') ? '\r\n' : '\n';
+      const lines = tomlRaw.match(/[^\n]*\n|[^\n]+$/g) ?? [];
       const start = lines.findIndex((line) => table.test(line.trimEnd()));
       const end =
         start < 0
@@ -330,9 +387,12 @@ export function createFileHostAdapter(
       if (start >= 0 && !connected && !ownedTarget) throw new Error('mcp_name_conflict');
       if (!install) content = [...lines.slice(0, start), ...lines.slice(stop)].join('');
       else {
-        const next = start < 0 ? ['[mcp_servers.mnemonik]\n', `url = "${url}"\n`] : [...section];
+        const next =
+          start < 0
+            ? [`[mcp_servers.mnemonik]${newline}`, `url = "${url}"${newline}`]
+            : [...section];
         const nextUrl = next.findIndex((line) => /^\s*url\s*=/.test(line));
-        if (nextUrl >= 0) next[nextUrl] = `url = "${url}"\n`;
+        if (nextUrl >= 0) next[nextUrl] = `url = "${url}"${newline}`;
         const nextHeader = next.findIndex((line) =>
           new RegExp(`^\\s*${headerKey}\\s*=`).test(line)
         );
@@ -364,12 +424,12 @@ export function createFileHostAdapter(
           next.splice(
             insert,
             0,
-            `${headerKey} = { "x-mnemonik-installation-id" = ${JSON.stringify(target.installationId)} }\n`
+            `${headerKey} = { "x-mnemonik-installation-id" = ${JSON.stringify(target.installationId)} }${newline}`
           );
         }
         content =
           start < 0
-            ? `${raw}${raw && !raw.endsWith('\n') ? '\n' : ''}${next.join('')}`
+            ? `${tomlRaw}${tomlRaw && !tomlRaw.endsWith('\n') ? newline : ''}${next.join('')}`
             : [...lines.slice(0, start), ...next, ...lines.slice(stop)].join('');
       }
     }

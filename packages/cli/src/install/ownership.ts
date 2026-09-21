@@ -7,6 +7,7 @@ import { atomicWrite } from '@mnemonik/local-setup';
 import type { Grant, Target as AdapterTarget } from './adapters.js';
 import type { HostArtifact } from '../runtime/store.js';
 import { bytesAt, digest, type Journal } from './journal.js';
+import { launchHosts } from './adapters.js';
 
 export interface OwnedSet {
   version: string;
@@ -76,6 +77,7 @@ export async function readInstallVersions(
   const ownership = await readOwnership(state);
   const hosts = new Map<string, { host: string; editor?: string; hooks?: string }>();
   for (const target of ownership.targets) {
+    if (!launchHosts.includes(target.host as never)) continue;
     const version = hosts.get(target.host) ?? { host: target.host };
     if (target.editorVersion) version.editor = target.editorVersion;
     if (target.component === 'hooks') version.hooks = target.version;

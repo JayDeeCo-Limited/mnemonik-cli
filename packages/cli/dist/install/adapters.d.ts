@@ -1,15 +1,16 @@
 import type { Verified } from '../runtime/store.js';
 import type { AdapterDependencies, AdapterWriter, Grant, HostAdapter, HostName, HostPlan, Inspection } from '@mnemonik/shared';
 export type { AdapterDependencies, AdapterWriter, FileChange, Grant, HostAdapter, HostName, HostPlan, Inspection, Target, } from '@mnemonik/shared';
-export declare const hostOrder: readonly ['claude-code', 'codex', 'grok', 'cursor'];
-export declare const hostPackages: {
-    readonly 'claude-code': '@mnemonik/claude-code-hooks';
-    readonly codex: '@mnemonik/codex-hooks';
-    readonly grok: '@mnemonik/grok-hooks';
-    readonly cursor: '@mnemonik/cursor-hooks';
+export declare const launchHosts: readonly ['claude-code', 'codex', 'cursor'];
+export type LaunchHost = (typeof launchHosts)[number];
+export declare const hostOrder: readonly ["claude-code", "codex", "cursor"];
+export declare const launchHostLabels: {
+    readonly 'claude-code': 'Claude Code';
+    readonly codex: 'Codex';
+    readonly cursor: 'Cursor';
 };
 export type HostPackageImports = {
-    [H in (typeof hostOrder)[number]]: (runtime: Verified) => Promise<{
+    [H in LaunchHost]: (runtime: Verified) => Promise<{
         createHostAdapter(deps?: AdapterDependencies): HostAdapter;
     }>;
 };

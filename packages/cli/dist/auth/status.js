@@ -8,6 +8,9 @@ const hosts = {
     cursor: 'cursor',
     grok: 'grok',
     'grok build': 'grok',
+    'github copilot': 'vscode-copilot',
+    'vs code copilot': 'vscode-copilot',
+    'vscode-copilot': 'vscode-copilot',
 };
 export const grantHost = (grant) => hosts[grant.softwareId?.toLowerCase() ?? ''] ??
     hosts[grant.clientName?.toLowerCase() ?? ''] ??

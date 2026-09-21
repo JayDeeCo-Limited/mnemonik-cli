@@ -13,68 +13,50 @@ import { expect, it, vi } from 'vitest';
 import * as screens from '../../src/screens.js';
 import { Output } from '../../src/output.js';
 
-it.each([
-  'recommended',
-  'account',
-  'cli_approval',
-  'scanner',
-  'apply',
-  'done',
-  'skipped',
-  'windows',
-])('joined %s screen matches its transcript', async (screen) => {
-  const render = (
-    screens as unknown as {
-      renderJourney?: (screen: string, output: Output, values: unknown) => void;
-    }
-  ).renderJourney;
-  expect(render, 'the production journey renders this screen').toBeTypeOf('function');
-  let text = '';
-  render?.(
-    screen,
-    new Output({
-      write: (chunk) => {
-        text += chunk;
-      },
-    }),
-    {
-      hosts: ['Claude Code', 'Cursor', 'Codex'],
-      project: '~/code/acme-api',
-      node: '24.21.0',
-      os: 'macOS 15.3',
-      files: [
-        'Claude Code    ~/.claude/settings.json',
-        'Cursor         ~/.cursor/mcp.json',
-        'Codex          ~/.codex/config.toml',
-        'Scanner        background service, starts at login',
-        'This project   "acme-api" set up, saves .mnemonik.json',
-      ],
-      total: 240,
-      completed: 38,
-      skipped: 'Background indexing was skipped.',
-      remaining: 1,
-      reason: 'Access is denied.',
-    }
-  );
-  const golden = await readFile(new URL(`./${screen}.golden.txt`, import.meta.url), 'utf8');
-  expect(text).toBe(
-    ['account', 'scanner'].includes(screen)
-      ? golden
-      : golden.endsWith('\n\n')
+it.each(['account', 'scanner', 'apply', 'done', 'skipped', 'windows'])(
+  'joined %s screen matches its transcript',
+  async (screen) => {
+    const render = (
+      screens as unknown as {
+        renderJourney?: (screen: string, output: Output, values: unknown) => void;
+      }
+    ).renderJourney;
+    expect(render, 'the production journey renders this screen').toBeTypeOf('function');
+    let text = '';
+    render?.(
+      screen,
+      new Output({
+        write: (chunk) => {
+          text += chunk;
+        },
+      }),
+      {
+        total: 240,
+        completed: 38,
+        skipped: 'Background indexing was skipped.',
+        remaining: 1,
+        reason: 'Access is denied.',
+        hosts: ['claude-code', 'codex', 'cursor'],
+      }
+    );
+    const golden = await readFile(new URL(`./${screen}.golden.txt`, import.meta.url), 'utf8');
+    expect(text).toBe(
+      ['account', 'scanner'].includes(screen)
         ? golden
-        : `${golden}\n`
-  );
-});
+        : golden.endsWith('\n\n')
+          ? golden
+          : `${golden}\n`
+    );
+  }
+);
 
 it('states the controls on every choice screen', () => {
   let text = '';
-  screens.renderJourney('recommended', new Output({ write: (chunk) => void (text += chunk) }), {
-    hosts: ['Claude Code', 'Codex'],
-    project: '~/Projects',
-    node: '24.21.0',
-    os: 'macOS',
-  });
-  expect(text).toContain('Use the Up/Down arrow keys and Enter.');
+  screens.renderSetup(
+    [{ value: 'scanner', label: 'Automatic project indexing', checked: true }],
+    new Output({ write: (chunk) => void (text += chunk) })
+  );
+  expect(text).toContain('Use the Up/Down arrow keys to move, Space to select, Enter to continue.');
 
   text = '';
   screens.renderScreen(
@@ -100,13 +82,13 @@ it('uses arrow keys and Enter, with Enter accepting the highlighted default', as
     input,
     new Output({ write: (chunk) => void (text += chunk) })
   );
-  const changed = answers.choose(['Recommended', 'Customize']);
+  const changed = answers.choose(['First', 'Second']);
   input.write('\u001b[B\r');
-  await expect(changed).resolves.toBe('Customize');
+  await expect(changed).resolves.toBe('Second');
 
-  const accepted = answers.choose(['Recommended', 'Customize']);
+  const accepted = answers.choose(['First', 'Second']);
   input.write('\r');
-  await expect(accepted).resolves.toBe('Recommended');
+  await expect(accepted).resolves.toBe('First');
   expect(input.setRawMode).toHaveBeenCalledWith(true);
   answers.close();
 });
@@ -117,9 +99,9 @@ it('discards keys pressed while no question is on screen', async () => {
     setRawMode: vi.fn(),
   });
   const answers = screens.journeyAnswers(input);
-  const first = answers.choose(['Recommended', 'Customize']);
+  const first = answers.choose(['First', 'Second']);
   input.write('\r');
-  await expect(first).resolves.toBe('Recommended');
+  await expect(first).resolves.toBe('First');
 
   input.write('\r');
   const second = answers.choose(['Install', 'Cancel']);
@@ -191,32 +173,74 @@ it('animates a long step in a TTY, replaces it with the result, and uses plain l
   vi.useRealTimers();
 });
 
-it('renders Customize as one checklist and applies its keyboard changes', async () => {
+it('renders fresh step 1 exactly for three editors and applies keyboard changes', async () => {
   let text = '';
   const output = new Output({ write: (chunk) => void (text += chunk) });
-  screens.renderCustomize(
+  screens.renderSetup(
     [
       { value: 'claude-code', label: 'Claude Code', checked: true },
       { value: 'codex', label: 'Codex', checked: true },
-      { value: 'scanner', label: 'Indexing of your projects', checked: true },
+      { value: 'cursor', label: 'Cursor', checked: true },
+      { value: 'scanner', label: 'Automatic project indexing', checked: true },
     ],
     output
   );
-  expect(text).toContain(
-    'Use the Up/Down arrow keys to move, Space to select, Enter to continue, Esc to go back.'
+  expect(text).toBe(
+    'Step 1 of 5: Choose what to set up\n' +
+      '  These editors were found on this computer. Untick any you do not want.\n' +
+      '  Use the Up/Down arrow keys to move, Space to select, Enter to continue.\n\n' +
+      '  > [x] Claude Code\n' +
+      '    [x] Codex\n' +
+      '    [x] Cursor\n' +
+      '    [x] Automatic project indexing\n\n' +
+      '  Learn more about indexing:\n' +
+      '  https://mnemonik.ai/indexing\n'
   );
   expect(text).toContain('[x] Claude Code');
   expect(text).not.toContain('Scope');
 
   const input = Object.assign(new PassThrough(), { isTTY: true, setRawMode: vi.fn() });
   const answers = screens.journeyAnswers(input, output);
-  const result = answers.customize([
+  const result = answers.checklist([
     { value: 'claude-code', label: 'Claude Code', checked: true },
     { value: 'codex', label: 'Codex', checked: true },
-    { value: 'scanner', label: 'Indexing of your projects', checked: true },
+    { value: 'scanner', label: 'Automatic project indexing', checked: true },
   ]);
   input.write(' \u001b[B\r');
   await expect(result).resolves.toEqual({ selected: ['codex', 'scanner'] });
+  answers.close();
+});
+
+it('never renders the removed setup-choice words', () => {
+  let text = '';
+  const output = new Output({ write: (chunk) => void (text += chunk) });
+  screens.renderSetup(
+    [
+      { value: 'claude-code', label: 'Claude Code', checked: true },
+      { value: 'scanner', label: 'Automatic project indexing', checked: true },
+    ],
+    output
+  );
+  for (const screen of ['account', 'scanner', 'apply', 'done', 'skipped', 'windows'])
+    screens.renderJourney(screen, output);
+  expect(text).not.toMatch(/Recommended|Customize/u);
+});
+
+it('keeps the existing zero-editor and skipped-indexing wording when everything is unticked', async () => {
+  const input = Object.assign(new PassThrough(), { isTTY: true, setRawMode: vi.fn() });
+  let text = '';
+  const output = new Output({ write: (chunk) => void (text += chunk) });
+  const answers = screens.journeyAnswers(input, output);
+  const selected = answers.checklist([
+    { value: 'codex', label: 'Codex', checked: true },
+    { value: 'scanner', label: 'Automatic project indexing', checked: true },
+  ]);
+  input.write(' \u001b[B \r');
+  await expect(selected).resolves.toEqual({ selected: [] });
+  output.line('  ✓ 0 editors configured');
+  screens.renderJourney('indexing_skipped', output);
+  expect(text).toContain('  ✓ 0 editors configured\n');
+  expect(text).toContain('Indexing was skipped. Run mnemonik install to set it up later.\n');
   answers.close();
 });
 
@@ -226,7 +250,7 @@ it('reports closed input as a cancellation', async () => {
     Readable.from([]),
     new Output({ write: (chunk) => void (text += chunk) })
   );
-  await expect(answers.choose(['Recommended', 'Customize'])).resolves.toBe('Cancel');
+  await expect(answers.choose(['First', 'Second'])).resolves.toBe('Cancel');
   expect(text).toContain('Installation cancelled.');
 });
 
@@ -264,7 +288,7 @@ it.each([
   );
 });
 
-it('the real flagless router starts with Recommended before authorization', async () => {
+it('the real flagless router shows the approved checklist before authorization', async () => {
   let text = '';
   let authorizations = 0;
   const code = await runCli(['install'], {
@@ -279,6 +303,7 @@ it('the real flagless router starts with Recommended before authorization', asyn
     preflight: {
       nodeVersion: '24.21.0',
       platform: 'linux',
+      pathExists: async (path) => /\.(?:claude|codex|cursor)(?:\/|$)/u.test(path),
       fetch: async () => Response.json({}),
       resolveIdentity: async () => ({
         kind: 'absent',
@@ -298,14 +323,17 @@ it('the real flagless router starts with Recommended before authorization', asyn
   });
   expect(code).toBe(130);
   expect(authorizations).toBe(0);
-  expect(text).toContain('  > Recommended\n    Customize\n');
+  expect(text).toContain('Step 1 of 5: Choose what to set up\n');
+  expect(text).toContain('  > [x] Claude Code\n    [x] Codex\n    [x] Cursor\n');
+  expect(text).toContain('    [x] Automatic project indexing\n');
+  expect(text).not.toMatch(/Recommended|Customize/u);
 });
 
 it('a piped install stops at the first missing flag without printing key instructions', async () => {
   let text = '';
   let authorizations = 0;
   const code = await runCli(['install'], {
-    input: Readable.from('Recommended\n'),
+    input: Readable.from('\n'),
     stdout: { write: (chunk) => void (text += chunk) },
     stderr: { write: (chunk) => void (text += chunk) },
     cliAuth: {
@@ -328,6 +356,27 @@ it('a second run after skipping indexing offers only indexing', async () => {
   const home = await mkdtemp(join(tmpdir(), 'joined-indexing-only-'));
   try {
     await writeFile(join(home, 'indexing-skipped'), 'indexing was skipped\n');
+    await writeFile(
+      join(home, 'host-ownership.json'),
+      JSON.stringify({
+        schemaVersion: 1,
+        generation: 0,
+        targets: [
+          {
+            id: 'codex:hooks:user',
+            host: 'codex',
+            component: 'hooks',
+            scope: 'user',
+            home,
+            profilePath: join(home, '.codex', 'hooks.json'),
+            version: '1.0.0',
+            artifactDigest: 'fixture',
+            runtimePointer: join(home, 'runtimes', 'codex', 'current'),
+            files: [],
+          },
+        ],
+      })
+    );
     let text = '';
     const code = await runCli(['install'], {
       cwd: home,
@@ -370,10 +419,10 @@ it('prints the failed discovery URL and network detail before stopping setup', a
       text += chunk;
     },
   };
-  const code = await runCli(['install'], {
+  const code = await runCli(['install', '--components=scanner', '--accept-indexing', '--apply'], {
     cwd: '/code/acme-api',
     home: '/home/tester',
-    input: Object.assign(Readable.from('Recommended\n'), { isTTY: true }),
+    input: Object.assign(Readable.from('\n'), { isTTY: true }),
     stdout: output,
     stderr: output,
     preflight: {
@@ -415,8 +464,9 @@ it('rejects the unsupported install host before preflight', async () => {
   );
   expect(code).toBe(2);
   expect(resolveIdentity).not.toHaveBeenCalled();
-  expect(text).toContain('claude-code, codex, cursor, grok');
-  expect(text).toContain('vscode-copilot');
+  expect(text).toContain('claude-code, codex, cursor');
+  expect(text).not.toContain('grok');
+  expect(text).not.toContain('vscode-copilot');
 });
 it('names the found and minimum Node versions before stopping setup', async () => {
   let text = '';
@@ -504,12 +554,10 @@ it('keeps indexing detail out of the finished install transcript', () => {
         text += chunk;
       },
     }),
-    { total: 6, completed: 3 }
+    { total: 6, completed: 3, hosts: ['claude-code'] }
   );
   expect(text).not.toContain('Indexing');
-  expect(text).toContain(
-    '  ✓ Installed.\n  Your editors will ask you to sign in to Mnemonik the first time you use it.\n'
-  );
+  expect(text).toContain('  One step is left in each editor');
 });
 it('keeps unknown indexing detail out of the completion wording', () => {
   let text = '';
@@ -524,6 +572,59 @@ it('keeps unknown indexing detail out of the completion wording', () => {
   );
   expect(text).not.toContain('Indexing');
   expect(text).not.toContain('Indexing 0');
+});
+
+it('shows the exact authorization block for all three editors', () => {
+  let text = '';
+  screens.renderJourney('done', new Output({ write: (chunk) => void (text += chunk) }), {
+    hosts: ['claude-code', 'codex', 'cursor'],
+  });
+  expect(text).toBe(`  One step is left in each editor: Authorize the Mnemonik MCP connection.
+  You may need to restart your editor after authorizing.
+
+  Claude Code      type /mcp, choose mnemonik, then Authenticate
+  Codex CLI        run codex mcp login mnemonik
+  Codex Desktop    open Settings, Plugins, MCPs, then Authenticate
+  Cursor Desktop   open Cursor Settings, Customize, MCPs, then Authenticate
+
+`);
+});
+
+it('shows only the Claude Code authorization row when only Claude Code was set up', () => {
+  let text = '';
+  screens.renderJourney('done', new Output({ write: (chunk) => void (text += chunk) }), {
+    hosts: ['claude-code'],
+  });
+  expect(text).toBe(`  One step is left in each editor: Authorize the Mnemonik MCP connection.
+  You may need to restart your editor after authorizing.
+
+  Claude Code   type /mcp, choose mnemonik, then Authenticate
+
+`);
+});
+
+it('omits editor authorization when no editors were selected', () => {
+  let text = '';
+  screens.renderJourney('done', new Output({ write: (chunk) => void (text += chunk) }), {
+    hosts: [],
+  });
+  expect(text).toBe('');
+});
+
+it('puts scanner failure before the editor authorization block', () => {
+  let text = '';
+  screens.renderJourney('scanner_failed', new Output({ write: (chunk) => void (text += chunk) }), {
+    hosts: ['claude-code'],
+  });
+  expect(text).toBe(`  Background indexing could not be started.
+  Run mnemonik install to try again.
+
+  One step is left in each editor: Authorize the Mnemonik MCP connection.
+  You may need to restart your editor after authorizing.
+
+  Claude Code   type /mcp, choose mnemonik, then Authenticate
+
+`);
 });
 
 it('prints an interrupted non-interactive install as plain text without --json', async () => {

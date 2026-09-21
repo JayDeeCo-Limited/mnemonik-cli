@@ -273,7 +273,7 @@ it('sends boundary candidates and configures only the approved subset', async ()
       boundary,
       candidates: [
         { path: app, name: 'app', kind: 'git' },
-        { path: notes, name: 'notes', kind: 'folder' },
+        { path: notes, name: 'notes', kind: 'git' },
       ],
     },
     '11111111-1111-4111-8111-111111111111'
@@ -299,6 +299,24 @@ it('says it will wait for scanner consent for the full approval lifetime', async
   await enableScanner(options);
 
   expect(text).toContain('Waiting for approval in your browser, up to 10 minutes.');
+});
+it('uses the repository approval instruction in the joined installer', async () => {
+  let text = '';
+  options.output = new Output({ write: (chunk) => void (text += chunk) });
+  options.nonInteractive = false;
+  options.approvalAnnounced = true;
+  options.input = Readable.from('\n');
+  options.roots = [consent.roots[0]!];
+  consent.roots = [join(home, 'different')];
+  options.authorize = async (selection) => {
+    if (selection) consent.roots = [options.roots![0]!];
+    return 'cli-token';
+  };
+
+  await enableScanner(options);
+
+  expect(text).toContain('Please choose your repositories by opening the link below.');
+  expect(text).not.toContain('Waiting for approval');
 });
 it('atomically adopts the current-consent root update', async () => {
   await enableScanner(options);

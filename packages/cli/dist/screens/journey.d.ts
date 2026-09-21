@@ -1,18 +1,14 @@
 import type { Readable } from 'node:stream';
 import type { Output } from '../output.js';
 export interface JourneyValues {
-    hosts?: string[];
-    project?: string;
-    node?: string;
-    os?: string;
-    files?: string[];
     total?: number | null;
     completed?: number | null;
     skipped?: string;
     remaining?: number;
     reason?: string;
+    hosts?: readonly ('claude-code' | 'codex' | 'cursor')[];
 }
-export interface CustomizeItem {
+export interface SetupItem {
     value: string;
     label: string;
     checked: boolean;
@@ -25,7 +21,8 @@ export declare const stepProgress: (output: Output, interactive: boolean, text: 
     complete(result: string): void;
     stop(): void;
 };
-export declare function renderCustomize(items: CustomizeItem[], output: Output, cursor?: number): number;
+export declare function renderSetup(items: SetupItem[], output: Output, cursor?: number): number;
+export declare function renderNoSupportedEditors(output: Output): void;
 /** Browser-owned account, CLI and scanner choices are announced, never duplicated here. */
 export declare function renderJourney(screen: string, output: Output, v?: JourneyValues): number;
 export declare function renderInterrupted(output: Output): void;
@@ -35,12 +32,12 @@ interface SignalSource {
     off(event: 'SIGINT' | 'SIGHUP', listener: () => void): unknown;
     emit?(event: 'SIGINT' | 'SIGHUP'): boolean;
 }
-export declare function journeyAnswers(input: Readable, output?: Pick<Output, 'line' | 'write'>, options?: {
+export declare function journeyAnswers(input: Readable, output?: Pick<Output, 'line' | 'write' | 'inputPrefix'>, options?: {
     interrupt?: (signal: 'SIGINT' | 'SIGHUP') => void;
     signals?: SignalSource;
 }): {
     choose(choices: string[], fallback?: number): Promise<string>;
-    customize(items: CustomizeItem[]): Promise<"Back" | "Cancel" | {
+    checklist(items: SetupItem[]): Promise<"Back" | "Cancel" | {
         selected: string[];
     }>;
     text(): Promise<string | undefined>;

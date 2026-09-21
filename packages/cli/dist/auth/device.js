@@ -2,6 +2,8 @@ import { URL, URLSearchParams } from 'node:url';
 import { OAuthProtocolError } from './pkce.js';
 /** Shown with every device code, byte for byte, as required by the OAuth contract. */
 export const DEVICE_WARNING = 'Approve only a request on a device you control.';
+export const DEVICE_APPROVAL_INSTRUCTION = 'Please approve the device by opening the link below.';
+export const REPOSITORY_APPROVAL_INSTRUCTION = 'Please choose your repositories by opening the link below.';
 const wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 function validVerificationUris(issuer, userCode, verificationUri, completeUri) {
     try {

@@ -14,12 +14,12 @@ import {
 } from '../../src/runtime/store.js';
 import type { HostDependencies, HostSelection } from '../../src/install/hosts.js';
 import type { AccountGrant } from '../../src/auth/status.js';
+import { vi } from 'vitest';
 
 export const FIXTURE_HOST_VERSIONS = {
   claude: '1.0.100 (Claude Code)',
   codex: 'codex-cli 0.145.0',
   cursor: '3.20.17',
-  grok: 'grok 1.0.25 (f7e67d6988e2)',
 } as const;
 export async function packedHosts() {
   const root = await mkdtemp(join(tmpdir(), 'host-packs-'));
@@ -104,7 +104,7 @@ export async function hostFixture(sources: Record<HostArtifact, RuntimeSource>) 
     stateDir: join(home, 'state'),
     account: 'owner',
     getCliBearer: async () => 'fixture-cli-bearer',
-    credentialFetch: async (_input, init) => {
+    credentialFetch: vi.fn(async (_input, init) => {
       if (new Headers(init?.headers).get('authorization') !== 'Bearer fixture-cli-bearer')
         throw new Error('expected_cli_grant');
       if (init?.body !== JSON.stringify({ component_kind: 'hook' }))
@@ -119,12 +119,11 @@ export async function hostFixture(sources: Record<HostArtifact, RuntimeSource>) 
         scope: 'hooks:use',
         display_prefix: 'hook',
       });
-    },
+    }),
     env: {
       ...process.env,
       PATH: bin,
       CODEX_HOME: join(home, '.codex'),
-      GROK_HOME: join(home, '.grok'),
     },
     source: async (h) => sources[h],
     now: () => clock,
@@ -186,11 +185,7 @@ export async function hostStateFixture(sources: Record<HostArtifact, RuntimeSour
     setGrantAccount(value: string) {
       account = value;
     },
-    async hostOutput(
-      binary: 'claude' | 'codex' | 'cursor' | 'grok',
-      version: string,
-      connected = true
-    ) {
+    async hostOutput(binary: 'claude' | 'codex' | 'cursor', version: string, connected = true) {
       await writeFile(
         join(fixture.bin, binary),
         `#!/bin/sh\nif [ "$1" = "--version" ]; then echo ${JSON.stringify(version)}; else echo ${JSON.stringify(`mnemonik: ${connected ? 'Connected' : 'Not connected'}`)}; fi\n`,

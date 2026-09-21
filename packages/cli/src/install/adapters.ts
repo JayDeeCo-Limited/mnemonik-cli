@@ -23,15 +23,16 @@ export type {
 } from '@mnemonik/shared';
 import { bytesAt } from './journal.js';
 
-export const hostOrder = ['claude-code', 'codex', 'grok', 'cursor'] as const;
-export const hostPackages = {
-  'claude-code': '@mnemonik/claude-code-hooks',
-  codex: '@mnemonik/codex-hooks',
-  grok: '@mnemonik/grok-hooks',
-  cursor: '@mnemonik/cursor-hooks',
+export const launchHosts = ['claude-code', 'codex', 'cursor'] as const;
+export type LaunchHost = (typeof launchHosts)[number];
+export const hostOrder = launchHosts;
+export const launchHostLabels = {
+  'claude-code': 'Claude Code',
+  codex: 'Codex',
+  cursor: 'Cursor',
 } as const;
 export type HostPackageImports = {
-  [H in (typeof hostOrder)[number]]: (runtime: Verified) => Promise<{
+  [H in LaunchHost]: (runtime: Verified) => Promise<{
     createHostAdapter(deps?: AdapterDependencies): HostAdapter;
   }>;
 };
@@ -44,7 +45,6 @@ export const hostPackageImports: HostPackageImports = {
   'claude-code': loadAdapter,
   codex: loadAdapter,
   cursor: loadAdapter,
-  grok: loadAdapter,
 };
 
 export class SimulatedHostAdapter implements HostAdapter {

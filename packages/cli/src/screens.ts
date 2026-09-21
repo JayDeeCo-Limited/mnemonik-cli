@@ -1,7 +1,7 @@
 import type { Output } from './output.js';
 
 export interface ChoiceScreen {
-  id: 'recommended' | 'account' | 'cli_approval' | 'scanner' | 'apply' | 'cancel' | 'resume';
+  id: 'account' | 'scanner' | 'apply' | 'cancel' | 'resume';
   title: string;
   lines: string[];
   choices: string[];
@@ -74,7 +74,7 @@ export * from './scanner/picker.js';
 export {
   INSTALLATION_STOPPED,
   journeyAnswers,
-  renderCustomize,
+  renderSetup,
   renderJourney,
   stepProgress,
 } from './screens/journey.js';

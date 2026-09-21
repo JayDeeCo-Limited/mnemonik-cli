@@ -154,6 +154,52 @@ describe('hook credential convergence', () => {
       expect(await readFile(target.profilePath, 'utf8')).toContain('--credential-family family-1');
   }, 120_000);
 
+  it.each(['grok', 'vscode-copilot'])(
+    'does not reuse a real local hook family owned by retired %s',
+    async (legacyHost) => {
+      const f = await fixture();
+      const credentials = createCredentialAdapter({ stateDir: f.deps.stateDir });
+      await credentials.putFamily('hook', hookFamily('legacy-family'));
+      await writeFile(
+        ownershipPath(f.deps.stateDir),
+        JSON.stringify({
+          schemaVersion: 1,
+          generation: 0,
+          targets: [
+            {
+              id: `${legacyHost}:hooks:user:${f.home}`,
+              host: legacyHost,
+              component: 'hooks',
+              scope: 'user',
+              home: f.home,
+              profilePath: join(f.home, `.${legacyHost}`, 'hooks.json'),
+              version: '0.1.0',
+              artifactDigest: 'legacy',
+              runtimePointer: join(f.deps.stateDir, 'runtimes', legacyHost, 'current'),
+              files: [],
+              credentialFamily: 'legacy-family',
+            },
+          ],
+        })
+      );
+      f.deps.credentialFetch = vi.fn(async () => Response.json(hookFamily('launch-family')));
+      const selection = {
+        ...f.selections.find(({ host }) => host === 'codex')!,
+        component: 'hooks' as const,
+      };
+
+      await runHosts('install', [selection], f.deps);
+
+      expect(f.deps.credentialFetch).toHaveBeenCalledOnce();
+      const launchTarget = (await readOwnership(f.deps.stateDir)).targets.find(
+        ({ host }) => host === 'codex'
+      )!;
+      expect(launchTarget).toMatchObject({ credentialFamily: 'launch-family' });
+      expect(await readFile(launchTarget.profilePath, 'utf8')).not.toContain('legacy-family');
+    },
+    120_000
+  );
+
   it('automatic update converges split editor hook families', async () => {
     const f = await fixture();
     const selected = targets(f, 'hooks').filter(({ host }) =>
@@ -291,7 +337,7 @@ describe('joined install journal', () => {
 
   it('scanner skip after three hosts uses the same journal', async () => {
     const f = await fixture();
-    const selected = targets(f, 'hooks').filter(({ host }) => host !== 'grok');
+    const selected = targets(f, 'hooks');
     for (const selection of selected) {
       const path =
         selection.host === 'claude-code'
@@ -384,7 +430,7 @@ describe('host rulings', () => {
 
   it('reports verified hooks READY, missing declarations ACTION_REQUIRED, and Codex trust first', async () => {
     const f = await fixture();
-    const selected = targets(f, 'hooks').filter(({ host }) => host !== 'grok');
+    const selected = targets(f, 'hooks');
     await runHosts('install', selected, f.deps);
     const hosts = selected.map(({ host }) => host);
     let conditions = await hookStatusConditions(f.deps, hosts);
@@ -719,7 +765,7 @@ describe('host rulings', () => {
     ).not.toBeNull();
 
     const second = await fixture();
-    await Promise.all(['claude', 'cursor', 'grok'].map((binary) => rm(join(second.bin, binary))));
+    await Promise.all(['claude', 'cursor'].map((binary) => rm(join(second.bin, binary))));
     const launch = vi.fn(async () => {
       throw new Error('editor login must not launch');
     });
@@ -728,7 +774,7 @@ describe('host rulings', () => {
       hostOrder.map((host) => [
         host,
         async (runtime: Verified) => {
-          const module = await imports[host](runtime);
+          const module = await imports[host as keyof HostPackageImports](runtime);
           return {
             createHostAdapter(deps?: AdapterDependencies) {
               return { ...module.createHostAdapter(deps), launch };
@@ -739,7 +785,7 @@ describe('host rulings', () => {
     ) as unknown as HostPackageImports;
     const unverified = await runHosts('install', targets(second, 'mcp'), second.deps);
     expect(unverified.results.every((row) => row.status === 'READY')).toBe(true);
-    for (const host of ['claude-code', 'cursor', 'grok'] as const)
+    for (const host of ['claude-code', 'cursor'] as const)
       expect(
         await bytesAt(new RuntimeStore(second.deps.stateDir).pointerPath(host))
       ).not.toBeNull();
@@ -900,8 +946,9 @@ describe('host state matrix', () => {
     expect(targets.different.status).toBe('committed');
   });
 
-  it('clean: installs hooks and MCP for four hosts as eight READY targets', async () => {
+  it('clean: installs hooks and MCP for three editors without touching installed Grok', async () => {
     const f = await fixture();
+    await mkdir(join(f.home, '.grok'), { recursive: true });
     const result = await runHosts(
       'install',
       f.selections.flatMap((selection) => [
@@ -910,17 +957,25 @@ describe('host state matrix', () => {
       ]),
       f.deps
     );
-    expect(result.results).toHaveLength(8);
+    expect(result.results).toHaveLength(6);
     expect(result.results.every((row) => row.status === 'READY')).toBe(true);
     expect(result.journal.state).toBe('READY');
     const owned = (await readOwnership(f.deps.stateDir)).targets;
-    expect(owned).toHaveLength(8);
+    expect(owned).toHaveLength(6);
     expect(owned.every((target) => target.editorVersion === undefined)).toBe(true);
+    expect(owned.map((target) => target.host)).not.toContain('grok');
+    await expect(readFile(join(f.home, '.grok', 'hooks', 'hooks.json'))).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
+    await expect(readFile(join(f.home, '.grok', 'config.toml'))).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
+    expect(f.deps.credentialFetch).toHaveBeenCalledOnce();
   }, 300_000);
 
   it('maintenance verifies declarations without login, grant polling, or waiting', async () => {
     const f = await fixture();
-    const selections = f.selections.filter((selection) => selection.host !== 'grok');
+    const selections = f.selections;
     await runHosts(
       'install',
       selections.flatMap((selection) => [
@@ -943,7 +998,7 @@ describe('host state matrix', () => {
       f.deps.imports = {
         ...(f.deps.imports ?? imports),
         [host]: async (runtime: Verified) => {
-          const module = await imports[host](runtime);
+          const module = await imports[host as keyof HostPackageImports](runtime);
           return {
             createHostAdapter(deps?: AdapterDependencies) {
               return { ...module.createHostAdapter(deps), verify, launch };
@@ -984,7 +1039,7 @@ describe('host state matrix', () => {
 
     const result = await runHosts('update', before.targets, f.deps);
     const after = await readOwnership(f.deps.stateDir);
-    expect(result.results.filter((row) => row.status === 'READY')).toHaveLength(3);
+    expect(result.results.filter((row) => row.status === 'READY')).toHaveLength(2);
     expect(result.results.find((row) => row.target === cursor.id)).toMatchObject({
       status: 'ACTION_REQUIRED',
       reason: 'hooks_missing',
@@ -992,7 +1047,7 @@ describe('host state matrix', () => {
     });
     expect(after.targets.find((target) => target.id === cursor.id)?.version).toBe(cursor.version);
     expect(await readFile(cursor.profilePath)).toEqual(cursorBytes);
-    expect(after.targets.filter((target) => target.version === '99.0.0')).toHaveLength(3);
+    expect(after.targets.filter((target) => target.version === '99.0.0')).toHaveLength(2);
   }, 240_000);
 
   it('update with READY targets exits zero', async () => {
@@ -1032,7 +1087,7 @@ describe('host state matrix', () => {
     expect(list).not.toHaveBeenCalled();
   }, 240_000);
 
-  it('partial: resumes the remaining two hosts from the journal without re-staging the completed two', async () => {
+  it('partial: resumes the remaining host from the journal without re-staging the completed two', async () => {
     const f = await fixture();
     let intents = 0;
     f.deps.fault = (event) => {
@@ -1066,9 +1121,9 @@ describe('host state matrix', () => {
       ])
     ) as HostPackageImports;
     const resumed = await runHosts('install', targets(f, 'hooks'), f.deps);
-    expect(resumed.results).toHaveLength(4);
-    expect([...plans.values()]).toEqual([0, 0, 1, 1]);
-    expect((await readOwnership(f.deps.stateDir)).targets).toHaveLength(4);
+    expect(resumed.results).toHaveLength(3);
+    expect([...plans.values()]).toEqual([0, 0, 1]);
+    expect((await readOwnership(f.deps.stateDir)).targets).toHaveLength(3);
   }, 180_000);
 
   it('conflicting: adds our Claude hook beside a foreign one and refuses a foreign Mnemonik MCP URL', async () => {
@@ -1407,6 +1462,6 @@ describe('host state matrix', () => {
     }
     expect(await readFile(otherScope)).toEqual(otherBytes);
     expect(f.revoked).toEqual([]);
-    expect(f.grants).toHaveLength(4);
+    expect(f.grants).toHaveLength(3);
   }, 300_000);
 });

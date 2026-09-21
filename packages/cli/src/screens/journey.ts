@@ -1,21 +1,18 @@
 import { createInterface, emitKeypressEvents, type Key } from 'node:readline';
 import type { Readable } from 'node:stream';
 import type { Output } from '../output.js';
+import { DEVICE_APPROVAL_INSTRUCTION } from '../auth/device.js';
 
 export interface JourneyValues {
-  hosts?: string[];
-  project?: string;
-  node?: string;
-  os?: string;
-  files?: string[];
   total?: number | null;
   completed?: number | null;
   skipped?: string;
   remaining?: number;
   reason?: string;
+  hosts?: readonly ('claude-code' | 'codex' | 'cursor')[];
 }
 
-export interface CustomizeItem {
+export interface SetupItem {
   value: string;
   label: string;
   checked: boolean;
@@ -29,43 +26,64 @@ export const ADD_ANOTHER_FOLDER = 'To connect a folder somewhere else, run mnemo
 export const stepProgress = (output: Output, interactive: boolean, text: string) =>
   output.progressLine(interactive ? text : `  ${text}`, interactive);
 
-function customizeLines(items: CustomizeItem[], cursor = 0): string[] {
+function setupLines(items: SetupItem[], cursor = 0): string[] {
   return [
-    '  Customize',
-    '',
-    '  Use the Up/Down arrow keys to move, Space to select, Enter to continue, Esc to go back.',
+    'Step 1 of 5: Choose what to set up',
+    '  These editors were found on this computer. Untick any you do not want.',
+    '  Use the Up/Down arrow keys to move, Space to select, Enter to continue.',
     '',
     ...items.map(
       (item, index) =>
         `  ${index === cursor ? '>' : ' '} [${item.checked ? 'x' : ' '}] ${item.label}`
     ),
     '',
+    '  Learn more about indexing:',
+    '  https://mnemonik.ai/indexing',
   ];
 }
 
-export function renderCustomize(items: CustomizeItem[], output: Output, cursor = 0): number {
-  const lines = customizeLines(items, cursor);
-  for (const line of lines) output.line(line);
-  return lines.length;
+export function renderSetup(items: SetupItem[], output: Output, cursor = 0): number {
+  return setupLines(items, cursor).reduce((count, line) => count + output.line(line), 0);
+}
+
+export function renderNoSupportedEditors(output: Output): void {
+  output.line('No supported editors found.');
+  output.line();
+  output.line('Learn more about supported editors:');
+  output.line('https://mnemonik.ai/editor-support');
+}
+
+function editorAuthorizationLines(hosts: JourneyValues['hosts'] = []): string[] {
+  const selected = new Set(hosts);
+  const rows = [
+    ...(selected.has('claude-code')
+      ? [['Claude Code', 'type /mcp, choose mnemonik, then Authenticate'] as const]
+      : []),
+    ...(selected.has('codex')
+      ? [
+          ['Codex CLI', 'run codex mcp login mnemonik'] as const,
+          ['Codex Desktop', 'open Settings, Plugins, MCPs, then Authenticate'] as const,
+        ]
+      : []),
+    ...(selected.has('cursor')
+      ? [['Cursor Desktop', 'open Cursor Settings, Customize, MCPs, then Authenticate'] as const]
+      : []),
+  ];
+  if (!rows.length) return [];
+  const width = Math.max(...rows.map(([editor]) => editor.length)) + 3;
+  return [
+    '  One step is left in each editor: Authorize the Mnemonik MCP connection.',
+    '  You may need to restart your editor after authorizing.',
+    '',
+    ...rows.map(([editor, instruction]) => `  ${editor.padEnd(width)}${instruction}`),
+    '',
+  ];
 }
 /** Browser-owned account, CLI and scanner choices are announced, never duplicated here. */
 export function renderJourney(screen: string, output: Output, v: JourneyValues = {}) {
-  const hosts = v.hosts ?? [];
+  const authorization = editorAuthorizationLines(v.hosts);
   const lines: Record<string, string[]> = {
-    recommended: [
-      'Mnemonik',
-      '',
-      'Step 1 of 5: Choose setup',
-      `  ${hosts.join(', ') || 'No supported editors'}; background indexing`,
-      '  Use the Up/Down arrow keys and Enter.',
-      '',
-      '  > Recommended',
-      '    Customize',
-      '',
-    ],
     indexing: [
-      'Mnemonik',
-      '',
       'Indexing was skipped.',
       '  Use the Up/Down arrow keys and Enter.',
       '',
@@ -73,12 +91,7 @@ export function renderJourney(screen: string, output: Output, v: JourneyValues =
       '    Cancel',
       '',
     ],
-    account: ['Step 2 of 5: Sign in. Your browser will open. This waits up to 10 minutes.'],
-    cli_approval: [
-      '  Approve this CLI in the browser.',
-      '  Compare the code and confirm the account and computer shown there.',
-      '',
-    ],
+    account: ['Step 2 of 5: Sign in', `  ${DEVICE_APPROVAL_INSTRUCTION}`],
     scanner: ['Step 4 of 5: Connect repositories'],
     apply: [
       'Step 5 of 5: Finish',
@@ -89,20 +102,16 @@ export function renderJourney(screen: string, output: Output, v: JourneyValues =
       '    Cancel',
       '',
     ],
-    done: [
-      '  ✓ Installed.',
-      '  Your editors will ask you to sign in to Mnemonik the first time you use it.',
-      '',
-    ],
+    done: authorization,
     indexing_done: ['  ✓ Indexing set up.', ''],
     indexing_skipped: [
       '  ✓ Installed.',
-      '  Your editors will ask you to sign in to Mnemonik the first time you use it.',
+      ...(authorization.length ? ['', ...authorization] : []),
       '  Indexing was skipped. Run mnemonik install to set it up later.',
       '',
     ],
     skipped: [
-      '  Your editors will ask you to sign in to Mnemonik the first time you use it.',
+      ...authorization,
       !v.remaining
         ? '  Done.'
         : v.remaining === 1
@@ -120,13 +129,19 @@ export function renderJourney(screen: string, output: Output, v: JourneyValues =
       '  Run mnemonik install to try again.',
       '',
     ],
+    scanner_failed: [
+      '  Background indexing could not be started.',
+      '  Run mnemonik install to try again.',
+      ...(authorization.length ? ['', ...authorization] : ['']),
+    ],
+    authorization,
   };
   const rendered = lines[screen] ?? [];
-  for (const line of rendered) output.line(line);
-  return rendered.length;
+  return rendered.reduce((count, line) => count + output.line(line), 0);
 }
 
 export function renderInterrupted(output: Output): void {
+  output.installSection();
   output.line('  Previous installation was interrupted.');
   output.line('  Resume keeps your choices and continues the installation.');
   output.line('  Rollback removes changes from the unfinished installation.');
@@ -153,7 +168,7 @@ interface SignalSource {
 
 export function journeyAnswers(
   input: Readable,
-  output?: Pick<Output, 'line' | 'write'>,
+  output?: Pick<Output, 'line' | 'write' | 'inputPrefix'>,
   options: { interrupt?: (signal: 'SIGINT' | 'SIGHUP') => void; signals?: SignalSource } = {}
 ) {
   const terminalInput = input as Readable & {
@@ -268,7 +283,7 @@ export function journeyAnswers(
           'Cancel');
       return selectedChoice === 'Cancel' ? cancel() : selectedChoice;
     },
-    async customize(items: CustomizeItem[]) {
+    async checklist(items: SetupItem[]) {
       if (!interactive) {
         const answer = await nextAnswer();
         if (answer.done || cancelled) return cancel();
@@ -284,7 +299,7 @@ export function journeyAnswers(
         const selected = items.map((item) => ({ ...item }));
         const redraw = () => {
           if (!output) return;
-          const lines = customizeLines(selected, cursor);
+          const lines = setupLines(selected, cursor);
           output.write(`\u001b[${lines.length}A`);
           for (const line of lines) output.write(`\r\u001b[2K${line}\n`);
         };
@@ -300,7 +315,7 @@ export function journeyAnswers(
             redraw();
           } else if (answer.name === 'return' || answer.name === 'enter') {
             return { selected: selected.filter((item) => item.checked).map((item) => item.value) };
-          } else if (answer.name === 'escape') return 'Back' as const;
+          } else if (answer.name === 'escape') continue;
           else if (answer.name === 'end' || (answer.ctrl && answer.name === 'c')) return cancel();
         }
       } finally {
@@ -315,6 +330,7 @@ export function journeyAnswers(
         keys.length = 0;
         let value = '';
         try {
+          output?.inputPrefix();
           for (;;) {
             const answer = await key();
             if (answer.name === 'return' || answer.name === 'enter') {

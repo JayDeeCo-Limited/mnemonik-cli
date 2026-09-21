@@ -45,12 +45,12 @@ export async function classifyRepository(path, options = {}) {
     const resolvedPath = resolution.kind === 'git_unavailable'
         ? canonical
         : await (options.canonicalizePath ?? realpath)(resolution.repository.kind === 'git' ? resolution.repository.root : resolution.root);
+    if (resolution.kind === 'ok') {
+        return { path: resolvedPath, state: 'existing_project' };
+    }
     const nonGit = resolution.kind !== 'git_unavailable' && resolution.repository.kind === 'plain'
         ? { nonGitSelected: true }
         : {};
-    if (resolution.kind === 'ok') {
-        return { path: resolvedPath, state: 'existing_project', ...nonGit };
-    }
     if (resolution.kind !== 'absent') {
         return { path: resolvedPath, state: 'action_required', reason: resolution.kind, ...nonGit };
     }

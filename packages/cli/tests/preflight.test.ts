@@ -90,7 +90,7 @@ describe('preflight', () => {
     }
   });
 
-  it('detects launch host folders at user and project scope without mentioning Copilot', async () => {
+  it('detects only the three launch editors when retired editors are also installed', async () => {
     // This test exercises the real file lookup against a home it owns; every
     // other test runs with discovery blinded by tests/setup/hostDiscovery.ts.
     await enableHostDiscovery();
@@ -110,6 +110,7 @@ describe('preflight', () => {
     await mkdir(root, { recursive: true });
     await mkdir(join(root, '.cursor'), { recursive: true });
     await mkdir(join(root, '.grok'), { recursive: true });
+    await mkdir(join(root, '.copilot'), { recursive: true });
     await exec('git', ['init', '--initial-branch=main'], {
       cwd: root,
       env: { ...process.env, GIT_CEILING_DIRECTORIES: base },
@@ -131,11 +132,11 @@ describe('preflight', () => {
       { name: 'Claude Code', supported: true },
       { name: 'Codex', supported: true },
       { name: 'Cursor', supported: true },
-      { name: 'Grok', supported: true },
     ]);
     let text = '';
     renderPreflight(result, new Output({ write: (chunk) => void (text += chunk) }));
     expect(text).not.toContain('VS Code Copilot');
+    expect(text).not.toContain('Grok');
   });
 
   it('does exactly one discovery GET and reports an unsupported Node', async () => {

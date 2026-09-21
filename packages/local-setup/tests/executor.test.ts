@@ -869,7 +869,7 @@ describe('durable local setup', () => {
     const replacement = randomUUID();
     f.transport.issueSetupRequest.mockResolvedValue({
       status: 'project_setup_required',
-      state: 'fingerprint_mismatch',
+      state: 'confirmation_required',
       allowedActions: ['link', 'cancel'],
       requestId: randomUUID(),
     });
@@ -896,6 +896,25 @@ describe('durable local setup', () => {
     expect(JSON.parse(await readFile(f.file, 'utf8')).projectId).toBe(replacement);
     await executor.rollback(options);
     expect(await readFile(f.file)).toEqual(existing);
+  });
+
+  it('never consumes a fingerprint mismatch for an explicit link intent', async () => {
+    const f = await fixture();
+    const mismatch = {
+      status: 'project_setup_required' as const,
+      state: 'fingerprint_mismatch',
+      allowedActions: ['link', 'cancel'],
+      requestId: randomUUID(),
+    };
+    f.transport.issueSetupRequest.mockResolvedValue(mismatch);
+    const result = await createProjectSetupExecutor(f.deps).stage({
+      ...f.options,
+      intent: { action: 'link', projectId },
+    });
+
+    expect(result).toBe(mismatch);
+    expect(f.transport.consumeSetupRequest).not.toHaveBeenCalled();
+    expect(await readFile(f.file).catch(() => null)).toBeNull();
   });
 
   it.each(['stage', 'apply'] as const)(

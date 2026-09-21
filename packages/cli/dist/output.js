@@ -45,8 +45,8 @@ function supportsHyperlinks(stream) {
         return stream.supportsHyperlinks;
     return Boolean(stream.isTTY && process.env.TERM !== 'dumb');
 }
-function terminalUrl(url, stream) {
-    return supportsHyperlinks(stream) ? `\u001b]8;;${url}\u0007${url}\u001b]8;;\u0007` : url;
+function terminalUrl(url, stream, display = url) {
+    return supportsHyperlinks(stream) ? `\u001b]8;;${url}\u0007${display}\u001b]8;;\u0007` : display;
 }
 function humanLines(value) {
     urlPattern.lastIndex = 0;
@@ -57,11 +57,12 @@ function humanLines(value) {
     let offset = 0;
     for (const match of value.matchAll(urlPattern)) {
         const index = match.index;
-        const before = value.slice(offset, index).trimEnd();
+        const prefix = value.slice(offset, index);
+        const before = prefix.trimEnd();
         if (before)
             lines.push({ text: before });
         const url = match[0];
-        lines.push({ text: url, url });
+        lines.push({ text: before ? url : `${prefix}${url}`, url });
         offset = index + match[0].length;
     }
     const after = value.slice(offset).trimStart();
@@ -73,6 +74,8 @@ export class Output {
     stdout;
     stderr;
     context;
+    installationLayout = false;
+    lastHumanLineBlank = true;
     progress;
     constructor(stdout, stderr = stdout, context = {}) {
         this.stdout = stdout;
@@ -82,8 +85,21 @@ export class Output {
     setContext(context) {
         this.context = { ...this.context, ...context };
     }
+    beginInstallation() {
+        this.installationLayout = true;
+        this.line('Mnemonik');
+        this.line();
+    }
+    installSection() {
+        if (!this.lastHumanLineBlank)
+            this.line();
+    }
+    inputPrefix() {
+        if (this.installationLayout)
+            this.write('  ');
+    }
     line(value = '') {
-        this.emitHuman(this.stdout, redact(value, this.context));
+        return this.emitHuman(this.stdout, redact(value, this.context));
     }
     write(value) {
         this.stdout.write(redact(value, this.context));
@@ -95,7 +111,7 @@ export class Output {
         this.stdout.write(`Signed in as ${email}\nRun mnemonik logout to switch account.\n`);
     }
     error(value) {
-        this.emitHuman(this.stderr, redact(value, this.context));
+        return this.emitHuman(this.stderr, redact(value, this.context));
     }
     json(value) {
         this.stdout.write(`${redactJson(value, this.context)}\n`);
@@ -105,13 +121,14 @@ export class Output {
             this.line(text);
             return { complete: (result) => this.line(result), stop: () => undefined };
         }
+        const indent = this.installationLayout ? '  ' : '';
         if (this.progress?.timer)
             clearInterval(this.progress.timer);
         const render = () => {
             const progress = this.progress;
             if (!progress)
                 return;
-            this.stdout.write(`\r\u001b[2K${progressFrames[progress.frame]} ${progress.text}`);
+            this.stdout.write(`\r\u001b[2K${indent}${progressFrames[progress.frame]} ${progress.text}`);
             progress.frame = (progress.frame + 1) % progressFrames.length;
         };
         const timer = setInterval(render, 80);
@@ -137,12 +154,40 @@ export class Output {
         const progress = this.progress;
         if (progress)
             this.stdout.write('\r\u001b[2K');
-        for (const line of humanLines(value))
-            stream.write(`${line.url ? terminalUrl(line.url, stream) : line.text}\n`);
+        let count = 0;
+        for (const line of humanLines(value)) {
+            const heading = /^Step \d+ of \d+:/u.test(line.text);
+            const approvalLink = line.url?.includes('/oauth/device?user_code=') ?? false;
+            if (this.installationLayout && heading && !this.lastHumanLineBlank) {
+                stream.write('\n');
+                this.lastHumanLineBlank = true;
+                count++;
+            }
+            if (approvalLink && !this.lastHumanLineBlank) {
+                stream.write('\n');
+                this.lastHumanLineBlank = true;
+                count++;
+            }
+            const text = this.installationLayout && line.text && line.text !== 'Mnemonik' && !heading
+                ? line.text.startsWith('  ')
+                    ? line.text
+                    : `  ${line.text}`
+                : line.text;
+            stream.write(`${line.url ? terminalUrl(line.url, stream, text) : text}\n`);
+            this.lastHumanLineBlank = !text;
+            count++;
+            if (approvalLink) {
+                stream.write('\n');
+                this.lastHumanLineBlank = true;
+                count++;
+            }
+        }
         if (progress) {
-            this.stdout.write(`\r\u001b[2K${progressFrames[progress.frame]} ${progress.text}`);
+            const indent = this.installationLayout ? '  ' : '';
+            this.stdout.write(`\r\u001b[2K${indent}${progressFrames[progress.frame]} ${progress.text}`);
             progress.frame = (progress.frame + 1) % progressFrames.length;
         }
+        return count;
     }
 }
 //# sourceMappingURL=output.js.map

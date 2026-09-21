@@ -12,6 +12,7 @@ import {
   type ServiceDefinition,
 } from '@mnemonik/shared';
 import { createCliAuth } from '../auth/index.js';
+import { REPOSITORY_APPROVAL_INSTRUCTION } from '../auth/device.js';
 import { createCliCredentials } from '../auth/credentials.js';
 import { type InstallSession } from '../auth/installSession.js';
 import { readInstallVersions } from '../install/ownership.js';
@@ -288,8 +289,10 @@ export async function prepareScanner<T>(
           (await readInstallation(options.stateDir, listing.account));
         if (!installation) throw new Error('scanner_installation_missing');
         // Browser approval reuses this installation's active session. Never cancel the hosts' session.
-        if (!options.nonInteractive && !options.approvalAnnounced)
-          options.output.line(SCANNER_APPROVAL_WAIT);
+        if (!options.nonInteractive)
+          options.output.line(
+            options.approvalAnnounced ? REPOSITORY_APPROVAL_INSTRUCTION : SCANNER_APPROVAL_WAIT
+          );
         bearer = await authorize(consentDraft(picked), installation);
         session = (await request('GET', '/api/v1/install-sessions/current')) as InstallSession;
         remote = (await request('GET', '/api/v1/scanner-consent/current')) as typeof remote;

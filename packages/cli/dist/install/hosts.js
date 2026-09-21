@@ -1,7 +1,7 @@
 import { apiOrigin } from '@mnemonik/shared';
 import { readFile, rm } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
-import { hostPackageImports, } from './adapters.js';
+import { hostPackageImports, hostOrder, launchHosts, } from './adapters.js';
 import { RuntimeStore, hash, hostNpmSource, } from '../runtime/store.js';
 import { bytesAt, digest, interrupted, withInstall } from './journal.js';
 import { readOwnership, rollbackHost, saveOwnership, } from './ownership.js';
@@ -41,16 +41,16 @@ function environment(selection, env = process.env, owned = false) {
     if (selection.scope === 'user' && selection.profilePath) {
         if (selection.host === 'codex')
             result.CODEX_HOME = dirname(selection.profilePath);
-        if (selection.host === 'grok')
-            result.GROK_HOME =
-                selection.component === 'mcp'
-                    ? dirname(selection.profilePath)
-                    : dirname(dirname(selection.profilePath));
     }
-    for (const key of ['CODEX_HOME', 'GROK_HOME'])
+    for (const key of ['CODEX_HOME'])
         if (result[key])
             result[key] = resolve(result[key]);
     return result;
+}
+function packageImport(imports, host) {
+    if (!hostOrder.includes(host))
+        throw new Error('unsupported_host');
+    return (imports ?? hostPackageImports)[host];
 }
 async function stage(journal, run, changes, runtime) {
     for (const change of changes)
@@ -305,7 +305,7 @@ export async function runHosts(command, selections, deps, allowMigration = false
                     if (command !== 'uninstall' && !target.installationId)
                         throw new Error('installation_required');
                 }
-                const module = await (deps.imports ?? hostPackageImports)[selection.host](runtime);
+                const module = await packageImport(deps.imports, selection.host)(runtime);
                 const adapter = module.createHostAdapter({
                     target,
                     env: environment(selection, deps.env, !!selection.profilePath && !!old),
@@ -327,8 +327,9 @@ export async function runHosts(command, selections, deps, allowMigration = false
                 if (target.component === 'hooks') {
                     const credentials = createCliCredentials({ stateDir: deps.stateDir });
                     target.credentialFamily =
-                        record.targets.filter((candidate) => candidate.component === 'hooks').at(-1)
-                            ?.credentialFamily ??
+                        record.targets
+                            .filter((candidate) => candidate.component === 'hooks' && launchHosts.includes(candidate.host))
+                            .at(-1)?.credentialFamily ??
                             old?.credentialFamily ??
                             '';
                     if (command !== 'update' &&
@@ -681,7 +682,7 @@ export async function codexTrustConditions(deps) {
         try {
             const runtime = await store.verifyRuntime('codex');
             const target = targetFor(owned, runtime, store);
-            const adapter = (await (deps.imports ?? hostPackageImports).codex(runtime)).createHostAdapter({
+            const adapter = (await packageImport(deps.imports, 'codex')(runtime)).createHostAdapter({
                 target,
                 env: environment(owned, deps.env),
             });
@@ -723,7 +724,7 @@ export async function hookStatusConditions(deps, hosts) {
             const runtime = await store.verifyRuntime(host);
             const target = targetFor(record, runtime, store);
             target.credentialFamily = record.credentialFamily ?? '';
-            const adapter = (await (deps.imports ?? hostPackageImports)[host](runtime)).createHostAdapter({
+            const adapter = (await packageImport(deps.imports, host)(runtime)).createHostAdapter({
                 target,
                 env: environment(record, deps.env),
             });
@@ -782,7 +783,10 @@ export async function logoutHost(host, deps) {
     for (const owned of (await readOwnership(deps.stateDir)).targets.filter((t) => t.host === host && t.component === 'mcp')) {
         try {
             const runtime = await store.verifyRuntime(host);
-            const adapter = (await (deps.imports ?? hostPackageImports)[host](runtime)).createHostAdapter({ target: targetFor(owned, runtime, store), env: environment(owned, deps.env) });
+            const adapter = (await packageImport(deps.imports, host)(runtime)).createHostAdapter({
+                target: targetFor(owned, runtime, store),
+                env: environment(owned, deps.env),
+            });
             if (!owned.grant || !adapter.revoke || !(await adapter.revoke(owned.grant)))
                 deps.instruction?.(adapter.revokeAction);
         }
@@ -802,7 +806,10 @@ export async function connectHost(selection, deps) {
     const store = new RuntimeStore(deps.stateDir);
     const runtime = await store.verifyRuntime(current.host);
     const target = targetFor(current, runtime, store);
-    const adapter = (await (deps.imports ?? hostPackageImports)[current.host](runtime)).createHostAdapter({ target, env: environment(current, deps.env) });
+    const adapter = (await packageImport(deps.imports, current.host)(runtime)).createHostAdapter({
+        target,
+        env: environment(current, deps.env),
+    });
     // Keep native login behind this single boundary; a later SSH relay can replace the invocation.
     const instruction = await adapter.launch();
     if (instruction)

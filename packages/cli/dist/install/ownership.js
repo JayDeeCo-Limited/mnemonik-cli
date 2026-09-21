@@ -4,6 +4,7 @@ import { devReleaseActive } from '../runtime/releaseSource.js';
 import { join } from 'node:path';
 import { atomicWrite } from '@mnemonik/local-setup';
 import { bytesAt, digest } from './journal.js';
+import { launchHosts } from './adapters.js';
 export const ownershipPath = (state) => join(state, 'host-ownership.json');
 export async function readOwnership(state) {
     const bytes = await bytesAt(ownershipPath(state));
@@ -26,6 +27,8 @@ export async function readInstallVersions(state, scanner) {
     const ownership = await readOwnership(state);
     const hosts = new Map();
     for (const target of ownership.targets) {
+        if (!launchHosts.includes(target.host))
+            continue;
         const version = hosts.get(target.host) ?? { host: target.host };
         if (target.editorVersion)
             version.editor = target.editorVersion;

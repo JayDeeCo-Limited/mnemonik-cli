@@ -69,7 +69,6 @@ describe('release-pinned host closures', () => {
         'claude-code-hooks',
         'codex-hooks',
         'cursor-hooks',
-        'grok-hooks',
       ])
         await cp(join(repo, 'packages', name), join(scratch, 'packages', name), {
           recursive: true,
@@ -97,7 +96,7 @@ describe('release-pinned host closures', () => {
     const cli = JSON.parse(await readFile(join(repo, 'packages/cli/package.json'), 'utf8')) as {
       mnemonik: { hosts: Record<HostArtifact, HostPackagePin> };
     };
-    const expectedNames: Record<HostArtifact, string[]> = {
+    const expectedNames: Record<string, string[]> = {
       'claude-code': [
         '@mnemonik/claude-code-hooks',
         '@mnemonik/credentials',
@@ -112,11 +111,10 @@ describe('release-pinned host closures', () => {
       ],
       codex: [],
       cursor: [],
-      grok: [],
     };
-    expectedNames.codex = ['@mnemonik/codex-hooks', ...expectedNames['claude-code'].slice(1)];
-    expectedNames.cursor = ['@mnemonik/cursor-hooks', ...expectedNames['claude-code'].slice(1)];
-    expectedNames.grok = ['@mnemonik/grok-hooks', ...expectedNames['claude-code'].slice(1)];
+    expectedNames.codex = ['@mnemonik/codex-hooks', ...expectedNames['claude-code']!.slice(1)];
+    expectedNames.cursor = ['@mnemonik/cursor-hooks', ...expectedNames['claude-code']!.slice(1)];
+    expect(Object.keys(cli.mnemonik.hosts)).toEqual(['claude-code', 'codex', 'cursor']);
     for (const [host, pin] of Object.entries(cli.mnemonik.hosts) as Array<
       [HostArtifact, HostPackagePin]
     >) {
@@ -184,9 +182,7 @@ describe('release-pinned host closures', () => {
         '@mnemonik/cli',
         '@mnemonik/claude-code-hooks',
         '@mnemonik/codex-hooks',
-        '@mnemonik/copilot-hooks',
         '@mnemonik/cursor-hooks',
-        '@mnemonik/grok-hooks',
       ].map((name) => [name, { version: '1.2.3', integrity: 'sha512-Zml4dHVyZQ==' }])
     );
     const manifest = Buffer.from(

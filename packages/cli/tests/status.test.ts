@@ -220,6 +220,98 @@ it('keeps installed hooks READY before an editor has signed in', async () => {
   }
 });
 
+it.each([
+  ['Grok', 'grok', '.grok'],
+  ['Copilot', 'vscode-copilot', '.copilot'],
+])('status and doctor ignore hooks left by an earlier %s install', async (name, host, dir) => {
+  const { mkdir, mkdtemp, writeFile, rm } = await import('node:fs/promises');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { runCli } = await import('../src/router.js');
+  const stateDir = await mkdtemp(join(tmpdir(), `legacy-${host}-status-`));
+  try {
+    await mkdir(join(stateDir, dir, 'hooks'), { recursive: true });
+    await writeFile(join(stateDir, dir, 'hooks', 'hooks.json'), '{"mnemonik":"legacy"}\n');
+    await writeFile(
+      join(stateDir, 'host-ownership.json'),
+      JSON.stringify({
+        schemaVersion: 1,
+        generation: 0,
+        targets: [
+          {
+            id: `${host}:hooks:user`,
+            host,
+            component: 'hooks',
+            scope: 'user',
+            home: stateDir,
+            profilePath: join(stateDir, dir, 'hooks', 'hooks.json'),
+            version: '0.1.49',
+            artifactDigest: 'legacy',
+            runtimePointer: join(stateDir, 'runtimes', host, 'current'),
+            files: [],
+          },
+        ],
+      })
+    );
+    const preflight = {
+      nodeVersion: '24.21.0',
+      pathExists: async () => false,
+      fetch: async () => Response.json({}),
+      resolveIdentity: async () => ({ kind: 'git_unavailable' as const, detail: 'fixture' }),
+    };
+    let status = '';
+    expect(
+      await runCli(['status', '--json'], {
+        home: stateDir,
+        installStateDir: stateDir,
+        preflight,
+        scannerStatus: async () => ({ roots: [], exclusions: [], repositories: [] }),
+        stdout: { write: (chunk) => void (status += chunk) },
+      })
+    ).toBe(0);
+    expect(JSON.parse(status).versions.hosts).toEqual([]);
+    expect(status.toLowerCase()).not.toContain(name.toLowerCase());
+
+    status = '';
+    expect(
+      await runCli(['status'], {
+        home: stateDir,
+        installStateDir: stateDir,
+        preflight,
+        scannerStatus: async () => ({ roots: [], exclusions: [], repositories: [] }),
+        stdout: { write: (chunk) => void (status += chunk) },
+      })
+    ).toBe(0);
+    expect(status.toLowerCase()).not.toContain(name.toLowerCase());
+
+    let doctor = '';
+    expect(
+      await runCli(['doctor'], {
+        home: stateDir,
+        installStateDir: stateDir,
+        preflight,
+        scannerStatus: async () => ({ roots: [], exclusions: [], repositories: [] }),
+        stdout: { write: (chunk) => void (doctor += chunk) },
+      })
+    ).toBe(0);
+    expect(doctor.toLowerCase()).not.toContain(name.toLowerCase());
+
+    doctor = '';
+    expect(
+      await runCli(['doctor', '--json'], {
+        home: stateDir,
+        installStateDir: stateDir,
+        preflight,
+        scannerStatus: async () => ({ roots: [], exclusions: [], repositories: [] }),
+        stdout: { write: (chunk) => void (doctor += chunk) },
+      })
+    ).toBe(0);
+    expect(doctor.toLowerCase()).not.toContain(name.toLowerCase());
+  } finally {
+    await rm(stateDir, { recursive: true, force: true });
+  }
+});
+
 it('lists connected folder names without searching the discovery folder', async () => {
   const { mkdtemp, rm } = await import('node:fs/promises');
   const { tmpdir } = await import('node:os');

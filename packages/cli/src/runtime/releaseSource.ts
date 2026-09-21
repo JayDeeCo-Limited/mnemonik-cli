@@ -26,9 +26,7 @@ export const releasePackageNames = [
   '@mnemonik/cli',
   '@mnemonik/claude-code-hooks',
   '@mnemonik/codex-hooks',
-  '@mnemonik/copilot-hooks',
   '@mnemonik/cursor-hooks',
-  '@mnemonik/grok-hooks',
 ] as const;
 export interface SignedReleaseManifest {
   schemaVersion: 1;
@@ -137,33 +135,79 @@ async function devBytes(url: URL): Promise<Buffer | undefined> {
 }
 
 /** Validate before each request; only GitHub release downloads get one pinned CDN hop. */
-export async function releaseBytes(address: string, fetcher: Fetch = fetch): Promise<Buffer> {
+export async function releaseBytes(
+  address: string,
+  fetcher: Fetch = fetch,
+  stallTimeoutMs?: number
+): Promise<Buffer> {
   const url = new URL(address);
   if (!permitted(url)) throw new RuntimeError('permission');
   const development = await devBytes(url);
   if (development) return development;
-  const options = { redirect: 'manual' as const, signal: AbortSignal.timeout(60_000) };
-  let response = await fetcher(url, options);
-  if ([301, 302, 303, 307, 308].includes(response.status)) {
-    const location = response.headers.get('location');
-    const next = location ? new URL(location, url) : undefined;
-    if (
-      !url.href.startsWith(releaseRoot) ||
-      !next ||
-      next.protocol !== 'https:' ||
-      next.username ||
-      next.password ||
-      next.port ||
-      next.hash ||
-      !redirects.has(next.hostname)
-    )
-      throw new RuntimeError('permission');
-    response = await fetcher(next, options);
+  const controller = stallTimeoutMs === undefined ? undefined : new AbortController();
+  const signal = controller?.signal ?? AbortSignal.timeout(60_000);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const progress = () => {
+    if (!controller) return;
+    clearTimeout(timer);
+    timer = setTimeout(
+      () =>
+        controller.abort(
+          new DOMException('The operation was aborted due to timeout', 'TimeoutError')
+        ),
+      stallTimeoutMs
+    );
+  };
+  const stalled = controller
+    ? new Promise<never>((_, reject) =>
+        controller.signal.addEventListener('abort', () => reject(controller.signal.reason), {
+          once: true,
+        })
+      )
+    : undefined;
+  const options = { redirect: 'manual' as const, signal };
+  progress();
+  try {
+    let response = await fetcher(url, options);
+    progress();
+    if ([301, 302, 303, 307, 308].includes(response.status)) {
+      const location = response.headers.get('location');
+      const next = location ? new URL(location, url) : undefined;
+      if (
+        !url.href.startsWith(releaseRoot) ||
+        !next ||
+        next.protocol !== 'https:' ||
+        next.username ||
+        next.password ||
+        next.port ||
+        next.hash ||
+        !redirects.has(next.hostname)
+      )
+        throw new RuntimeError('permission');
+      response = await fetcher(next, options);
+      progress();
+    }
+    if (response.status >= 300 && response.status < 400) throw new RuntimeError('permission');
+    if (!response.ok)
+      throw new RuntimeError(response.status === 404 ? 'manifest_missing' : 'permission');
+    if (!stalled || !response.body) return Buffer.from(await response.arrayBuffer());
+    const reader = response.body.getReader();
+    const chunks: Buffer[] = [];
+    let length = 0;
+    for (;;) {
+      const { done, value } = await Promise.race([reader.read(), stalled]);
+      if (done) break;
+      if (value.byteLength) {
+        const chunk = Buffer.from(value);
+        chunks.push(chunk);
+        length += chunk.length;
+        progress();
+      }
+    }
+    return Buffer.concat(chunks, length);
+  } finally {
+    clearTimeout(timer);
   }
-  if (response.status >= 300 && response.status < 400) throw new RuntimeError('permission');
-  if (!response.ok)
-    throw new RuntimeError(response.status === 404 ? 'manifest_missing' : 'permission');
-  return Buffer.from(await response.arrayBuffer());
 }
 
 export async function signedReleaseManifest(
@@ -252,7 +296,11 @@ export async function scannerReleaseSource(
     const indexed = index.files[name];
     if (!indexed || indexed.sha256 !== expected.sha256 || indexed.size !== expected.size)
       throw new RuntimeError('digest_mismatch');
-    const content = await releaseBytes(base + name, fetcher);
+    const content = await releaseBytes(
+      base + name,
+      fetcher,
+      name === manifest.entry ? 60_000 : undefined
+    );
     if (hash(content) !== expected.sha256 || content.length !== expected.size)
       throw new RuntimeError('digest_mismatch');
     files[name] = content;

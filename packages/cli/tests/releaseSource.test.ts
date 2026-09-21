@@ -2,6 +2,7 @@ import { promisify } from 'node:util';
 import { createHash } from 'node:crypto';
 import { execFile, execFileSync } from 'node:child_process';
 import { createServer, type Server } from 'node:http';
+import { ReadableStream } from 'node:stream/web';
 import { existsSync } from 'node:fs';
 import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -66,6 +67,39 @@ describe('release source trust boundary', () => {
     await expect(
       scannerReleaseSource(trusted, fixture(index, Buffer.from('changed')), 'linux-x64')
     ).rejects.toMatchObject({ reason: 'digest_mismatch' });
+  });
+  it('keeps an active scanner download alive beyond the stall limit', async () => {
+    const bytes = releaseBytes(
+      base + 'scanner',
+      async (_url, options) => {
+        const signal = options?.signal;
+        return new Response(
+          new ReadableStream({
+            start(controller) {
+              let timer: ReturnType<typeof setTimeout>;
+              let sent = 0;
+              const push = () => {
+                if (signal?.aborted) return;
+                if (sent === 10) return controller.close();
+                controller.enqueue(Uint8Array.of(97 + sent++));
+                timer = setTimeout(push, 10);
+              };
+              signal?.addEventListener(
+                'abort',
+                () => {
+                  clearTimeout(timer);
+                  controller.error(signal.reason);
+                },
+                { once: true }
+              );
+              timer = setTimeout(push, 10);
+            },
+          })
+        );
+      },
+      80
+    );
+    await expect(bytes).resolves.toEqual(Buffer.from('abcdefghij'));
   });
   it.each([
     'https://evil.test/a',

@@ -7,7 +7,7 @@ import { scannerService, ScannerServiceLimited, } from './scanner/service.js';
 import { stateDirectory } from '@mnemonik/local-setup';
 import { isCredentialSessionUnavailableError } from '@mnemonik/credentials';
 import { runHosts, hostSource, codexTrustConditions, connectHost, logoutHost, selectOwned, } from './install/hosts.js';
-import { hostOrder } from './install/adapters.js';
+import { hostOrder, launchHostLabels } from './install/adapters.js';
 import { readInstallVersions } from './install/ownership.js';
 import { ensureLauncher, removeLauncher, LauncherError } from './launcher.js';
 import { readFile, realpath } from 'node:fs/promises';
@@ -30,15 +30,8 @@ import { renderScannerStatus } from './scanner/picker.js';
 import { interrupted } from './install/journal.js';
 import { installFailureReason, runInstall, } from './install/transaction.js';
 import { chooseHostProfile, simulatedInstall, terminalInstallUI } from './install/ui.js';
-import { collectStatusDocument, renderStatusSummaries, statusExitCode, } from './status.js';
+import { CODEX_TRUST_MESSAGE, collectStatusDocument, renderStatusSummaries, statusExitCode, } from './status.js';
 import { DiagnosticsError, previewDiagnostics, sendDiagnostics, } from './diagnostics.js';
-const supportedHosts = ['claude-code', 'codex', 'cursor', 'grok'];
-const editorNames = {
-    'claude-code': 'Claude Code',
-    codex: 'Codex',
-    cursor: 'Cursor',
-    grok: 'Grok',
-};
 export const connectFolderPrompt = (name) => `Connect ${name} to Mnemonik? [Y/n]`;
 export const removeFolderPrompt = (name) => `Stop indexing ${name}? Its memories stay in your account. [y/N]`;
 export const connectedFolderLine = (name) => `  ✓ Connected ${name}.`;
@@ -48,6 +41,19 @@ export function maintenanceExitCode(results) {
         return 1;
     return results.every((result) => result.status === 'READY') ? 0 : 3;
 }
+async function retryUpdateOnce(update, failed = () => false) {
+    try {
+        const result = await update();
+        return failed(result) ? update() : result;
+    }
+    catch {
+        return update();
+    }
+}
+function hostUpdateFailed(result) {
+    return result.results.some((target) => target.status !== 'READY' && target.reason !== 'codex_trust_pending');
+}
+const updateFailureMessage = 'Mnemonik could not update. It will try again automatically tomorrow.';
 const booleans = new Set([
     'json',
     'non-interactive',
@@ -87,7 +93,7 @@ export const help = `Usage: mnemonik <command> [options]
 Commands:
   install
   status
-  connect <claude-code|codex|cursor|grok>
+  connect <${hostOrder.join('|')}>
   project <init|setup|status|link|ensure>
   add <folder>
   remove <folder>
@@ -276,6 +282,8 @@ async function runHostCommand(command, parsed, deps, output, scannerSelected = f
     }
     else {
         const resolved = await selectOwned(state, host ? String(host) : undefined, scope ? String(scope) : undefined, component ? String(component) : undefined);
+        resolved.selected = resolved.selected.filter((target) => hostOrder.includes(target.host));
+        resolved.ambiguous = resolved.ambiguous.filter((profile) => resolved.selected.some((target) => target.profilePath === profile));
         if (command === 'update')
             resolved.selected = resolved.selected.filter((target) => target.component === 'hooks');
         if (resolved.ambiguous.length && !json && !parsed.flags.has('non-interactive')) {
@@ -310,30 +318,37 @@ async function runHostCommand(command, parsed, deps, output, scannerSelected = f
     }
     try {
         const launcherOptions = { ...deps.launcher, home: deps.home, stateDir: state };
-        if (command === 'update' || command === 'repair')
+        if (command === 'update')
+            await retryUpdateOnce(() => ensureLauncher(launcherOptions));
+        else if (command === 'repair')
             await ensureLauncher(launcherOptions);
         const all = command === 'update' && !host && !component;
         const store = new RuntimeStore(state);
-        const cli = all ? await updateCli(store) : undefined;
+        const cli = all
+            ? await retryUpdateOnce(() => updateCli(store), (result) => result.status === 'FAILED')
+            : undefined;
         const updatedCli = selections.length && (cli?.status === 'UPDATED' || cli?.status === 'UP_TO_DATE')
-            ? await store.verifyRuntime('cli')
+            ? await retryUpdateOnce(() => store.verifyRuntime('cli'))
             : undefined;
         const managed = selections.length || (await interrupted(state)).length
             ? command === 'update'
-                ? await updateHostDependencies(deps, state)
+                ? await retryUpdateOnce(() => updateHostDependencies(deps, state))
                 : await hostDependencies(deps, output, state)
             : undefined;
+        const maintainHosts = (dependencies) => runHosts(command, selections, {
+            ...dependencies,
+            noBrowser: parsed.flags.has('no-browser'),
+            source: dependencies.source ??
+                (updatedCli
+                    ? (host) => hostSource(host, join(updatedCli.directory, 'node_modules/@mnemonik/cli/package.json'))
+                    : undefined),
+            instruction: json ? undefined : (text) => output.line(text),
+            apply: parsed.flags.has('apply'),
+        }, false);
         const result = managed
-            ? await runHosts(command, selections, {
-                ...managed,
-                noBrowser: parsed.flags.has('no-browser'),
-                source: managed.source ??
-                    (updatedCli
-                        ? (host) => hostSource(host, join(updatedCli.directory, 'node_modules/@mnemonik/cli/package.json'))
-                        : undefined),
-                instruction: json ? undefined : (text) => output.line(text),
-                apply: parsed.flags.has('apply'),
-            }, false)
+            ? command === 'update'
+                ? await retryUpdateOnce(() => maintainHosts(managed), hostUpdateFailed)
+                : await maintainHosts(managed)
             : { journal: { state: 'READY' }, results: [], reports: [] };
         let scanner;
         let launcher;
@@ -341,7 +356,7 @@ async function runHostCommand(command, parsed, deps, output, scannerSelected = f
             (await readFile(`${state}/scanner/state.json`).then(() => true, () => false))) {
             try {
                 const before = await store.verifyRuntime('scanner').catch(() => undefined);
-                const runtime = await updateScanner({ stateDir: state, ...deps.scannerService }, deps.scannerEnable?.source);
+                const runtime = await retryUpdateOnce(() => updateScanner({ stateDir: state, ...deps.scannerService }, deps.scannerEnable?.source));
                 scanner = {
                     status: before?.reference.version === runtime.reference.version ? 'UP_TO_DATE' : 'UPDATED',
                     version: runtime.manifest.version,
@@ -353,6 +368,8 @@ async function runHostCommand(command, parsed, deps, output, scannerSelected = f
         }
         let failed = scanner?.status === 'FAILED' || cli?.status === 'FAILED';
         const hostExit = maintenanceExitCode(result.results);
+        const hostsFailed = hostUpdateFailed(result);
+        const codexTrustPending = result.results.some((target) => target.reason === 'codex_trust_pending');
         if (fullUninstall && hostExit === 0) {
             const scannerPointer = await readFile(new RuntimeStore(state).pointerPath('scanner')).then(() => true, () => false);
             if (scannerPointer) {
@@ -395,8 +412,13 @@ async function runHostCommand(command, parsed, deps, output, scannerSelected = f
                 ...(cli ? { cli } : {}),
             });
         else if (command === 'update') {
-            if (failed || hostExit !== 0)
-                output.error('Mnemonik could not update. Run mnemonik update again.');
+            if (failed || hostsFailed)
+                output.error(updateFailureMessage);
+            else if (codexTrustPending) {
+                output.line('Mnemonik updated.');
+                output.line(CODEX_TRUST_MESSAGE.sentence);
+                output.line(CODEX_TRUST_MESSAGE.nextStep);
+            }
             else if (cli?.status === 'UPDATED' ||
                 result.reports.length > 0 ||
                 scanner?.status === 'UPDATED')
@@ -422,7 +444,7 @@ async function runHostCommand(command, parsed, deps, output, scannerSelected = f
     }
     catch (error) {
         if (command === 'update' && !json) {
-            output.error('Mnemonik could not update. Run mnemonik update again.');
+            output.error(updateFailureMessage);
             return error instanceof LauncherError ? 3 : 1;
         }
         if (error instanceof LauncherError) {
@@ -852,7 +874,7 @@ export async function runCli(args, deps = {}) {
             if (command === 'update') {
                 const store = new RuntimeStore(options.stateDir);
                 const before = await store.verifyRuntime('scanner').catch(() => undefined);
-                const runtime = await updateScanner(options, deps.scannerEnable?.source);
+                const runtime = await retryUpdateOnce(() => updateScanner(options, deps.scannerEnable?.source));
                 const result = {
                     status: before?.reference.version === runtime.reference.version ? 'up_to_date' : 'updated',
                     version: runtime.manifest.version,
@@ -881,9 +903,7 @@ export async function runCli(args, deps = {}) {
             return 0;
         }
         catch (error) {
-            output.error(command === 'update'
-                ? 'Mnemonik could not update. Run mnemonik update again.'
-                : error.message);
+            output.error(command === 'update' ? updateFailureMessage : error.message);
             return 3;
         }
     }
@@ -910,9 +930,17 @@ export async function runCli(args, deps = {}) {
         const invalid = allowed(parsed, ['automatic']);
         if (invalid || subcommand)
             return (output.error(invalid ?? `Unexpected argument: ${subcommand}`), 2);
-        if (!deps.runtimeUpdate)
+        const runtimeUpdate = deps.runtimeUpdate;
+        if (!runtimeUpdate)
             return placeholder(output, parsed.flags.has('json'), 'update', 'runtime release and service restart');
-        const runtime = await updateRuntime(deps.runtimeUpdate);
+        let runtime;
+        try {
+            runtime = await retryUpdateOnce(() => updateRuntime(runtimeUpdate));
+        }
+        catch {
+            output.error(updateFailureMessage);
+            return 3;
+        }
         if (parsed.flags.has('json'))
             output.json({
                 status: 'updated',
@@ -984,16 +1012,14 @@ export async function runCli(args, deps = {}) {
         const invalid = allowed(parsed, ['scope']);
         if (invalid)
             return (output.error(invalid), 2);
-        if (!subcommand ||
-            rest.length ||
-            !supportedHosts.includes(subcommand))
-            return (output.error('Usage: mnemonik connect <claude-code|codex|cursor|grok>'), 2);
+        if (!subcommand || rest.length || !hostOrder.includes(subcommand))
+            return (output.error(`Usage: mnemonik connect <${hostOrder.join('|')}>`), 2);
         const state = deps.hostManagement?.stateDir ??
             deps.installStateDir ??
             stateDirectory(process.platform, process.env, deps.home);
         const owned = await selectOwned(state, subcommand, parsed.flags.get('scope'), 'mcp');
         if (!owned.selected.length && !parsed.flags.has('json')) {
-            output.line(`${editorNames[subcommand]} will ask you to sign in to Mnemonik the first time you use it.`);
+            output.line(`${launchHostLabels[subcommand]} will ask you to sign in to Mnemonik the first time you use it.`);
             return 3;
         }
         if (owned.selected.length !== 1)
@@ -1383,7 +1409,11 @@ export async function runCli(args, deps = {}) {
             if (status.account !== managed.account)
                 return actionRequired(output, parsed.flags.has('json'), 'host_account_mismatch');
             const grants = status.grants
-                .filter((g) => !host || grantHost(g) === host)
+                .filter((g) => {
+                const grantHostName = grantHost(g);
+                return ((!grantHostName || hostOrder.includes(grantHostName)) &&
+                    (!host || grantHostName === host));
+            })
                 .map((g) => ({ ...g, host: grantHost(g) ?? g.clientName ?? g.clientId }));
             if (parsed.flags.has('json'))
                 output.json({ account: status.account, grants });

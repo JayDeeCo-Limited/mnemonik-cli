@@ -9,7 +9,6 @@ afterEach(async () => Promise.all(fixtures.splice(0).map((fixture) => fixture.cl
 const cases: Array<{ host: HostName; bytes: string; reason: string }> = [
   { host: 'claude-code', bytes: '{"mcpServers":', reason: 'invalid_json' },
   { host: 'codex', bytes: '[mcp_servers.mnemonik\ncommand =', reason: 'invalid_toml' },
-  { host: 'grok', bytes: '{"schemaVersion":1', reason: 'truncated_config' },
   { host: 'cursor', bytes: '{"schemaVersion":999,"foreign":true}\n', reason: 'foreign_schema' },
 ];
 
@@ -31,7 +30,7 @@ describe('malformed host configuration', () => {
     const journal = await fixture.journal();
     expect(journal.state).toBe('LIMITED');
     expect(journal.hosts).not.toContain(testCase.host);
-    expect(journal.targets.filter((target) => target.kind === 'host')).toHaveLength(3);
+    expect(journal.targets.filter((target) => target.kind === 'host')).toHaveLength(2);
     for (const host of hostOrder.filter((host) => host !== testCase.host))
       expect(await readFile(fixture.hostPaths[host], 'utf8')).toContain(`"mnemonik":"${host}"`);
   });

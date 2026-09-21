@@ -51,6 +51,10 @@ export interface CollectStatusInput extends ReadProjectStatusInput {
     generatedAt?: string;
 }
 export declare function buildStatusDocument(input: StatusDocumentInput): ReadinessDocument;
+export declare const CODEX_TRUST_MESSAGE: {
+    sentence: string;
+    nextStep: string;
+};
 export declare function renderStatusSummaries(document: ReadinessDocument & {
     cliCredential?: Awaited<ReturnType<typeof cliCredentialStatus>>;
     launcher?: LauncherStatus;

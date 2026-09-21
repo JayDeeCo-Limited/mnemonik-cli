@@ -175,7 +175,9 @@ it('CLI installs the three launch-host adapters with planned bytes, verified ent
       reference: target.credentialFamily,
       kind: 'component',
     });
-    const adapter = (await hostPackageImports[target.host](runtime)).createHostAdapter({
+    const adapter = (
+      await hostPackageImports[target.host as keyof typeof hostPackageImports](runtime)
+    ).createHostAdapter({
       env: { ...f.deps.env, HOME: f.home },
       target: {
         component: 'hooks',
@@ -248,7 +250,7 @@ it('uninstalls only Cursor user hooks and preserves foreign entries and other ho
     hostManagement: f.deps,
     stdout: { write() {} },
   });
-  expect((await readOwnership(f.deps.stateDir)).targets).toHaveLength(3);
+  expect((await readOwnership(f.deps.stateDir)).targets).toHaveLength(2);
   expect(JSON.parse(await readFile(path, 'utf8')).hooks.beforeSubmitPrompt).toEqual([foreign]);
   expect(await readFile(path, 'utf8')).toContain(
     JSON.stringify(foreign, null, 2).split('\n')[1]!.trim()
@@ -361,7 +363,7 @@ it('updates independently with mixed digests and unchanged Codex command on corr
   }
   expect(await readFile(codex.profilePath)).toEqual(codexBytes);
   expect(result.results.find((r) => r.target === codex.id)!.reason).toBe('digest_mismatch');
-  expect(result.results.filter((r) => r.status === 'READY')).toHaveLength(3);
+  expect(result.results.filter((r) => r.status === 'READY')).toHaveLength(2);
   expect(result.reports.some((r) => r.includes('shared runtime'))).toBe(true);
 }, 120_000);
 

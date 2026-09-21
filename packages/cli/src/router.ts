@@ -22,7 +22,7 @@ import {
   type HostResult,
   type HostSelection,
 } from './install/hosts.js';
-import { hostOrder } from './install/adapters.js';
+import { hostOrder, launchHostLabels } from './install/adapters.js';
 import { readInstallVersions } from './install/ownership.js';
 import { ensureLauncher, removeLauncher, LauncherError, type LauncherOptions } from './launcher.js';
 import { readFile, realpath } from 'node:fs/promises';
@@ -66,6 +66,7 @@ import {
 } from './install/transaction.js';
 import { chooseHostProfile, simulatedInstall, terminalInstallUI } from './install/ui.js';
 import {
+  CODEX_TRUST_MESSAGE,
   collectStatusDocument,
   renderStatusSummaries,
   statusExitCode,
@@ -78,14 +79,6 @@ import {
   type DiagnosticsDependencies,
 } from './diagnostics.js';
 
-const supportedHosts = ['claude-code', 'codex', 'cursor', 'grok'] as const;
-const editorNames = {
-  'claude-code': 'Claude Code',
-  codex: 'Codex',
-  cursor: 'Cursor',
-  grok: 'Grok',
-} as const;
-
 export const connectFolderPrompt = (name: string): string => `Connect ${name} to Mnemonik? [Y/n]`;
 export const removeFolderPrompt = (name: string): string =>
   `Stop indexing ${name}? Its memories stay in your account. [y/N]`;
@@ -96,6 +89,25 @@ export function maintenanceExitCode(results: readonly Pick<HostResult, 'status'>
   if (results.some((result) => result.status === 'FAILED')) return 1;
   return results.every((result) => result.status === 'READY') ? 0 : 3;
 }
+
+async function retryUpdateOnce<T>(
+  update: () => Promise<T>,
+  failed: (result: T) => boolean = () => false
+): Promise<T> {
+  try {
+    const result = await update();
+    return failed(result) ? update() : result;
+  } catch {
+    return update();
+  }
+}
+
+function hostUpdateFailed(result: { results: readonly HostResult[] }): boolean {
+  return result.results.some(
+    (target) => target.status !== 'READY' && target.reason !== 'codex_trust_pending'
+  );
+}
+const updateFailureMessage = 'Mnemonik could not update. It will try again automatically tomorrow.';
 const booleans = new Set([
   'json',
   'non-interactive',
@@ -136,7 +148,7 @@ export const help = `Usage: mnemonik <command> [options]
 Commands:
   install
   status
-  connect <claude-code|codex|cursor|grok>
+  connect <${hostOrder.join('|')}>
   project <init|setup|status|link|ensure>
   add <folder>
   remove <folder>
@@ -401,6 +413,12 @@ async function runHostCommand(
       scope ? String(scope) : undefined,
       component ? String(component) : undefined
     );
+    resolved.selected = resolved.selected.filter((target) =>
+      hostOrder.includes(target.host as never)
+    );
+    resolved.ambiguous = resolved.ambiguous.filter((profile) =>
+      resolved.selected.some((target) => target.profilePath === profile)
+    );
     if (command === 'update')
       resolved.selected = resolved.selected.filter((target) => target.component === 'hooks');
     if (resolved.ambiguous.length && !json && !parsed.flags.has('non-interactive')) {
@@ -435,41 +453,51 @@ async function runHostCommand(
   }
   try {
     const launcherOptions = { ...deps.launcher, home: deps.home, stateDir: state };
-    if (command === 'update' || command === 'repair') await ensureLauncher(launcherOptions);
+    if (command === 'update') await retryUpdateOnce(() => ensureLauncher(launcherOptions));
+    else if (command === 'repair') await ensureLauncher(launcherOptions);
     const all = command === 'update' && !host && !component;
     const store = new RuntimeStore(state);
-    const cli = all ? await updateCli(store) : undefined;
+    const cli = all
+      ? await retryUpdateOnce(
+          () => updateCli(store),
+          (result) => result.status === 'FAILED'
+        )
+      : undefined;
     const updatedCli =
       selections.length && (cli?.status === 'UPDATED' || cli?.status === 'UP_TO_DATE')
-        ? await store.verifyRuntime('cli')
+        ? await retryUpdateOnce(() => store.verifyRuntime('cli'))
         : undefined;
     const managed =
       selections.length || (await interrupted(state)).length
         ? command === 'update'
-          ? await updateHostDependencies(deps, state)
+          ? await retryUpdateOnce(() => updateHostDependencies(deps, state))
           : await hostDependencies(deps, output, state)
         : undefined;
+    const maintainHosts = (dependencies: HostDependencies) =>
+      runHosts(
+        command,
+        selections,
+        {
+          ...dependencies,
+          noBrowser: parsed.flags.has('no-browser'),
+          source:
+            dependencies.source ??
+            (updatedCli
+              ? (host) =>
+                  hostSource(
+                    host,
+                    join(updatedCli.directory, 'node_modules/@mnemonik/cli/package.json')
+                  )
+              : undefined),
+          instruction: json ? undefined : (text) => output.line(text),
+          apply: parsed.flags.has('apply'),
+        },
+        false
+      );
     const result = managed
-      ? await runHosts(
-          command,
-          selections,
-          {
-            ...managed,
-            noBrowser: parsed.flags.has('no-browser'),
-            source:
-              managed.source ??
-              (updatedCli
-                ? (host) =>
-                    hostSource(
-                      host,
-                      join(updatedCli.directory, 'node_modules/@mnemonik/cli/package.json')
-                    )
-                : undefined),
-            instruction: json ? undefined : (text) => output.line(text),
-            apply: parsed.flags.has('apply'),
-          },
-          false
-        )
+      ? command === 'update'
+        ? await retryUpdateOnce(() => maintainHosts(managed), hostUpdateFailed)
+        : await maintainHosts(managed)
       : { journal: { state: 'READY' }, results: [], reports: [] };
     let scanner:
       | {
@@ -490,9 +518,8 @@ async function runHostCommand(
     ) {
       try {
         const before = await store.verifyRuntime('scanner').catch(() => undefined);
-        const runtime = await updateScanner(
-          { stateDir: state, ...deps.scannerService },
-          deps.scannerEnable?.source
+        const runtime = await retryUpdateOnce(() =>
+          updateScanner({ stateDir: state, ...deps.scannerService }, deps.scannerEnable?.source)
         );
         scanner = {
           status:
@@ -505,6 +532,10 @@ async function runHostCommand(
     }
     let failed = scanner?.status === 'FAILED' || cli?.status === 'FAILED';
     const hostExit = maintenanceExitCode(result.results);
+    const hostsFailed = hostUpdateFailed(result);
+    const codexTrustPending = result.results.some(
+      (target) => target.reason === 'codex_trust_pending'
+    );
     if (fullUninstall && hostExit === 0) {
       const scannerPointer = await readFile(new RuntimeStore(state).pointerPath('scanner')).then(
         () => true,
@@ -545,9 +576,12 @@ async function runHostCommand(
         ...(cli ? { cli } : {}),
       });
     else if (command === 'update') {
-      if (failed || hostExit !== 0)
-        output.error('Mnemonik could not update. Run mnemonik update again.');
-      else if (
+      if (failed || hostsFailed) output.error(updateFailureMessage);
+      else if (codexTrustPending) {
+        output.line('Mnemonik updated.');
+        output.line(CODEX_TRUST_MESSAGE.sentence);
+        output.line(CODEX_TRUST_MESSAGE.nextStep);
+      } else if (
         cli?.status === 'UPDATED' ||
         result.reports.length > 0 ||
         scanner?.status === 'UPDATED'
@@ -572,7 +606,7 @@ async function runHostCommand(
     return failed ? 1 : hostExit;
   } catch (error) {
     if (command === 'update' && !json) {
-      output.error('Mnemonik could not update. Run mnemonik update again.');
+      output.error(updateFailureMessage);
       return error instanceof LauncherError ? 3 : 1;
     }
     if (error instanceof LauncherError) {
@@ -1057,7 +1091,9 @@ export async function runCli(args: string[], deps: CliDependencies = {}): Promis
       if (command === 'update') {
         const store = new RuntimeStore(options.stateDir);
         const before = await store.verifyRuntime('scanner').catch(() => undefined);
-        const runtime = await updateScanner(options, deps.scannerEnable?.source);
+        const runtime = await retryUpdateOnce(() =>
+          updateScanner(options, deps.scannerEnable?.source)
+        );
         const result = {
           status:
             before?.reference.version === runtime.reference.version ? 'up_to_date' : 'updated',
@@ -1087,11 +1123,7 @@ export async function runCli(args: string[], deps: CliDependencies = {}): Promis
       }
       return 0;
     } catch (error) {
-      output.error(
-        command === 'update'
-          ? 'Mnemonik could not update. Run mnemonik update again.'
-          : (error as Error).message
-      );
+      output.error(command === 'update' ? updateFailureMessage : (error as Error).message);
       return 3;
     }
   }
@@ -1117,14 +1149,21 @@ export async function runCli(args: string[], deps: CliDependencies = {}): Promis
     const invalid = allowed(parsed, ['automatic']);
     if (invalid || subcommand)
       return (output.error(invalid ?? `Unexpected argument: ${subcommand}`), 2);
-    if (!deps.runtimeUpdate)
+    const runtimeUpdate = deps.runtimeUpdate;
+    if (!runtimeUpdate)
       return placeholder(
         output,
         parsed.flags.has('json'),
         'update',
         'runtime release and service restart'
       );
-    const runtime = await updateRuntime(deps.runtimeUpdate);
+    let runtime: Awaited<ReturnType<typeof updateRuntime>>;
+    try {
+      runtime = await retryUpdateOnce(() => updateRuntime(runtimeUpdate));
+    } catch {
+      output.error(updateFailureMessage);
+      return 3;
+    }
     if (parsed.flags.has('json'))
       output.json({
         status: 'updated',
@@ -1201,12 +1240,8 @@ export async function runCli(args: string[], deps: CliDependencies = {}): Promis
   if (command === 'connect') {
     const invalid = allowed(parsed, ['scope']);
     if (invalid) return (output.error(invalid), 2);
-    if (
-      !subcommand ||
-      rest.length ||
-      !supportedHosts.includes(subcommand as (typeof supportedHosts)[number])
-    )
-      return (output.error('Usage: mnemonik connect <claude-code|codex|cursor|grok>'), 2);
+    if (!subcommand || rest.length || !hostOrder.includes(subcommand as never))
+      return (output.error(`Usage: mnemonik connect <${hostOrder.join('|')}>`), 2);
     const state =
       deps.hostManagement?.stateDir ??
       deps.installStateDir ??
@@ -1219,7 +1254,7 @@ export async function runCli(args: string[], deps: CliDependencies = {}): Promis
     );
     if (!owned.selected.length && !parsed.flags.has('json')) {
       output.line(
-        `${editorNames[subcommand as keyof typeof editorNames]} will ask you to sign in to Mnemonik the first time you use it.`
+        `${launchHostLabels[subcommand as keyof typeof launchHostLabels]} will ask you to sign in to Mnemonik the first time you use it.`
       );
       return 3;
     }
@@ -1636,7 +1671,13 @@ export async function runCli(args: string[], deps: CliDependencies = {}): Promis
       if (status.account !== managed.account)
         return actionRequired(output, parsed.flags.has('json'), 'host_account_mismatch');
       const grants = status.grants
-        .filter((g) => !host || grantHost(g) === host)
+        .filter((g) => {
+          const grantHostName = grantHost(g);
+          return (
+            (!grantHostName || hostOrder.includes(grantHostName as never)) &&
+            (!host || grantHostName === host)
+          );
+        })
         .map((g) => ({ ...g, host: grantHost(g) ?? g.clientName ?? g.clientId }));
       if (parsed.flags.has('json')) output.json({ account: status.account, grants });
       else

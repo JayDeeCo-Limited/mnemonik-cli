@@ -8,8 +8,9 @@ import {
 } from '@mnemonik/shared';
 import { hostDiscovery } from './hostDiscovery.js';
 import type { Output } from './output.js';
+import { launchHostLabels, launchHosts } from './install/adapters.js';
 
-export type HostName = 'Claude Code' | 'Codex' | 'Cursor' | 'Grok' | 'VS Code Copilot';
+export type HostName = (typeof launchHostLabels)[(typeof launchHosts)[number]];
 
 export interface DetectedHost {
   name: HostName;
@@ -36,6 +37,7 @@ export interface PreflightDependencies {
   pathExists?: (path: string) => Promise<boolean>;
   discoveryUrl?: string;
   resource?: string;
+  skipNetworkWithoutHosts?: boolean;
   /** Retained for injected callers; editor discovery no longer executes binaries. */
   execFile?: AdapterDependencies['execFile'];
   binaryExists?: AdapterDependencies['binaryExists'];
@@ -65,56 +67,32 @@ export function nodeVersionHelp(version: string, platform: NodeJS.Platform): [st
 const hostPaths = (
   home: string,
   project: string
-): Array<{ name: HostName; supported: boolean; paths: string[] }> => [
-  {
-    name: 'Claude Code',
-    supported: true,
-    paths: [
-      join(home, '.claude', 'settings.json'),
-      join(home, '.claude.json'),
-      join(home, '.claude'),
-      join(project, '.claude', 'settings.json'),
-      join(project, '.mcp.json'),
-      join(project, '.claude'),
-    ],
-  },
-  {
-    name: 'Codex',
-    supported: true,
-    paths: [
-      join(home, '.codex', 'config.toml'),
-      join(home, '.codex', 'hooks.json'),
-      join(home, '.codex'),
-      join(project, '.codex', 'config.toml'),
-      join(project, '.codex', 'hooks.json'),
-      join(project, '.codex'),
-    ],
-  },
-  {
-    name: 'Cursor',
-    supported: true,
-    paths: [
-      join(home, '.cursor', 'mcp.json'),
-      join(home, '.cursor', 'hooks.json'),
-      join(home, '.cursor'),
-      join(project, '.cursor', 'mcp.json'),
-      join(project, '.cursor', 'hooks.json'),
-      join(project, '.cursor'),
-    ],
-  },
-  {
-    name: 'Grok',
-    supported: true,
-    paths: [
-      join(home, '.grok', 'config.toml'),
-      join(home, '.grok', 'hooks', 'mnemonik.json'),
-      join(home, '.grok'),
-      join(project, '.grok', 'config.toml'),
-      join(project, '.grok', 'hooks', 'mnemonik.json'),
-      join(project, '.grok'),
-    ],
-  },
-];
+): Record<(typeof launchHosts)[number], string[]> => ({
+  'claude-code': [
+    join(home, '.claude', 'settings.json'),
+    join(home, '.claude.json'),
+    join(home, '.claude'),
+    join(project, '.claude', 'settings.json'),
+    join(project, '.mcp.json'),
+    join(project, '.claude'),
+  ],
+  codex: [
+    join(home, '.codex', 'config.toml'),
+    join(home, '.codex', 'hooks.json'),
+    join(home, '.codex'),
+    join(project, '.codex', 'config.toml'),
+    join(project, '.codex', 'hooks.json'),
+    join(project, '.codex'),
+  ],
+  cursor: [
+    join(home, '.cursor', 'mcp.json'),
+    join(home, '.cursor', 'hooks.json'),
+    join(home, '.cursor'),
+    join(project, '.cursor', 'mcp.json'),
+    join(project, '.cursor', 'hooks.json'),
+    join(project, '.cursor'),
+  ],
+});
 
 export async function runPreflight(deps: PreflightDependencies = {}): Promise<PreflightResult> {
   const home = deps.home ?? homedir();
@@ -124,10 +102,11 @@ export async function runPreflight(deps: PreflightDependencies = {}): Promise<Pr
   const root = 'root' in resolution ? resolution.root : (deps.cwd ?? process.cwd());
   const pathExists = deps.pathExists ?? hostDiscovery.pathExists;
   const hosts: DetectedHost[] = [];
-  for (const candidate of hostPaths(home, root)) {
-    for (const path of candidate.paths) {
+  const paths = hostPaths(home, root);
+  for (const host of launchHosts) {
+    for (const path of paths[host]) {
       if (await pathExists(path)) {
-        hosts.push({ name: candidate.name, supported: candidate.supported, path });
+        hosts.push({ name: launchHostLabels[host], supported: true, path });
         break;
       }
     }
@@ -138,22 +117,26 @@ export async function runPreflight(deps: PreflightDependencies = {}): Promise<Pr
     deps.discoveryUrl ??
     new URL('/.well-known/oauth-protected-resource', deps.resource ?? apiOrigin()).href;
   let network: PreflightResult['network'];
-  try {
-    const response = await (deps.fetch ?? globalThis.fetch)(discoveryUrl, {
-      method: 'GET',
-      signal: AbortSignal.timeout(5_000),
-    });
-    network = {
-      reachable: response.ok,
-      discoveryUrl,
-      ...(!response.ok ? { detail: `HTTP ${response.status}` } : {}),
-    };
-  } catch (error) {
-    network = {
-      reachable: false,
-      discoveryUrl,
-      detail: error instanceof Error ? error.message : String(error),
-    };
+  if (deps.skipNetworkWithoutHosts && !hosts.length) {
+    network = { reachable: false, discoveryUrl };
+  } else {
+    try {
+      const response = await (deps.fetch ?? globalThis.fetch)(discoveryUrl, {
+        method: 'GET',
+        signal: AbortSignal.timeout(5_000),
+      });
+      network = {
+        reachable: response.ok,
+        discoveryUrl,
+        ...(!response.ok ? { detail: `HTTP ${response.status}` } : {}),
+      };
+    } catch (error) {
+      network = {
+        reachable: false,
+        discoveryUrl,
+        detail: error instanceof Error ? error.message : String(error),
+      };
+    }
   }
   const version = (deps.nodeVersion ?? process.versions.node).replace(/^v/, '');
   const supported = Number(version.split('.')[0]) >= 24;

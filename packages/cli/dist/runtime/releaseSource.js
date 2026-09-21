@@ -12,9 +12,7 @@ export const releasePackageNames = [
     '@mnemonik/cli',
     '@mnemonik/claude-code-hooks',
     '@mnemonik/codex-hooks',
-    '@mnemonik/copilot-hooks',
     '@mnemonik/cursor-hooks',
-    '@mnemonik/grok-hooks',
 ];
 const releaseRoot = 'https://github.com/JayDeeCo-Limited/mnemonik-cli/releases/download/';
 const redirects = new Set([
@@ -114,34 +112,72 @@ async function devBytes(url) {
     }));
 }
 /** Validate before each request; only GitHub release downloads get one pinned CDN hop. */
-export async function releaseBytes(address, fetcher = fetch) {
+export async function releaseBytes(address, fetcher = fetch, stallTimeoutMs) {
     const url = new URL(address);
     if (!permitted(url))
         throw new RuntimeError('permission');
     const development = await devBytes(url);
     if (development)
         return development;
-    const options = { redirect: 'manual', signal: AbortSignal.timeout(60_000) };
-    let response = await fetcher(url, options);
-    if ([301, 302, 303, 307, 308].includes(response.status)) {
-        const location = response.headers.get('location');
-        const next = location ? new URL(location, url) : undefined;
-        if (!url.href.startsWith(releaseRoot) ||
-            !next ||
-            next.protocol !== 'https:' ||
-            next.username ||
-            next.password ||
-            next.port ||
-            next.hash ||
-            !redirects.has(next.hostname))
+    const controller = stallTimeoutMs === undefined ? undefined : new AbortController();
+    const signal = controller?.signal ?? AbortSignal.timeout(60_000);
+    let timer;
+    const progress = () => {
+        if (!controller)
+            return;
+        clearTimeout(timer);
+        timer = setTimeout(() => controller.abort(new DOMException('The operation was aborted due to timeout', 'TimeoutError')), stallTimeoutMs);
+    };
+    const stalled = controller
+        ? new Promise((_, reject) => controller.signal.addEventListener('abort', () => reject(controller.signal.reason), {
+            once: true,
+        }))
+        : undefined;
+    const options = { redirect: 'manual', signal };
+    progress();
+    try {
+        let response = await fetcher(url, options);
+        progress();
+        if ([301, 302, 303, 307, 308].includes(response.status)) {
+            const location = response.headers.get('location');
+            const next = location ? new URL(location, url) : undefined;
+            if (!url.href.startsWith(releaseRoot) ||
+                !next ||
+                next.protocol !== 'https:' ||
+                next.username ||
+                next.password ||
+                next.port ||
+                next.hash ||
+                !redirects.has(next.hostname))
+                throw new RuntimeError('permission');
+            response = await fetcher(next, options);
+            progress();
+        }
+        if (response.status >= 300 && response.status < 400)
             throw new RuntimeError('permission');
-        response = await fetcher(next, options);
+        if (!response.ok)
+            throw new RuntimeError(response.status === 404 ? 'manifest_missing' : 'permission');
+        if (!stalled || !response.body)
+            return Buffer.from(await response.arrayBuffer());
+        const reader = response.body.getReader();
+        const chunks = [];
+        let length = 0;
+        for (;;) {
+            const { done, value } = await Promise.race([reader.read(), stalled]);
+            if (done)
+                break;
+            if (value.byteLength) {
+                const chunk = Buffer.from(value);
+                chunks.push(chunk);
+                length += chunk.length;
+                progress();
+            }
+        }
+        return Buffer.concat(chunks, length);
     }
-    if (response.status >= 300 && response.status < 400)
-        throw new RuntimeError('permission');
-    if (!response.ok)
-        throw new RuntimeError(response.status === 404 ? 'manifest_missing' : 'permission');
-    return Buffer.from(await response.arrayBuffer());
+    finally {
+        clearTimeout(timer);
+    }
 }
 export async function signedReleaseManifest(version, fetcher = fetch, identity = RELEASE_MINISIGN_PUBLIC_KEY) {
     if (!/^\d+\.\d+\.\d+(?:-[\w.-]+)?$/.test(version))
@@ -214,7 +250,7 @@ export async function scannerReleaseSource(trusted, fetcher = fetch, platform = 
         const indexed = index.files[name];
         if (!indexed || indexed.sha256 !== expected.sha256 || indexed.size !== expected.size)
             throw new RuntimeError('digest_mismatch');
-        const content = await releaseBytes(base + name, fetcher);
+        const content = await releaseBytes(base + name, fetcher, name === manifest.entry ? 60_000 : undefined);
         if (hash(content) !== expected.sha256 || content.length !== expected.size)
             throw new RuntimeError('digest_mismatch');
         files[name] = content;

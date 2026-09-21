@@ -24,7 +24,9 @@ describe('redacted output funnel', () => {
       },
     };
     new Output(terminal).line(`Open this link: ${url}`);
-    expect(terminal.text).toBe(`Open this link:\n\u001b]8;;${url}\u0007${url}\u001b]8;;\u0007\n`);
+    expect(terminal.text).toBe(
+      `Open this link:\n\n\u001b]8;;${url}\u0007${url}\u001b]8;;\u0007\n\n`
+    );
 
     const plain = {
       text: '',
@@ -33,7 +35,7 @@ describe('redacted output funnel', () => {
       },
     };
     new Output(plain).line(url);
-    expect(plain.text).toBe(`${url}\n`);
+    expect(plain.text).toBe(`${url}\n\n`);
   });
 
   it('removes secrets and home paths from JSON and the install-session report', async () => {

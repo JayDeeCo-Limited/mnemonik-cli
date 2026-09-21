@@ -28,6 +28,9 @@ const hosts: Record<string, HostName> = {
   cursor: 'cursor',
   grok: 'grok',
   'grok build': 'grok',
+  'github copilot': 'vscode-copilot',
+  'vs code copilot': 'vscode-copilot',
+  'vscode-copilot': 'vscode-copilot',
 };
 export const grantHost = (grant: AccountGrant) =>
   hosts[grant.softwareId?.toLowerCase() ?? ''] ??
