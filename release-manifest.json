@@ -1,22 +1,22 @@
 {
   "schemaVersion": 1,
-  "version": "7.104.6",
+  "version": "7.104.7",
   "packages": {
     "@mnemonik/cli": {
-      "version": "7.104.6",
-      "integrity": "sha512-ib8AFfVbQC8n+J7arVLsXaQMav1613/AUw7JT2ddppIaK9TyyabZIWWuvRr38E4U/t5PN77Rc0jDKRUkGA3zcg=="
+      "version": "7.104.7",
+      "integrity": "sha512-1Jn/I956j0FGxjwix4tL5CK68Cbdz2ZZplfqMjw9aXv+kVxqCJw6jMUzvRbQcGcYwlcU/jrvGfwLAdmbfl9grg=="
     },
     "@mnemonik/claude-code-hooks": {
-      "version": "0.9.216",
-      "integrity": "sha512-smXWTQEyqgcl7hqj27PALPYu+/Qb1aDQH1tQHU5jP7da3ox+1Ssh5arUe6izi5PPVJArl5K5OROQgCXZeACm6w=="
+      "version": "0.9.217",
+      "integrity": "sha512-gzLwjec1DbDA/ecbGJ1HMY2BxqJc4V8ZB/eaIXsKmYPFW/keYOcQGiDCuZM3TL7m5tl5pmTWEmTvamCD05uYUg=="
     },
     "@mnemonik/codex-hooks": {
-      "version": "0.8.185",
-      "integrity": "sha512-Tau6bY9aC3qjSU6paUH8QocOxahir59NUwWbz2OaQk1ACB4uNlk6Q7DfJjcNR0RU14F4jRxB3RF8F41IReIVDQ=="
+      "version": "0.8.186",
+      "integrity": "sha512-b3RGCPgiXY3Mq9lQbxP8ZSmG6jUqXJWs0PR1I+hURksZ7A6m5ql79AMiPNKQY9PxMrs9VCcWiq83mZ/XkUmLpQ=="
     },
     "@mnemonik/cursor-hooks": {
-      "version": "0.7.172",
-      "integrity": "sha512-Wh6aFOf0ogEfLYfVH2vkXjPVzhhJHodu1n65MLEPPmvJ070Pkm2Z9iJ29UFCn8RsHjMdn++7E/Gea1RxDnFBog=="
+      "version": "0.7.173",
+      "integrity": "sha512-UGBhI26f/7GlVVHWZAQJHXF7RM9IAcR7W53NiThGCsBWedrPmOGBUOFPZ3mBzwIE1Jq+6r3Bv9JZz1rgd1hReg=="
     }
   }
 }
