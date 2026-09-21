@@ -1169,3 +1169,102 @@ it('fails closed for duplicate SDDL paths and missing or null DACLs', () => {
   expect(aclRecords(`${path}\nD:NO_ACCESS_CONTROL`, state, [state]).get(state)).toEqual([]);
   expect(aclRecords(`${path}\nD:PAI`, state, [state]).get(state)).toEqual([]);
 });
+
+it.each(['ok', 'foreign', 'shared', 'unchanged'])(
+  'repairs elevated Windows ownership only for a private current-user path (%s)',
+  async (mode) => {
+    vi.resetModules();
+    const { auditWindowsPermissions: audit } = await import('../../shared/src/runtimeSigners.js');
+    const sid = 'S-1-5-21-1-2-3-1001';
+    let owner = mode === 'foreign' ? 'S-1-5-21-1-2-3-1002' : 'S-1-5-32-544';
+    const native = runner(() => (mode === 'shared' ? 'ace' : 'ok'));
+    const run = vi.fn(async (file: string, args: string[], input?: string) => {
+      if (file.endsWith('powershell.exe')) {
+        if (args.at(-1)?.includes('/setowner') && mode !== 'unchanged') owner = sid;
+        return { stdout: `${state}\t${owner}\n` };
+      }
+      const result = await native(file, args, input);
+      if (file.endsWith('cmd.exe'))
+        result.stdout = result.stdout.replaceAll(
+          'MACHINE\\agent'.padEnd(23),
+          'BUILTIN\\Administrators'.padEnd(23)
+        );
+      return result;
+    });
+    const result = await audit(state, [state], run, false);
+    expect(result.get(state)).toBe(mode === 'ok' ? 'ok' : 'owner');
+    const writes = run.mock.calls.filter(([, args]) => args.at(-1)?.includes('/setowner'));
+    expect(writes).toHaveLength(mode === 'ok' || mode === 'unchanged' ? 1 : 0);
+    if (mode === 'ok') {
+      expect(owner).toBe(sid);
+      expect(writes[0]![2]).toBe(state + '\n');
+    }
+  }
+);
+
+it.each(
+  ['async', 'sync'].flatMap((mode) =>
+    ['fresh', 'retry', 'foreign', 'shared', 'unchanged'].map((condition) => [mode, condition])
+  )
+)('protects %s hook caches with elevated ownership (%s)', async (mode, condition) => {
+  vi.resetModules();
+  const path = join(state, 'session');
+  const fresh = condition === 'fresh';
+  if (!fresh || mode === 'async') await mkdir(path);
+  const sid = 'S-1-5-21-1-2-3-1001';
+  let owner = condition === 'foreign' ? 'S-1-5-21-1-2-3-1002' : 'S-1-5-32-544';
+  let privateAcl = !fresh && condition !== 'shared';
+  let ownerWrites = 0;
+  let directoryAclWrites = 0;
+  const respond = (file: string, args: string[], input?: string): string => {
+    if (file.endsWith('whoami.exe') || args.at(-1)?.includes('whoami.exe'))
+      return `"MACHINE\\agent","${sid}"`;
+    if (file.endsWith('powershell.exe')) {
+      expect(input).toBe(path + '\n');
+      if (args.at(-1)?.includes('/setowner')) {
+        expect(privateAcl).toBe(true);
+        ownerWrites++;
+        if (condition !== 'unchanged') owner = sid;
+      }
+      return `${path}\t${owner}\n`;
+    }
+    if (file.endsWith('cmd.exe')) return dirRow('session', 'BUILTIN\\Administrators', '<DIR>');
+    if (args[0] === path && args.includes('/grant:r')) {
+      privateAcl = true;
+      directoryAclWrites++;
+    }
+    if (args.includes('/save'))
+      saveFixture(args, [[path, `(A;OICI;FA;;;${sid})${privateAcl ? '' : '(A;OICI;FR;;;WD)'}`]]);
+    return '';
+  };
+  if (mode === 'sync')
+    vi.doMock('node:child_process', async (original) => ({
+      ...(await original<typeof childProcess>()),
+      execFileSync: (file: string, args: string[], options: { input?: string }) =>
+        respond(file, args, options.input),
+    }));
+  try {
+    const hooks = await import('../../shared/src/runtimeSigners.js');
+    const protect = async () => {
+      if (mode === 'sync') hooks.ensureWindowsPrivateDirectorySync(path);
+      else
+        await hooks.protectWindowsDirectory(path, fresh, async (...args) => ({
+          stdout: respond(...args),
+        }));
+    };
+    if (condition === 'fresh' || condition === 'retry') {
+      await expect(protect()).resolves.toBeUndefined();
+      expect(owner).toBe(sid);
+      expect(JSON.parse(await readFile(join(path, '.windows-acl.json'), 'utf8')).identity.sid).toBe(
+        sid
+      );
+    } else
+      await expect(protect()).rejects.toThrow(
+        condition === 'shared' ? 'acl_permissions' : 'acl_owner'
+      );
+    expect(ownerWrites).toBe(['fresh', 'retry', 'unchanged'].includes(condition!) ? 1 : 0);
+    expect(directoryAclWrites).toBe(fresh ? 1 : 0);
+  } finally {
+    vi.doUnmock('node:child_process');
+  }
+});

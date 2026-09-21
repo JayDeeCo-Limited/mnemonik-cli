@@ -125,7 +125,6 @@ export function renderJourney(screen: string, output: Output, v: JourneyValues =
     ],
     windows: [
       '  Background indexing could not be started.',
-      `  Windows could not create the logon task: ${v.reason}`,
       '  Run mnemonik install to try again.',
       '',
     ],

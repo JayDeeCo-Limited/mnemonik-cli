@@ -41,5 +41,15 @@ it('prints and reports the live service state over the daemon snapshot', async (
 
   const lines = stdout.text.trim().split('\n');
   expect(lines[0]).toBe('Scanner status: ok (service: launchd, running)');
-  expect(JSON.parse(lines[1]!).supervisor).toEqual(live);
+  expect(lines).toHaveLength(1);
+  stdout.text = '';
+  expect(
+    await runCli(['scanner', 'status', '--json'], {
+      installStateDir: directory,
+      scannerService: { stateDir: directory, command },
+      stdout,
+      stderr: stdout,
+    })
+  ).toBe(0);
+  expect(JSON.parse(stdout.text).receipt.snapshot.supervisor).toEqual(live);
 });

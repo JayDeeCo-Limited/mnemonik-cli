@@ -1,3 +1,4 @@
+import { humanReason } from '../humanReason.js';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { atomicWrite } from '@mnemonik/local-setup';
@@ -77,7 +78,7 @@ export function cliUpdateLine(result: Awaited<ReturnType<typeof updateCli>>): st
     return `CLI updated: ${result.oldVersion} -> ${result.newVersion}. Next invocation uses ${result.newVersion}.`;
   if (result.status === 'UP_TO_DATE') return `CLI up to date: ${result.oldVersion}.`;
   if (result.status === 'NOT_INSTALLED') return 'CLI runtime is not installed.';
-  return `CLI update FAILED: ${result.reason}. CLI remains ${result.oldVersion ?? 'unavailable'}.`;
+  return humanReason(result.reason ?? 'update_failed');
 }
 
 /** Status alone caches successes and failures; update always reads the release afresh. */

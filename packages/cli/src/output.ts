@@ -1,3 +1,4 @@
+import { humanReason } from './humanReason.js';
 export interface OutputContext {
   home?: string;
   projectRoot?: string;
@@ -136,8 +137,12 @@ export class Output {
     this.stdout.write(`Signed in as ${email}\nRun mnemonik logout to switch account.\n`);
   }
 
-  error(value: unknown): number {
-    return this.emitHuman(this.stderr, redact(value, this.context));
+  error(value: unknown, human = true): number {
+    const message =
+      human && typeof value === 'string' && /^[a-z][a-z0-9_]*$/u.test(value)
+        ? humanReason(value)
+        : value;
+    return this.emitHuman(this.stderr, redact(message, this.context));
   }
 
   json(value: unknown): void {

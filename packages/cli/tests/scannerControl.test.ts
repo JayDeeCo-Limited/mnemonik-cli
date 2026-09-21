@@ -46,7 +46,7 @@ it('exits after an early pause acknowledgement while the daemon drain continues'
     });
 
     expect(
-      await runCli(['scanner', 'pause'], {
+      await runCli(['scanner', 'pause', '--json'], {
         installStateDir: state,
         scannerService: { stateDir: state, now: () => elapsed, sleep, command },
         stdout: { write: (text) => (output += text) },
@@ -54,11 +54,24 @@ it('exits after an early pause acknowledgement while the daemon drain continues'
     ).toBe(0);
     expect(elapsed).toBe(1_000);
     expect(draining).toBe(true);
-    expect(output).toContain('"state":"paused"');
+    expect(JSON.parse(output).receipt.snapshot.lifecycle.state).toBe('paused');
     expect(output).not.toContain('scanner_control_timeout');
 
     await sleep(19_000);
     expect(draining).toBe(false);
+
+    elapsed = 0;
+    draining = true;
+    output = '';
+    expect(
+      await runCli(['scanner', 'pause'], {
+        installStateDir: state,
+        scannerService: { stateDir: state, now: () => elapsed, sleep, command },
+        stdout: { write: (text) => (output += text) },
+      })
+    ).toBe(0);
+    expect(output).toBe('Scanner pause: ok\n');
+    expect(output).not.toContain('"state"');
   } finally {
     await rm(home, { recursive: true, force: true });
   }

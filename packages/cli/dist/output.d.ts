@@ -25,7 +25,7 @@ export declare class Output {
     write(value: string): void;
     /** Deliberate local-only identity display; never use for logs, JSON, or errors. */
     signedIn(email: string): void;
-    error(value: unknown): number;
+    error(value: unknown, human?: boolean): number;
     json(value: unknown): void;
     progressLine(text: string, animated: boolean): {
         complete(result: string): void;

@@ -1,3 +1,4 @@
+import { humanReason } from './humanReason.js';
 const digestFields = new Set(['beforeHash', 'afterHash']);
 const sha256Digest = /^sha256:[0-9a-f]{64}$/u;
 const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -110,8 +111,11 @@ export class Output {
             throw new Error('account_identity_failed');
         this.stdout.write(`Signed in as ${email}\nRun mnemonik logout to switch account.\n`);
     }
-    error(value) {
-        return this.emitHuman(this.stderr, redact(value, this.context));
+    error(value, human = true) {
+        const message = human && typeof value === 'string' && /^[a-z][a-z0-9_]*$/u.test(value)
+            ? humanReason(value)
+            : value;
+        return this.emitHuman(this.stderr, redact(message, this.context));
     }
     json(value) {
         this.stdout.write(`${redactJson(value, this.context)}\n`);

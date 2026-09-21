@@ -33,9 +33,13 @@ beforeEach(async () => {
   await fs.mkdir(join(state, 'runtimes/cli'), { recursive: true, mode: 0o700 });
   source = {
     files: Object.fromEntries([
-      ...['bin.js', 'runtime/bootstrap.js', 'runtime/store.js', 'runtime/signers.js'].map(
-        (name) => [`node_modules/@mnemonik/cli/dist/${name}`, Buffer.from(name)]
-      ),
+      ...[
+        'bin.js',
+        'humanReason.js',
+        'runtime/bootstrap.js',
+        'runtime/store.js',
+        'runtime/signers.js',
+      ].map((name) => [`node_modules/@mnemonik/cli/dist/${name}`, Buffer.from(name)]),
       ...['runtimeReader.js', 'runtimeSigners.js'].map((name) => [
         `node_modules/@mnemonik/shared/dist/${name}`,
         Buffer.from(name),
@@ -97,7 +101,7 @@ it('returns the same path with zero staging, writes or spawns for equal digests'
   expect(fs.rename).not.toHaveBeenCalled();
   expect(childProcess.spawn).not.toHaveBeenCalled();
   expect(childProcess.execFile).not.toHaveBeenCalled();
-  expect(fs.readFile).toHaveBeenCalledExactlyOnceWith(join(root, 'bootstrap-digests.json'), 'utf8');
+  expect(fs.readFile).toHaveBeenCalledWith(join(root, 'bootstrap-digests.json'), 'utf8');
 });
 
 it('leaves the installed bootstrap intact after a mid-stage write failure', async () => {
@@ -108,7 +112,7 @@ it('leaves the installed bootstrap intact after a mid-stage write failure', asyn
     if (String(path).endsWith('dist/runtime/store.js')) throw new Error('disk full');
     return write(path, ...args);
   });
-  expect(await installBootstrap(store, source)).toBe(bin);
+  await expect(installBootstrap(store, source)).rejects.toThrow('disk full');
   expect(fs.mkdtemp).toHaveBeenCalledOnce();
   expect(await fs.readFile(join(root, 'bootstrap-digests.json'))).toEqual(before);
   expect(await fs.readFile(join(root, 'dist/runtime/store.js'), 'utf8')).toBe('runtime/store.js');
@@ -124,7 +128,7 @@ it('verifies staged bytes before moving the installed bootstrap', async () => {
   vi.mocked(fs.writeFile).mockImplementation(async (path, bytes, options) =>
     write(path, String(path).endsWith('dist/runtime/store.js') ? 'corrupt' : bytes, options)
   );
-  expect(await installBootstrap(store, source)).toBe(bin);
+  await expect(installBootstrap(store, source)).rejects.toThrow('digest_mismatch');
   expect(fs.mkdtemp).toHaveBeenCalledOnce();
   expect(fs.rename).not.toHaveBeenCalled();
   expect(await fs.readFile(join(root, 'dist/runtime/store.js'), 'utf8')).toBe('runtime/store.js');
@@ -188,11 +192,57 @@ it('restores the previous directory on the next run after an interrupted swap', 
   await expect(fs.stat(root + '.previous')).rejects.toMatchObject({ code: 'ENOENT' });
 });
 
+it('recovers an interrupted upgrade from a verified older previous release', async () => {
+  await fs.rename(root, root + '.previous');
+  source.files['node_modules/@mnemonik/cli/dist/runtime/store.js'] = Buffer.from('upgraded');
+  expect(await installBootstrap(store, source)).toBe(bin);
+  expect(await fs.readFile(join(root, 'dist/runtime/store.js'), 'utf8')).toBe('upgraded');
+});
+
 it('restores the old bootstrap if the second rename fails', async () => {
   source.files['node_modules/@mnemonik/cli/dist/runtime/store.js'] = Buffer.from('new');
   const rename = vi.mocked(fs.rename).getMockImplementation()!;
   vi.mocked(fs.rename).mockImplementationOnce(rename).mockRejectedValueOnce(new Error('busy'));
-  expect(await installBootstrap(store, source)).toBe(bin);
+  await expect(installBootstrap(store, source)).rejects.toThrow('busy');
   expect(fs.rename).toHaveBeenCalledTimes(3);
   expect(await fs.readFile(join(root, 'dist/runtime/store.js'), 'utf8')).toBe('runtime/store.js');
+});
+
+it.each([
+  'dist/bin.js',
+  'dist/humanReason.js',
+  'dist/runtime/bootstrap.js',
+  'dist/runtime/store.js',
+  'dist/runtime/signers.js',
+  'node_modules/@mnemonik/shared/dist/runtimeReader.js',
+  'node_modules/@mnemonik/shared/dist/runtimeSigners.js',
+  'node_modules/@mnemonik/shared/package.json',
+  'package.json',
+])('rejects a pre-created bootstrap with a copied digest document and altered %s', async (name) => {
+  await fs.writeFile(join(root, name), 'untrusted bytes');
+  await expect(installBootstrap(store, source)).rejects.toThrow('digest_mismatch');
+  expect(fs.rename).not.toHaveBeenCalled();
+});
+
+it.each(['unrelated', 'extra-file', 'corrupt-file'])(
+  'preserves an unverified previous tree (%s)',
+  async (mode) => {
+    const previous = root + '.previous';
+    if (mode === 'unrelated') await fs.mkdir(previous, { mode: 0o700 });
+    else await fs.cp(root, previous, { recursive: true });
+    const name = mode === 'corrupt-file' ? 'dist/bin.js' : 'keep.txt';
+    await fs.writeFile(join(previous, name), 'keep these bytes', { mode: 0o600 });
+    source.files['node_modules/@mnemonik/cli/dist/runtime/store.js'] = Buffer.from('new');
+    await expect(installBootstrap(store, source)).rejects.toThrow();
+    expect(await fs.readFile(join(previous, name), 'utf8')).toBe('keep these bytes');
+    expect(await fs.readFile(bin, 'utf8')).toBe('bin.js');
+  }
+);
+
+it('replaces a verified previous release on a subsequent update', async () => {
+  for (const version of ['second', 'third']) {
+    source.files['node_modules/@mnemonik/cli/dist/runtime/store.js'] = Buffer.from(version);
+    expect(await installBootstrap(store, source)).toBe(bin);
+    expect(await fs.readFile(join(root, 'dist/runtime/store.js'), 'utf8')).toBe(version);
+  }
 });

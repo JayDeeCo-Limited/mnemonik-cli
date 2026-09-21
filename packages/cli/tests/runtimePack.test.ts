@@ -87,7 +87,12 @@ it('refuses a changed installed dependency before the first runtime import', asy
       env,
       timeout: 90_000,
     })
-  ).rejects.toMatchObject({ code: 1, stderr: 'digest_mismatch\n', stdout: '' });
+  ).rejects.toMatchObject({
+    code: 1,
+    stderr:
+      'This machine needs attention before Mnemonik can work fully.\nRun mnemonik doctor on this machine and follow the first repair step.\n',
+    stdout: '',
+  });
 }, 120_000);
 
 it('executes the packed CLI from an npm prefix, hands off, and runs after the prefix is deleted', async () => {
@@ -141,7 +146,12 @@ it('executes the packed CLI from an npm prefix, hands off, and runs after the pr
     exec(process.execPath, [join(copied, 'node_modules/@mnemonik/cli/dist/bin.js'), '--version'], {
       env,
     })
-  ).rejects.toMatchObject({ code: 1, stderr: 'permission\n', stdout: '' });
+  ).rejects.toMatchObject({
+    code: 1,
+    stderr:
+      'This machine needs attention before Mnemonik can work fully.\nRun mnemonik doctor on this machine and follow the first repair step.\n',
+    stdout: '',
+  });
   await rm(copied, { recursive: true });
   const pointer = await readFile(store.pointerPath('cli'));
   const files = { 'dist/router.js': Buffer.from(''), 'dist/bin.js': Buffer.from('') };
@@ -175,7 +185,8 @@ it('executes the packed CLI from an npm prefix, hands off, and runs after the pr
   });
   await expect(exec(process.execPath, [bin, '--version'], { env })).rejects.toMatchObject({
     code: 1,
-    stderr: 'permission\n',
+    stderr:
+      'This machine needs attention before Mnemonik can work fully.\nRun mnemonik doctor on this machine and follow the first repair step.\n',
     stdout: '',
   });
   await writeFile(store.pointerPath('cli'), pointer);
@@ -217,7 +228,8 @@ it('executes the packed CLI from an npm prefix, hands off, and runs after the pr
   await writeFile(path, bytes);
   await expect(exec(process.execPath, [launcher, '--version'], { env })).rejects.toMatchObject({
     code: 1,
-    stderr: 'digest_mismatch\n',
+    stderr:
+      'This machine needs attention before Mnemonik can work fully.\nRun mnemonik doctor on this machine and follow the first repair step.\n',
     stdout: '',
   });
 }, 120_000);

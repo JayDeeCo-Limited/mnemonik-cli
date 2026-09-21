@@ -1,3 +1,2 @@
   Background indexing could not be started.
-  Windows could not create the logon task: Access is denied.
   Run mnemonik install to try again.

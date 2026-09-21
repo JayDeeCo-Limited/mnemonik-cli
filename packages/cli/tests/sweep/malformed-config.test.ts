@@ -1,12 +1,12 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { readFile, writeFile } from 'node:fs/promises';
-import { hostOrder, type HostName } from '../../src/install/adapters.js';
+import { hostOrder, launchHostLabels } from '../../src/install/adapters.js';
 import { makeSweepFixture, type SweepFixture } from '../fixtures/sweep.js';
 
 const fixtures: SweepFixture[] = [];
 afterEach(async () => Promise.all(fixtures.splice(0).map((fixture) => fixture.cleanup())));
 
-const cases: Array<{ host: HostName; bytes: string; reason: string }> = [
+const cases: Array<{ host: keyof typeof launchHostLabels; bytes: string; reason: string }> = [
   { host: 'claude-code', bytes: '{"mcpServers":', reason: 'invalid_json' },
   { host: 'codex', bytes: '[mcp_servers.mnemonik\ncommand =', reason: 'invalid_toml' },
   { host: 'cursor', bytes: '{"schemaVersion":999,"foreign":true}\n', reason: 'foreign_schema' },
@@ -25,7 +25,10 @@ describe('malformed host configuration', () => {
     });
 
     expect(await fixture.run()).toBe(3);
-    expect(fixture.stdout.text).toContain(`${testCase.host}: ${testCase.reason}.`);
+    expect(fixture.stdout.text).toContain(
+      `${launchHostLabels[testCase.host]} was skipped because Mnemonik could not use its settings file.`
+    );
+    expect(fixture.stdout.text).not.toContain(testCase.reason);
     expect(await readFile(fixture.hostPaths[testCase.host], 'utf8')).toBe(testCase.bytes);
     const journal = await fixture.journal();
     expect(journal.state).toBe('LIMITED');

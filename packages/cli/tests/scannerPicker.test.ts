@@ -549,7 +549,8 @@ describe('scanner picker and consent', () => {
       expect(discover).not.toHaveBeenCalled();
       expect(canonicalizePath).not.toHaveBeenCalled();
       expect(fsCalls.readdir).not.toHaveBeenCalled();
-      expect(stream.text).toContain('choose a project folder');
+      expect(stream.text).toContain('That folder cannot be used. Choose another folder.');
+      expect(stream.text).not.toContain(reason);
     }
   );
 

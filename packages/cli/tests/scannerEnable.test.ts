@@ -534,6 +534,8 @@ it('a git repository that contains other repositories is a valid root; a plain f
   options.roots = [container];
   await expect(enableScanner(options)).rejects.toThrow('broad_workspace_parent');
   expect(errors).toContain(container);
+  expect(errors).toContain('That folder cannot be used. Choose another folder.');
+  expect(errors).not.toContain('broad_workspace_parent');
 });
 
 it('good update swaps; tamper never becomes current; missed heartbeat restores verified previous', async () => {

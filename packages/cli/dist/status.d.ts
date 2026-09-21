@@ -1,3 +1,4 @@
+export { CODEX_TRUST_MESSAGE } from './humanReason.js';
 import { cliCredentialStatus } from './auth/credentials.js';
 import type { Readable } from 'node:stream';
 import { type ReadinessCondition, type ReadinessDocument, type ReadinessDocumentInput } from '@mnemonik/shared';
@@ -51,10 +52,6 @@ export interface CollectStatusInput extends ReadProjectStatusInput {
     generatedAt?: string;
 }
 export declare function buildStatusDocument(input: StatusDocumentInput): ReadinessDocument;
-export declare const CODEX_TRUST_MESSAGE: {
-    sentence: string;
-    nextStep: string;
-};
 export declare function renderStatusSummaries(document: ReadinessDocument & {
     cliCredential?: Awaited<ReturnType<typeof cliCredentialStatus>>;
     launcher?: LauncherStatus;

@@ -23,6 +23,7 @@ export interface PreflightResult {
         reachable: boolean;
         discoveryUrl: string;
         detail?: string;
+        skipped?: true;
     };
 }
 export interface PreflightDependencies {

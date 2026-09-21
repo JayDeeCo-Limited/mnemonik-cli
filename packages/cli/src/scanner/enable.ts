@@ -264,7 +264,7 @@ export async function prepareScanner<T>(
           { cwd: root, nonGitSelected: true }
         );
         if (!decision.allowed) {
-          options.output.error(`${decision.reason}: ${root}`);
+          options.output.error(`${root}: That folder cannot be used. Choose another folder.`);
           throw new Error(decision.reason);
         }
       }
@@ -379,7 +379,7 @@ export async function prepareScanner<T>(
             throw new Error('release_consent_required');
           if (process.env.MNEMONIK_DEV_RELEASE_DIR)
             options.output.error(
-              'WARNING: development scanner release; readiness remains LIMITED dev_release_source.'
+              'WARNING: development scanner release; readiness remains LIMITED.'
             );
           const prior = await bytesAt(pointer);
           const pointerTarget = journal

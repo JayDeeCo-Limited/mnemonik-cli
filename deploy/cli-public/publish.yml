@@ -15,7 +15,7 @@ concurrency:
   group: npm-cli
   cancel-in-progress: false
 jobs:
-  publish:
+  build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -47,12 +47,45 @@ jobs:
             release-manifest.json
             release-manifest.json.minisig
             dist-package/dist/sbom.json
+            scanner-release.json
+  windows-smoke:
+    needs: build
+    runs-on: windows-2025
+    steps:
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24.21.0'
+          package-manager-cache: false
+      - uses: actions/download-artifact@v7
+        with:
+          name: cli-release-evidence
+      - name: Launch the packed CLI in a fresh Windows profile state
+        shell: pwsh
+        run: |
+          $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+          if ($identity.Owner.Value -ne 'S-1-5-32-544') { throw 'Windows smoke requires an Administrators default-owner token' }
+          $env:MNEMONIK_STATE_DIR = Join-Path $env:RUNNER_TEMP 'cli-state'
+          $tgz = (Get-ChildItem *.tgz).FullName
+          npm exec --yes --cache "$env:RUNNER_TEMP/cli-cache" --package "$tgz" -- mnemonik --help
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+  publish:
+    needs: [build, windows-smoke]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24.21.0'
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+      - uses: actions/download-artifact@v7
+        with:
+          name: cli-release-evidence
       - name: Publish from public source with npm provenance
         if: inputs.dry_run != true && github.ref == 'refs/heads/main'
         run: |
           set -euo pipefail
           tgz=$(node -p "require('./pack.json')[0].filename")
-          version=$(node -p "require('./dist-package/package.json').version")
+          version=$(node -p "require('./pack.json')[0].version")
           # The private workflow pushes this source, then attaches immutable scanner
           # assets and publishes the release. This run starts on the push, so the
           # release can still be a draft, and GitHub keeps answering 404 for a

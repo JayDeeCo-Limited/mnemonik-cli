@@ -297,7 +297,7 @@ describe('project init', () => {
       expect(f.stdout.text).toContain(`Root: ${resolution.root}`);
       expect(f.stdout.text).toContain(`Identity: ${join(resolution.root, '.mnemonik.json')}`);
       expect(f.stdout.text).toContain(
-        'use_parent_identity, initialize_nested_separately, select_main_or_worktree_identity, cancel'
+        'Use the parent project identity; Set up the nested project separately; Choose the main checkout or worktree identity; cancel'
       );
       expect(ensure).not.toHaveBeenCalled();
       expect(await readFile(join(f.root, '.mnemonik.json')).catch(() => null)).toBeNull();

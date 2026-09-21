@@ -1,6 +1,16 @@
 import { createHash } from 'node:crypto';
 import { spawn, type ChildProcess } from 'node:child_process';
-import { lstat, mkdir, mkdtemp, readFile, realpath, rename, rm, writeFile } from 'node:fs/promises';
+import {
+  lstat,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  realpath,
+  rename,
+  rm,
+  writeFile,
+} from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join, posix, resolve, win32 } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -262,7 +272,13 @@ export async function installBootstrap(
   };
   let current = await installed();
   const files: Record<string, Buffer> = {};
-  for (const name of ['bin.js', 'runtime/bootstrap.js', 'runtime/store.js', 'runtime/signers.js']) {
+  for (const name of [
+    'bin.js',
+    'humanReason.js',
+    'runtime/bootstrap.js',
+    'runtime/store.js',
+    'runtime/signers.js',
+  ]) {
     const bytes = source.files[cliKey + '/dist/' + name];
     if (!bytes) throw new RuntimeError('manifest_missing');
     files['dist/' + name] = bytes;
@@ -291,13 +307,50 @@ export async function installBootstrap(
     !!digests &&
     Object.keys(digests).length === Object.keys(bootstrapFiles).length &&
     Object.entries(bootstrapFiles).every(([name, digest]) => digests[name] === digest);
-  if (matches(current)) return bin;
+  const verifyFiles = async (directory: string, digests: Record<string, string>): Promise<void> => {
+    for (const [name, digest] of Object.entries(digests))
+      if (hash(await store.bytes(join(directory, name))) !== digest)
+        throw new RuntimeError('digest_mismatch');
+  };
+  const accepts = async (digests: Record<string, string> | undefined): Promise<boolean> => {
+    if (!matches(digests)) return false;
+    await verifyFiles(root, bootstrapFiles);
+    return true;
+  };
+  const verifyPrevious = async (): Promise<void> => {
+    await store.inspect(previous, true);
+    const digests = await json<Record<string, string>>(join(previous, 'bootstrap-digests.json'));
+    // A previous release can omit the newly added copy helper. No unrelated
+    // entries may be removed, even inside an otherwise valid bootstrap.
+    const names = Object.keys(bootstrapFiles).filter((name) => name !== 'dist/humanReason.js');
+    if (
+      !digests ||
+      names.some((name) => !digests[name]) ||
+      Object.keys(digests).some((name) => !Object.hasOwn(bootstrapFiles, name)) ||
+      digests['package.json'] !== bootstrapFiles['package.json']
+    )
+      throw new RuntimeError('manifest_missing');
+    const entries = new Set(['bootstrap-digests.json']);
+    for (const name of Object.keys(digests)) {
+      entries.add(name);
+      for (let parent = posix.dirname(name); parent !== '.'; parent = posix.dirname(parent))
+        entries.add(parent);
+    }
+    const actual = await readdir(previous, { recursive: true });
+    if (
+      actual.length !== entries.size ||
+      actual.some((name) => !entries.has(name.replaceAll('\\', '/')))
+    )
+      throw new RuntimeError('manifest_missing');
+    await verifyFiles(previous, digests);
+  };
+  if (await accepts(current)) return bin;
   return store.withMutationLock('cli', async (assertOwned) => {
     current = await installed();
     if (!current) {
       // Recover a crash between moving the old bootstrap aside and publishing the stage.
       try {
-        await store.inspect(join(previous, 'dist', 'bin.js'));
+        await verifyPrevious();
         await assertOwned();
         await rename(previous, root);
       } catch (e) {
@@ -305,7 +358,7 @@ export async function installBootstrap(
       }
       current = await installed();
     }
-    if (matches(current)) return bin;
+    if (await accepts(current)) return bin;
     let stage: string | undefined;
     try {
       stage = await mkdtemp(join(dirname(root), '.bootstrap-'));
@@ -327,7 +380,15 @@ export async function installBootstrap(
           throw new RuntimeError('digest_mismatch');
       await assertOwned();
       if (current) {
-        await rm(previous, { recursive: true, force: true });
+        const exists = await lstat(previous).catch((error) => {
+          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+          return undefined;
+        });
+        if (exists) {
+          await verifyPrevious();
+          await assertOwned();
+          await rm(previous, { recursive: true });
+        }
         await assertOwned();
         await rename(root, previous);
       }
@@ -338,9 +399,8 @@ export async function installBootstrap(
         throw e;
       }
     } catch (e) {
-      if (!current) throw e;
-      // Only return the old bootstrap if it is still at the fixed launch path.
-      await store.inspect(bin);
+      // Never execute an unverified old bootstrap after a failed refresh.
+      if (!(await accepts(await installed()))) throw e;
     } finally {
       if (stage) await rm(stage, { recursive: true, force: true });
     }

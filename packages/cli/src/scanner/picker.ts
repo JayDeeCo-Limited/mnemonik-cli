@@ -267,9 +267,7 @@ export async function runScannerPicker(options: PickerOptions): Promise<ScannerP
     candidate: string
   ): Promise<{ root: string; exclusions: string[] } | ScannerPickerCancellation> => {
     if (options.platform !== 'win32' && posix.resolve(candidate) === '/tmp') {
-      options.output.error(
-        `Refusing ${candidate}: temporary_directory; choose a project folder instead.`
-      );
+      options.output.error('That folder cannot be used. Choose another folder.');
       return { status: 'cancelled', reason: 'temporary_directory' };
     }
     const repository = await repositoryAt(candidate);
@@ -289,9 +287,7 @@ export async function runScannerPicker(options: PickerOptions): Promise<ScannerP
       }
     );
     if (!decision.allowed) {
-      options.output.error(
-        `Refusing ${candidate}: ${decision.reason}; choose a project folder instead.`
-      );
+      options.output.error('That folder cannot be used. Choose another folder.');
       return {
         status: 'cancelled',
         reason: decision.reason as ScannerPickerCancellation['reason'],

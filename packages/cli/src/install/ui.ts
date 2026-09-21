@@ -1,3 +1,4 @@
+import { humanReport } from '../humanReason.js';
 import type { Readable } from 'node:stream';
 import { join } from 'node:path';
 import { stateDirectory } from '@mnemonik/local-setup';
@@ -67,7 +68,7 @@ export function terminalInstallUI(
             `Roots: ${d.roots.join(', ')}`,
             'First upload: waiting for Apply',
             ...d.credentials.map((c) => `Credential reference: ${c.reference}`),
-            ...d.reports,
+            ...d.reports.map(humanReport),
           ],
           d.components.includes('scanner')
         )
@@ -76,7 +77,9 @@ export function terminalInstallUI(
     },
     cancel: async () => ((await ask(cancelScreen)) === 1 ? 'keep-cli' : 'revoke'),
     recovery: async (reports) =>
-      (await ask({ ...interruptedScreen, lines: reports })) === 0 ? 'resume' : 'rollback',
+      (await ask({ ...interruptedScreen, lines: reports.map(humanReport) })) === 0
+        ? 'resume'
+        : 'rollback',
   };
   return { ui, signal: controller.signal, close: () => answers.close() };
 }

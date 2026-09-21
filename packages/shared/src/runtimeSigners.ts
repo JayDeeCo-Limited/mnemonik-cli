@@ -378,12 +378,21 @@ function dirEntry(line: string): { owner: string; name: string } | undefined {
 const unknownOwner = (owner: string, user: HookIdentity) =>
   user.name.length >= ownerWidth || owner.length >= ownerWidth || owner.includes('...');
 type NativeCommand = [string, string[], string?];
-function ownerLookup(paths: string[]): NativeCommand {
+function ownerLookup(paths: string[], restoreOwner?: string): NativeCommand {
   if (paths.some((path) => /[\t\r\n]/.test(path))) throw new Error('acl_path_unavailable');
   const script = `$ErrorActionPreference = 'Stop'
 [Console]::InputEncoding = [System.Text.UTF8Encoding]::new($false)
 [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 while ($null -ne ($path = [Console]::ReadLine())) {
+  ${
+    restoreOwner
+      ? `$identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+  if ($identity.User.Value -eq ${quote(restoreOwner)} -and $identity.Owner.Value -eq 'S-1-5-32-544') {
+    & ${quote(windowsCommand('icacls.exe'))} $path /setowner ${quote('*' + restoreOwner)} /l | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'acl_owner' }
+  }`
+      : ''
+  }
   $owner = (Get-Acl -LiteralPath $path).GetOwner([System.Security.Principal.SecurityIdentifier]).Value
   [Console]::WriteLine($path + "\`t" + $owner)
 }`;
@@ -459,17 +468,26 @@ function* hookPermission(
     return entry?.name.toLowerCase() === basename(path).toLowerCase() ? [entry.owner] : [];
   });
   let owner: string | undefined = owners[0];
-  if (owners.length === 1 && owner && unknownOwner(owner, user))
-    owner = ownerSids(yield ownerLookup([path])).get(path);
+  const currentOwner = () =>
+    [user.name.toLowerCase(), user.sid.toLowerCase()].includes(owner ?? '');
   if (
-    owners.length !== 1 ||
-    ![user.name.toLowerCase(), user.sid.toLowerCase()].includes(owner ?? '')
+    owners.length === 1 &&
+    owner &&
+    (unknownOwner(owner, user) || (!currentOwner() && !/^s-1-(?:\d+-)+\d+$/.test(owner)))
   )
-    throw new Error('acl_owner');
+    owner = ownerSids(yield ownerLookup([path])).get(path);
+  const elevatedOwner = owner === 's-1-5-32-544';
+  if (owners.length !== 1 || (!currentOwner() && !elevatedOwner)) throw new Error('acl_owner');
   const icacls = windowsCommand('icacls.exe');
   if (created) yield [icacls, aclArgs(path, user.sid)];
   let valid = privateEntries((yield* saveAcl(path, false)).get(path), user, directory);
-  if (!valid && !created && directory) {
+  if (elevatedOwner) {
+    // Existing group-owned paths must already be private. Only a freshly created
+    // directory may have its inherited ACL constrained before restoring its owner.
+    if (!valid) throw new Error('acl_permissions');
+    owner = ownerSids(yield ownerLookup([path], user.sid)).get(path);
+    if (!currentOwner()) throw new Error('acl_owner');
+  } else if (!valid && !created && directory) {
     yield [icacls, aclArgs(path, user.sid)];
     valid = privateEntries((yield* saveAcl(path, false)).get(path), user, directory);
   }
@@ -574,13 +592,37 @@ export async function auditWindowsPermissions(
   const ownerPaths = [...owners.keys()].filter(
     (path) => path === root || path.startsWith(root + sep)
   );
-  const truncated = new Set(ownerPaths.filter((path) => owners.get(path)?.includes('...')));
-  if (truncated.size) {
-    const result = await run(...ownerLookup([...truncated])).catch(() => ({ stdout: '' }));
+  const records = await drive(saveAcl(root, recursive, ownerPaths, tempState), run);
+  // Elevated Windows tokens create Administrators-owned files even with a private
+  // user DACL. Restore the exact-user invariant, including a failed install's
+  // directories, only after proving both the owner SID and the existing DACL.
+  const candidates = [...records]
+    .filter(([path, entries]) => {
+      const owner = owners.get(path);
+      if (!owner || owner === user.name.toLowerCase() || owner === user.sid.toLowerCase())
+        return false;
+      try {
+        return privateEntries(entries, user, false);
+      } catch {
+        return false;
+      }
+    })
+    .map(([path]) => path);
+  const lookup = new Set([
+    ...ownerPaths.filter((path) => owners.get(path)?.includes('...')),
+    ...candidates,
+  ]);
+  if (lookup.size) {
+    const result = await run(...ownerLookup([...lookup])).catch(() => ({ stdout: '' }));
     for (const [path, sid] of ownerSids(stdout(result)))
-      if (truncated.has(path)) owners.set(path, sid);
+      if (lookup.has(path)) owners.set(path, sid);
+    const elevated = candidates.filter((path) => owners.get(path) === 's-1-5-32-544');
+    if (elevated.length) {
+      const restored = ownerSids(stdout(await run(...ownerLookup(elevated, user.sid))));
+      for (const path of elevated) owners.set(path, restored.get(path) ?? '...');
+    }
   }
-  for (const [path, entries] of await drive(saveAcl(root, recursive, ownerPaths, tempState), run)) {
+  for (const [path, entries] of records) {
     const owner = owners.get(path) ?? '...';
     const owned = owner === user.name.toLowerCase() || owner === user.sid.toLowerCase();
     try {

@@ -1,3 +1,4 @@
+import { humanReason, humanProjectAction } from './humanReason.js';
 import { createCliCredentials } from './auth/credentials.js';
 import { createInterface } from 'node:readline';
 import { execFile } from 'node:child_process';
@@ -151,9 +152,9 @@ function actionRequired(output, json, state, details = {}) {
     if (json)
         output.json(result);
     else {
-        output.error(`Project action required: ${state}`);
+        output.error(humanReason(state));
         if (Array.isArray(details.allowedActions))
-            output.line(`  Allowed actions: ${details.allowedActions.join(', ')}`);
+            output.line(`  Allowed actions: ${details.allowedActions.map((action) => humanProjectAction(String(action))).join('; ')}`);
     }
     return 3;
 }
@@ -200,7 +201,6 @@ async function selectedOwner(explicit, bearer, transport) {
 function showPlan(output, plan) {
     output.line('Project plan');
     output.line(`  Root: ${plan.root}`);
-    output.line(`  Decision: ${plan.reason}`);
     output.line(`  Owner: ${ownerLabel(plan.owner)}`);
     output.line(`  Candidates: ${plan.candidates.length ? JSON.stringify(plan.candidates) : 'none'}`);
 }
@@ -220,14 +220,14 @@ function showResult(output, json, result, root, owner, record) {
             owner: ownerLabel(owner),
         });
     else {
-        output.error(`Project action required: ${'state' in result ? result.state : result.status}`);
+        output.error(humanReason('state' in result ? result.state : result.status));
         if ('candidates' in result && Array.isArray(result.candidates))
             for (const candidate of result.candidates)
                 output.line(`  ${candidate.displayName} (${candidate.projectId})`);
         if ('used' in result && 'limit' in result)
             output.line(`  Projects: ${result.used} used, limit ${result.limit}`);
         if ('allowedActions' in result)
-            output.line(`  Allowed actions: ${result.allowedActions.join(', ')}`);
+            output.line(`  Allowed actions: ${result.allowedActions.map(humanProjectAction).join('; ')}`);
     }
 }
 async function finish(deps, input, result, root, reason, owner, beforeHash) {
@@ -303,13 +303,15 @@ async function statusCommand(input, deps) {
         deps.output.json(record);
     else {
         deps.output.line(`Root: ${root}`);
-        deps.output.line(`Identity: ${resolution.kind}`);
+        deps.output.line(resolution.kind === 'ok'
+            ? 'Project identity is present.'
+            : humanReason('project_setup_required'));
         if (!reachable)
             deps.output.line('Reachability: unreachable');
-        if (server)
-            deps.output.line(`Server: ${server.state}`);
-        if (executorState)
-            deps.output.line(`Executor: ${executorState}`);
+        if (server && server.state !== 'access')
+            deps.output.line(humanReason(server.state));
+        if (executorState && executorState !== 'done')
+            deps.output.line(humanReason(executorState));
     }
     return 0;
 }

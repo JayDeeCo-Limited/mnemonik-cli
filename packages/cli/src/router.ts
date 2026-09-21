@@ -1,3 +1,4 @@
+import { humanReason, humanReport, humanIdentityState } from './humanReason.js';
 import { enableScanner, updateScannerRoots, type EnableOptions } from './scanner/enable.js';
 import { controlScanner, scannerReceipt } from './scanner/control.js';
 import { updateScanner } from './scanner/update.js';
@@ -219,7 +220,14 @@ function actionRequired(output: Output, json: boolean, message: string, flag?: s
       ...(flag ? { flag } : {}),
       action: message,
     });
-  else output.error(flag ? `Missing required consent flag: ${flag}` : message);
+  else
+    output.error(
+      flag
+        ? `Missing required consent flag: ${flag}`
+        : /^[a-z][a-z0-9_]*$/u.test(message)
+          ? humanReason(message)
+          : message
+    );
   return 3;
 }
 
@@ -590,19 +598,27 @@ async function runHostCommand(
       else output.line('Mnemonik is up to date.');
     } else {
       for (const target of result.results)
-        output.line(
-          `${target.target}: ${target.status} (${target.reason}${target.detail ? `: ${target.detail}` : ''})`
-        );
-      for (const report of result.reports) output.line(report);
+        output.line(target.status === 'READY' ? 'Done.' : humanReason(target.reason));
+      for (const report of result.reports) output.line(humanReport(report));
       if (!selections.length && !fullUninstall) output.line('No recorded host targets.');
       if (fullUninstall && !failed && hostExit === 0)
         output.line(
           'Stopped collection; removed local software. Credentials, cloud data and consent retained.'
         );
       else if (scanner)
-        output.line(`Scanner ${scanner.status}: ${scanner.version ?? scanner.reason}.`);
+        output.line(
+          scanner.reason
+            ? humanReason(scanner.reason)
+            : scanner.status === 'not_installed'
+              ? 'The scanner is not installed.'
+              : 'The scanner was uninstalled.'
+        );
     }
-    if (scanner?.status === 'failed') output.error(scanner.reason ?? 'scanner_uninstall_failed');
+    if (scanner?.status === 'failed') {
+      const reason = scanner.reason ?? 'scanner_uninstall_failed';
+      if (json) output.error(reason, false);
+      else output.error(humanReason(reason));
+    }
     return failed ? 1 : hostExit;
   } catch (error) {
     if (command === 'update' && !json) {
@@ -612,14 +628,14 @@ async function runHostCommand(
     if (error instanceof LauncherError) {
       if (json)
         output.json({ status: error.status, reason: error.message, launcher: error.launcher });
-      else output.error(error.message);
+      else output.error(humanReason(error.message));
       return 3;
     }
     const reason = installFailureReason(error);
     if (reason === 'lock_held') {
       if (json) output.json({ status: 'FAILED', reason });
       else output.error('Another mnemonik command holds the state lock; retry in a moment.');
-    } else output.error(reason);
+    } else output.error(humanReason(reason));
     return 1;
   }
 }
@@ -683,7 +699,7 @@ async function enableCommand(
       action: 'mnemonik scanner enable',
     };
     if (json) output.json(result);
-    else output.error(`${result.reason}: ${result.action}`);
+    else output.error(humanReason(result.reason));
     return 3;
   }
 }
@@ -733,7 +749,7 @@ async function installCommand(
     try {
       await ensureCliAuth(deps, output, parsed.flags.has('no-browser'));
     } catch (error) {
-      output.error(`Sign-in refused: ${installFailureReason(error)}`);
+      output.error(humanReason(installFailureReason(error)));
       return 1;
     }
   }
@@ -753,7 +769,7 @@ async function installCommand(
     const pending = await interrupted(install.stateDir);
     const result = await runInstall(install, pending[0]);
     output.line(`${result.state}: install ${result.runId}`);
-    for (const report of result.reports) output.line(report);
+    for (const report of result.reports) output.line(humanReport(report));
     return result.phase === 'rolled_back'
       ? 130
       : result.state === 'FAILED'
@@ -762,7 +778,7 @@ async function installCommand(
           ? 0
           : 3;
   } catch (error) {
-    output.error(`Install failed: ${installFailureReason(error)}`);
+    output.error(humanReason(installFailureReason(error)));
     return 1;
   } finally {
     terminal?.close();
@@ -896,7 +912,7 @@ export async function runCli(args: string[], deps: CliDependencies = {}): Promis
   });
   if (process.env.MNEMONIK_DEV_RELEASE_DIR && !silent)
     stderr.write(
-      'WARNING: MNEMONIK_DEV_RELEASE_DIR uses development artifacts; readiness remains LIMITED (dev_release_source).\n'
+      'WARNING: MNEMONIK_DEV_RELEASE_DIR uses development artifacts; readiness remains LIMITED.\n'
     );
   if (parsed.error) return (output.error(parsed.error), 2);
   if (parsed.flags.has('version')) {
@@ -996,9 +1012,7 @@ export async function runCli(args: string[], deps: CliDependencies = {}): Promis
         return 3;
       }
       if (project.status !== 'done') {
-        output.error(
-          `Project action required: ${'state' in project ? project.state : project.status}`
-        );
+        output.error(humanReason('project_setup_required'));
         return 3;
       }
     }
@@ -1054,7 +1068,7 @@ export async function runCli(args: string[], deps: CliDependencies = {}): Promis
         );
       return 0;
     } catch (error) {
-      output.error((error as Error).message);
+      output.error(humanReason((error as Error).message));
       return 3;
     }
   }
@@ -1073,7 +1087,7 @@ export async function runCli(args: string[], deps: CliDependencies = {}): Promis
         );
       return 0;
     } catch (error) {
-      output.error((error as Error).message);
+      output.error(humanReason((error as Error).message));
       return 3;
     }
   }
@@ -1123,7 +1137,9 @@ export async function runCli(args: string[], deps: CliDependencies = {}): Promis
       }
       return 0;
     } catch (error) {
-      output.error(command === 'update' ? updateFailureMessage : (error as Error).message);
+      output.error(
+        command === 'update' ? updateFailureMessage : humanReason((error as Error).message)
+      );
       return 3;
     }
   }
@@ -1214,7 +1230,7 @@ export async function runCli(args: string[], deps: CliDependencies = {}): Promis
     } catch (error) {
       const code = error instanceof DiagnosticsError ? error.code : 'diagnostics_failed';
       if (parsed.flags.has('json')) output.json({ status: 'error', error: code });
-      else output.error(code);
+      else output.error(humanReason(code));
       return 1;
     }
   }
@@ -1279,7 +1295,7 @@ export async function runCli(args: string[], deps: CliDependencies = {}): Promis
     });
     if (parsed.flags.has('json')) output.json(result);
     else if (!instructionShown)
-      output.line(`${result.status}: ${result.reason}${result.action ? `. ${result.action}` : ''}`);
+      output.line(result.status === 'READY' ? 'Done.' : humanReason(result.reason));
     return result.status === 'READY' ? 0 : 3;
   }
   if (command === 'project') {
@@ -1386,27 +1402,19 @@ export async function runCli(args: string[], deps: CliDependencies = {}): Promis
         stateDir: deps.identityStateDir,
       });
     } catch (error) {
-      output.error(`Identity migration failed: ${(error as Error).message}`);
+      output.error(humanReason((error as Error).message));
       return 1;
     }
     if (parsed.flags.has('json')) output.json(result);
     else if ('report' in result) {
       for (const entry of result.report.entries)
-        output.line(
-          `${entry.state.padEnd(16)} ${entry.path}${entry.actionRequired ? ' - ACTION REQUIRED' : ''}${entry.detail ? ` - ${entry.detail}` : ''}`
-        );
-      output.line(
-        `Summary: ${Object.entries(result.report.summary)
-          .map(([state, count]) => `${state}=${count}`)
-          .join(' ')}`
-      );
+        output.line(`${entry.path}: ${humanIdentityState(entry.state)}`);
+      output.line(`Checked ${result.report.entries.length} project identity files.`);
       if (result.status === 'backed_up')
         output.line(`Backup run: ${result.runId} (${result.count} file(s))`);
     } else {
-      output.line(
-        `${result.status}: run ${result.runId}; passed=${result.passed}; failed=${result.failed}`
-      );
-      for (const failure of result.failures) output.error(failure);
+      output.line(`Identity migration: ${result.passed} passed; ${result.failed} failed.`);
+      for (const failure of result.failures) output.error(humanReason(failure));
     }
     return 'failed' in result && result.failed > 0 ? 1 : 0;
   }
@@ -1571,8 +1579,6 @@ export async function runCli(args: string[], deps: CliDependencies = {}): Promis
               : `Scanner status: ${result.status} (service not registered; run mnemonik scanner start)`
             : `Scanner ${subcommand}: ${result.status}`
         );
-        if ('receipt' in result && result.receipt)
-          output.line(JSON.stringify(result.receipt.snapshot));
       }
       return 0;
     } catch (error) {
@@ -1585,10 +1591,7 @@ export async function runCli(args: string[], deps: CliDependencies = {}): Promis
         choices: ['retry', 'skip'],
       };
       if (json) output.json(result);
-      else
-        output.line(
-          `LIMITED: ${result.reason}: ${result.detail}. Retry: ${result.action}, or skip.`
-        );
+      else output.line(humanReason(result.reason));
       return 3;
     }
   }

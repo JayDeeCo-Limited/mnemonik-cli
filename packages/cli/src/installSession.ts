@@ -1,3 +1,4 @@
+import { humanReason, humanReport } from './humanReason.js';
 import { devReadiness } from './runtime/releaseSource.js';
 import {
   apiOrigin,
@@ -153,10 +154,10 @@ export async function reportInstall(
     for (const step of steps) {
       const owner = step.owner ? ` (${step.owner})` : '';
       output.line(
-        `  ${step.name}: ${step.status}${owner}${step.action ? ` - ${step.action}` : ''}`
+        `  ${step.name}: ${step.status === 'READY' ? 'Done.' : humanReason(step.status)}${owner}${step.action ? ` - ${humanReport(step.action)}` : ''}`
       );
     }
-    output.line(`  Install session: ${installSession.status}`);
+    if (installSession.status !== 'completed') output.line(humanReason(installSession.status));
     output.line();
     output.line('  Status and devices: https://app.mnemonik.ai/install');
     output.line('  On this machine: mnemonik status');

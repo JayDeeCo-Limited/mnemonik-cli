@@ -1,3 +1,4 @@
+import { humanReason } from './humanReason.js';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -24,7 +25,7 @@ export interface PreflightResult {
   os: string;
   hosts: DetectedHost[];
   project: { root?: string; resolution: ProjectIdentityResolution['kind'] };
-  network: { reachable: boolean; discoveryUrl: string; detail?: string };
+  network: { reachable: boolean; discoveryUrl: string; detail?: string; skipped?: true };
 }
 
 export interface PreflightDependencies {
@@ -118,7 +119,7 @@ export async function runPreflight(deps: PreflightDependencies = {}): Promise<Pr
     new URL('/.well-known/oauth-protected-resource', deps.resource ?? apiOrigin()).href;
   let network: PreflightResult['network'];
   if (deps.skipNetworkWithoutHosts && !hosts.length) {
-    network = { reachable: false, discoveryUrl };
+    network = { reachable: false, discoveryUrl, skipped: true };
   } else {
     try {
       const response = await (deps.fetch ?? globalThis.fetch)(discoveryUrl, {
@@ -158,11 +159,14 @@ export function renderPreflight(result: PreflightResult, output: Output): void {
     (host) => `${host.name}${host.supported ? '' : ' (not supported yet)'}`
   );
   output.line(`  Found      ${hosts.length ? hosts.join(', ') : 'No supported editors'}`);
-  output.line(
-    `  Project    ${result.project.root ?? `Unavailable (${result.project.resolution})`}`
-  );
+  output.line(`  Project    ${result.project.root ?? 'No project found'}`);
   output.line(`  Node       ${result.node.version}, ${result.os}`);
-  if (!result.network.reachable)
-    output.line(`  Network    Unavailable (${result.network.detail ?? 'discovery failed'})`);
+  // A check that never ran says nothing; a server that answered was reached.
+  if (!result.network.reachable && !result.network.skipped)
+    output.line(
+      humanReason(
+        result.network.detail?.startsWith('HTTP ') ? 'discovery_unavailable' : 'discovery_failed'
+      )
+    );
   output.line();
 }

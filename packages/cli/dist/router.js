@@ -1,3 +1,4 @@
+import { humanReason, humanReport, humanIdentityState } from './humanReason.js';
 import { enableScanner, updateScannerRoots } from './scanner/enable.js';
 import { controlScanner, scannerReceipt } from './scanner/control.js';
 import { updateScanner } from './scanner/update.js';
@@ -158,7 +159,11 @@ function actionRequired(output, json, message, flag) {
             action: message,
         });
     else
-        output.error(flag ? `Missing required consent flag: ${flag}` : message);
+        output.error(flag
+            ? `Missing required consent flag: ${flag}`
+            : /^[a-z][a-z0-9_]*$/u.test(message)
+                ? humanReason(message)
+                : message);
     return 3;
 }
 function requireConsent(parsed, output, required) {
@@ -428,18 +433,27 @@ async function runHostCommand(command, parsed, deps, output, scannerSelected = f
         }
         else {
             for (const target of result.results)
-                output.line(`${target.target}: ${target.status} (${target.reason}${target.detail ? `: ${target.detail}` : ''})`);
+                output.line(target.status === 'READY' ? 'Done.' : humanReason(target.reason));
             for (const report of result.reports)
-                output.line(report);
+                output.line(humanReport(report));
             if (!selections.length && !fullUninstall)
                 output.line('No recorded host targets.');
             if (fullUninstall && !failed && hostExit === 0)
                 output.line('Stopped collection; removed local software. Credentials, cloud data and consent retained.');
             else if (scanner)
-                output.line(`Scanner ${scanner.status}: ${scanner.version ?? scanner.reason}.`);
+                output.line(scanner.reason
+                    ? humanReason(scanner.reason)
+                    : scanner.status === 'not_installed'
+                        ? 'The scanner is not installed.'
+                        : 'The scanner was uninstalled.');
         }
-        if (scanner?.status === 'failed')
-            output.error(scanner.reason ?? 'scanner_uninstall_failed');
+        if (scanner?.status === 'failed') {
+            const reason = scanner.reason ?? 'scanner_uninstall_failed';
+            if (json)
+                output.error(reason, false);
+            else
+                output.error(humanReason(reason));
+        }
         return failed ? 1 : hostExit;
     }
     catch (error) {
@@ -451,7 +465,7 @@ async function runHostCommand(command, parsed, deps, output, scannerSelected = f
             if (json)
                 output.json({ status: error.status, reason: error.message, launcher: error.launcher });
             else
-                output.error(error.message);
+                output.error(humanReason(error.message));
             return 3;
         }
         const reason = installFailureReason(error);
@@ -462,7 +476,7 @@ async function runHostCommand(command, parsed, deps, output, scannerSelected = f
                 output.error('Another mnemonik command holds the state lock; retry in a moment.');
         }
         else
-            output.error(reason);
+            output.error(humanReason(reason));
         return 1;
     }
 }
@@ -516,7 +530,7 @@ async function enableCommand(parsed, deps, output) {
         if (json)
             output.json(result);
         else
-            output.error(`${result.reason}: ${result.action}`);
+            output.error(humanReason(result.reason));
         return 3;
     }
 }
@@ -552,7 +566,7 @@ async function installCommand(parsed, deps, output) {
             await ensureCliAuth(deps, output, parsed.flags.has('no-browser'));
         }
         catch (error) {
-            output.error(`Sign-in refused: ${installFailureReason(error)}`);
+            output.error(humanReason(installFailureReason(error)));
             return 1;
         }
     }
@@ -571,7 +585,7 @@ async function installCommand(parsed, deps, output) {
         const result = await runInstall(install, pending[0]);
         output.line(`${result.state}: install ${result.runId}`);
         for (const report of result.reports)
-            output.line(report);
+            output.line(humanReport(report));
         return result.phase === 'rolled_back'
             ? 130
             : result.state === 'FAILED'
@@ -581,7 +595,7 @@ async function installCommand(parsed, deps, output) {
                     : 3;
     }
     catch (error) {
-        output.error(`Install failed: ${installFailureReason(error)}`);
+        output.error(humanReason(installFailureReason(error)));
         return 1;
     }
     finally {
@@ -695,7 +709,7 @@ export async function runCli(args, deps = {}) {
         home: deps.home ?? homedir(),
     });
     if (process.env.MNEMONIK_DEV_RELEASE_DIR && !silent)
-        stderr.write('WARNING: MNEMONIK_DEV_RELEASE_DIR uses development artifacts; readiness remains LIMITED (dev_release_source).\n');
+        stderr.write('WARNING: MNEMONIK_DEV_RELEASE_DIR uses development artifacts; readiness remains LIMITED.\n');
     if (parsed.error)
         return (output.error(parsed.error), 2);
     if (parsed.flags.has('version')) {
@@ -787,7 +801,7 @@ export async function runCli(args, deps = {}) {
                 return 3;
             }
             if (project.status !== 'done') {
-                output.error(`Project action required: ${'state' in project ? project.state : project.status}`);
+                output.error(humanReason('project_setup_required'));
                 return 3;
             }
         }
@@ -838,7 +852,7 @@ export async function runCli(args, deps = {}) {
             return 0;
         }
         catch (error) {
-            output.error(error.message);
+            output.error(humanReason(error.message));
             return 3;
         }
     }
@@ -857,7 +871,7 @@ export async function runCli(args, deps = {}) {
             return 0;
         }
         catch (error) {
-            output.error(error.message);
+            output.error(humanReason(error.message));
             return 3;
         }
     }
@@ -903,7 +917,7 @@ export async function runCli(args, deps = {}) {
             return 0;
         }
         catch (error) {
-            output.error(command === 'update' ? updateFailureMessage : error.message);
+            output.error(command === 'update' ? updateFailureMessage : humanReason(error.message));
             return 3;
         }
     }
@@ -986,7 +1000,7 @@ export async function runCli(args, deps = {}) {
             if (parsed.flags.has('json'))
                 output.json({ status: 'error', error: code });
             else
-                output.error(code);
+                output.error(humanReason(code));
             return 1;
         }
     }
@@ -1041,7 +1055,7 @@ export async function runCli(args, deps = {}) {
         if (parsed.flags.has('json'))
             output.json(result);
         else if (!instructionShown)
-            output.line(`${result.status}: ${result.reason}${result.action ? `. ${result.action}` : ''}`);
+            output.line(result.status === 'READY' ? 'Done.' : humanReason(result.reason));
         return result.status === 'READY' ? 0 : 3;
     }
     if (command === 'project') {
@@ -1128,24 +1142,22 @@ export async function runCli(args, deps = {}) {
             });
         }
         catch (error) {
-            output.error(`Identity migration failed: ${error.message}`);
+            output.error(humanReason(error.message));
             return 1;
         }
         if (parsed.flags.has('json'))
             output.json(result);
         else if ('report' in result) {
             for (const entry of result.report.entries)
-                output.line(`${entry.state.padEnd(16)} ${entry.path}${entry.actionRequired ? ' - ACTION REQUIRED' : ''}${entry.detail ? ` - ${entry.detail}` : ''}`);
-            output.line(`Summary: ${Object.entries(result.report.summary)
-                .map(([state, count]) => `${state}=${count}`)
-                .join(' ')}`);
+                output.line(`${entry.path}: ${humanIdentityState(entry.state)}`);
+            output.line(`Checked ${result.report.entries.length} project identity files.`);
             if (result.status === 'backed_up')
                 output.line(`Backup run: ${result.runId} (${result.count} file(s))`);
         }
         else {
-            output.line(`${result.status}: run ${result.runId}; passed=${result.passed}; failed=${result.failed}`);
+            output.line(`Identity migration: ${result.passed} passed; ${result.failed} failed.`);
             for (const failure of result.failures)
-                output.error(failure);
+                output.error(humanReason(failure));
         }
         return 'failed' in result && result.failed > 0 ? 1 : 0;
     }
@@ -1308,8 +1320,6 @@ export async function runCli(args, deps = {}) {
                         ? `Scanner status: ${result.status} (service: ${supervisor.kind}, ${supervisor.running ? 'running' : 'stopped'})`
                         : `Scanner status: ${result.status} (service not registered; run mnemonik scanner start)`
                     : `Scanner ${subcommand}: ${result.status}`);
-                if ('receipt' in result && result.receipt)
-                    output.line(JSON.stringify(result.receipt.snapshot));
             }
             return 0;
         }
@@ -1324,7 +1334,7 @@ export async function runCli(args, deps = {}) {
             if (json)
                 output.json(result);
             else
-                output.line(`LIMITED: ${result.reason}: ${result.detail}. Retry: ${result.action}, or skip.`);
+                output.line(humanReason(result.reason));
             return 3;
         }
     }

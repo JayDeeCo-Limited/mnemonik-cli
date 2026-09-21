@@ -190,7 +190,10 @@ describe('interruption after every install mutation boundary', () => {
       f.recovery.choice = 'rollback';
       f.stderr.clear();
       expect(await f.run()).toBe(1);
-      expect(f.stderr.text).toContain('journal_invalid');
+      expect(f.stderr.text).toContain(
+        'This machine needs attention before Mnemonik can work fully.'
+      );
+      expect(f.stderr.text).not.toContain('journal_invalid');
     }
   );
 });
