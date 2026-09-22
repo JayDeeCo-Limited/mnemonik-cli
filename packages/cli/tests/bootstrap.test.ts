@@ -35,6 +35,7 @@ beforeEach(async () => {
     files: Object.fromEntries([
       ...[
         'bin.js',
+        'help.js',
         'humanReason.js',
         'runtime/bootstrap.js',
         'runtime/store.js',
@@ -210,6 +211,7 @@ it('restores the old bootstrap if the second rename fails', async () => {
 
 it.each([
   'dist/bin.js',
+  'dist/help.js',
   'dist/humanReason.js',
   'dist/runtime/bootstrap.js',
   'dist/runtime/store.js',

@@ -281,7 +281,12 @@ it('an old npm entry preserves multiple self-updates; newer npm and explicit ins
     exec(process.execPath, [entry, ...args], { env, timeout: 90_000 });
   expect((await run('--version')).stdout.trim()).toBe('2.0.0');
   expect((await store.verifyRuntime('cli')).reference.version).toBe('2.0.0');
-  await run('install', '--help');
+  // Help never installs anything (L-147). An explicit install still selects
+  // the packed version; the real router then stops for missing consent flags
+  // (exit 3), which is not what this test is about.
+  await run('install', '--non-interactive').catch((error: { code?: number }) => {
+    if (error.code !== 3) throw error;
+  });
   expect((await store.verifyRuntime('cli')).reference.version).toBe(running);
   await installVersion('0.0.1');
   expect((await run('--version')).stdout.trim()).toBe(running);

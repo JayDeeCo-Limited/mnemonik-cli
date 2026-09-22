@@ -73,7 +73,7 @@ it.each([
   // Diagnostics and the scanner say what failed and what to do about that; the
   // rest fall back to the general repair step.
   [['diagnostics', 'preview'], 'Run mnemonik install to try again.'],
-  [['data', 'delete', '--project', 'test'], REPAIR_STEP],
+  [['data', 'delete', '--project', 'test', '--confirm'], REPAIR_STEP],
   [['scanner', 'status'], 'Run mnemonik install to try again.'],
   [
     ['uninstall', '--component', 'scanner', '--confirm'],

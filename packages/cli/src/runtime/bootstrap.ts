@@ -274,6 +274,7 @@ export async function installBootstrap(
   const files: Record<string, Buffer> = {};
   for (const name of [
     'bin.js',
+    'help.js',
     'humanReason.js',
     'runtime/bootstrap.js',
     'runtime/store.js',
@@ -320,9 +321,10 @@ export async function installBootstrap(
   const verifyPrevious = async (): Promise<void> => {
     await store.inspect(previous, true);
     const digests = await json<Record<string, string>>(join(previous, 'bootstrap-digests.json'));
-    // A previous release can omit the newly added copy helper. No unrelated
-    // entries may be removed, even inside an otherwise valid bootstrap.
-    const names = Object.keys(bootstrapFiles).filter((name) => name !== 'dist/humanReason.js');
+    // A previous release can omit the newly added copy and help modules. No
+    // unrelated entries may be removed, even inside an otherwise valid bootstrap.
+    const optional = new Set(['dist/humanReason.js', 'dist/help.js']);
+    const names = Object.keys(bootstrapFiles).filter((name) => !optional.has(name));
     if (
       !digests ||
       names.some((name) => !digests[name]) ||

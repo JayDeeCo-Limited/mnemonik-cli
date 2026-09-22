@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { maintenanceExitCode, runCli, type CliDependencies } from '../src/router.js';
+import { helpScreen } from '../src/help.js';
 import { createCliAuth } from '../src/auth/index.js';
 import { isReadinessDocument, serializeReadiness } from '@mnemonik/shared';
 
@@ -92,8 +93,32 @@ describe('command router', () => {
     expect(await runCli(['--help'], f.deps)).toBe(0);
     expect(f.stdout.text).toContain('add <folder>');
     expect(f.stdout.text).toContain('remove <folder>');
-    expect(f.stdout.text).toContain('--accept-indexing');
     expect(f.stdout.text).not.toMatch(/\b(?:scanner|roots)\b/iu);
+  });
+
+  it.each([
+    [
+      ['project', 'delete', '--help'],
+      ['project', 'delete'],
+    ],
+    [['connect', '--help'], ['connect']],
+  ])('prints the command screen for %j', async (args, path) => {
+    const f = fixture();
+    expect(await runCli(args, f.deps)).toBe(0);
+    expect(f.stdout.text).toBe(helpScreen(path));
+    expect(f.stderr.text).toBe('');
+  });
+
+  it('prints the project screen for an unknown project subcommand', async () => {
+    const f = fixture();
+    expect(await runCli(['project', 'frobnicate'], f.deps)).toBe(2);
+    expect(f.stderr.text).toBe(helpScreen(['project']));
+  });
+
+  it('prints the add screen when the folder is missing', async () => {
+    const f = fixture();
+    expect(await runCli(['add'], f.deps)).toBe(2);
+    expect(f.stderr.text).toBe(helpScreen(['add']));
   });
 
   it('rejects the unimplemented scanner preview subcommand and omits it from help', async () => {
@@ -218,10 +243,7 @@ describe('command router', () => {
     expect(f.stdout.text).not.toContain('identity migrate');
 
     expect(await runCli(['identity', 'unknown'], f.deps)).toBe(2);
-    expect(f.stderr.text).toBe(
-      'Usage: mnemonik identity migrate [paths] [--report|--backup]\n' +
-        '       mnemonik identity migrate [--apply|--verify|--rollback <run-id>]\n'
-    );
+    expect(f.stderr.text).toBe(helpScreen(['identity', 'migrate']));
   });
 
   it('emits the reconciliation report as one JSON document', async () => {
@@ -234,10 +256,10 @@ describe('command router', () => {
     });
   });
 
-  it('rejects unknown commands and flags with one line and exit 2', async () => {
+  it('rejects unknown commands and flags with exit 2', async () => {
     const command = fixture();
     expect(await runCli(['mystery'], command.deps)).toBe(2);
-    expect(command.stderr.text).toBe('Unknown command: mystery\n');
+    expect(command.stderr.text).toBe(helpScreen([]));
 
     const flag = fixture();
     expect(await runCli(['doctor', '--mystery'], flag.deps)).toBe(2);
@@ -740,4 +762,136 @@ it('connect reports local editor setup consistently in plain text and JSON', asy
   } finally {
     await rm(home, { recursive: true, force: true });
   }
+});
+
+describe('consent for removal and deletion', () => {
+  const projectId = '22222222-2222-4222-8222-222222222222';
+
+  async function watched() {
+    const { mkdir, writeFile } = await import('node:fs/promises');
+    const f = fixture();
+    const stateDir = f.deps.installStateDir!;
+    const root = join(f.deps.home!, 'Projects', 'app');
+    await mkdir(join(stateDir, 'scanner'), { recursive: true });
+    await mkdir(root, { recursive: true });
+    await writeFile(
+      join(stateDir, 'scanner/state.json'),
+      JSON.stringify({ config: { roots: [root], exclusions: [] } })
+    );
+    const roots = async () => {
+      const { readFile } = await import('node:fs/promises');
+      return (
+        JSON.parse(await readFile(join(stateDir, 'scanner/state.json'), 'utf8')) as {
+          config: { roots: string[] };
+        }
+      ).config.roots;
+    };
+    return { ...f, root, roots };
+  }
+
+  it('remove --json without --apply asks for the flag and removes nothing', async () => {
+    const f = await watched();
+    f.deps.grantFetch = vi.fn();
+    expect(await runCli(['remove', f.root, '--json'], f.deps)).toBe(3);
+    expect(JSON.parse(f.stdout.text)).toMatchObject({
+      status: 'action_required',
+      flag: '--apply',
+    });
+    expect(await f.roots()).toEqual([f.root]);
+    expect(f.deps.grantFetch).not.toHaveBeenCalled();
+  });
+
+  it('remove --non-interactive --apply removes the folder as before', async () => {
+    const f = await watched();
+    f.deps.grantFetch = vi.fn(async (input) => {
+      expect(new URL(String(input)).pathname).toBe('/api/v1/scanner-consent/current');
+      return Response.json({ consent: { roots: [] } });
+    });
+    expect(await runCli(['remove', f.root, '--non-interactive', '--apply'], f.deps)).toBe(0);
+    expect(f.stdout.text).toContain('✓ app is no longer connected.');
+    expect(await f.roots()).toEqual([]);
+  });
+
+  it('data delete --json without --confirm asks for the flag and sends nothing', async () => {
+    const f = fixture();
+    f.deps.grantFetch = vi.fn();
+    expect(await runCli(['data', 'delete', '--project', projectId, '--json'], f.deps)).toBe(3);
+    expect(JSON.parse(f.stdout.text)).toMatchObject({
+      status: 'action_required',
+      flag: '--confirm',
+    });
+    expect(f.deps.grantFetch).not.toHaveBeenCalled();
+  });
+
+  it('data delete asks first and deletes nothing unless the answer is yes', async () => {
+    const f = fixture();
+    f.deps.grantFetch = vi.fn();
+    f.deps.input = Readable.from('no\n');
+    expect(await runCli(['data', 'delete', '--project', projectId], f.deps)).toBe(130);
+    expect(f.stdout.text).toBe(
+      `This deletes everything background indexing has sent for ${projectId} from your account. Type yes to continue.\nNothing was deleted.\n`
+    );
+    expect(f.deps.grantFetch).not.toHaveBeenCalled();
+  });
+
+  it('data delete --confirm --json deletes without asking', async () => {
+    const f = fixture();
+    f.deps.grantFetch = vi.fn(async (input, init) => {
+      expect(new URL(String(input)).pathname).toBe(`/api/v1/projects/${projectId}/index`);
+      return init?.method === 'DELETE'
+        ? Response.json({ projectId, status: 'deleted', deletedChunks: 4 })
+        : Response.json({ projectId, chunkCount: 0 });
+    });
+    expect(
+      await runCli(['data', 'delete', '--project', projectId, '--confirm', '--json'], f.deps)
+    ).toBe(0);
+    expect(JSON.parse(f.stdout.text)).toMatchObject({ projectId, deletedChunks: 4 });
+    expect(f.deps.grantFetch).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('project ensure needs no flags', () => {
+  async function ensureFixture() {
+    const { mkdtemp } = await import('node:fs/promises');
+    const f = fixture();
+    const root = await mkdtemp(join(tmpdir(), 'router-ensure-'));
+    homes.push(root);
+    const ensureProject = vi.fn(async () => ({
+      status: 'done' as const,
+      operationId: '11111111-1111-4111-8111-111111111111',
+      root,
+      projectId: '22222222-2222-4222-8222-222222222222',
+      permissionStatus: 'private' as const,
+    }));
+    f.deps.cwd = root;
+    f.deps.projectExecutor = {
+      resolveProjectIdentity: async () => ({
+        kind: 'absent',
+        root,
+        repository: { kind: 'plain', root },
+        nested: [],
+      }),
+      ensureProject,
+      stage: vi.fn(),
+      apply: vi.fn(),
+      rollback: vi.fn(),
+    } as CliDependencies['projectExecutor'];
+    return { ...f, ensureProject };
+  }
+
+  it.each([[['project', 'ensure']], [['project', 'ensure', '--agent', '--json']]])(
+    '%j reaches the ensure executor and prints JSON',
+    async (args) => {
+      const f = await ensureFixture();
+      expect(await runCli(args, f.deps)).toBe(0);
+      expect(f.ensureProject).toHaveBeenCalledOnce();
+      expect(JSON.parse(f.stdout.text)).toMatchObject({ status: 'done' });
+    }
+  );
+
+  it('rejects any other flag', async () => {
+    const f = await ensureFixture();
+    expect(await runCli(['project', 'ensure', '--apply'], f.deps)).toBe(2);
+    expect(f.ensureProject).not.toHaveBeenCalled();
+  });
 });

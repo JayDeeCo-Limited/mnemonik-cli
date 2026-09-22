@@ -1,4 +1,5 @@
 import { humanReason, humanReport, humanIdentityState } from './humanReason.js';
+import { helpScreen } from './help.js';
 import { enableScanner, updateScannerRoots, type EnableOptions } from './scanner/enable.js';
 import { controlScanner, scannerReceipt } from './scanner/control.js';
 import { updateScanner } from './scanner/update.js';
@@ -97,6 +98,9 @@ export const removedFolderLine = (name: string): string => `  ✓ ${name} is no 
 export const projectDeletionWarning = (name: string): string =>
   `Deleting ${name} removes its memories, code index and summaries for everyone. This cannot be undone.`;
 export const projectDeletedLine = (name: string): string => `Deleted ${name}.`;
+export const NOTHING_DELETED_LINE = 'Nothing was deleted.';
+export const dataDeletePrompt = (projectId: string): string =>
+  `This deletes everything background indexing has sent for ${projectId} from your account. Type yes to continue.`;
 export const stillWatchedLine = (root: string): string =>
   `The folder is still being indexed. Run mnemonik remove ${root} to stop that.`;
 export const identityFileKeptLine =
@@ -163,28 +167,7 @@ const values = new Set([
   'exclusions',
 ]);
 
-export const help = `Usage: mnemonik <command> [options]
-
-Commands:
-  install
-  status
-  connect <${hostOrder.join('|')}>
-  project <init|setup|status|link|ensure|delete>
-  add <folder>
-  remove <folder>
-  data delete --project <id>
-  diagnostics <preview|send>
-  doctor
-  repair
-  update
-  uninstall
-  auth login
-  auth status
-  auth logout [--host <host>] [--confirm]
-  logout
-
-Global options: --json --non-interactive --no-browser --help --version
-Install consent: --accept-indexing --accept-limited --apply`;
+export const help = helpScreen([]) ?? '';
 
 interface Parsed {
   positionals: string[];
@@ -1110,7 +1093,7 @@ async function deleteProjectCommand(
     typed = String((await readline[Symbol.asyncIterator]().next()).value ?? '').trim();
     readline.close();
     if (typed.toLowerCase() !== project.name.toLowerCase()) {
-      output.line('Nothing was deleted.');
+      output.line(NOTHING_DELETED_LINE);
       return 130;
     }
   }
@@ -1163,13 +1146,26 @@ async function deleteProjectCommand(
 
 export async function runCli(args: string[], deps: CliDependencies = {}): Promise<number> {
   const parsed = parse(args);
-  const silent = parsed.flags.has('automatic');
+  const helpIndex = args.findIndex(
+    (argument) => argument === '--help' || argument.startsWith('--help=')
+  );
+  const silent = helpIndex === -1 && parsed.flags.has('automatic');
   const discard = { write: () => {} };
   const stdout = silent ? discard : (deps.stdout ?? process.stdout);
   const stderr = silent ? discard : (deps.stderr ?? process.stderr);
   const output = new Output(stdout, stderr, {
     home: deps.home ?? homedir(),
   });
+  const usageError = (positionals: string[]): 2 => {
+    stderr.write(helpScreen(positionals) ?? help);
+    return 2;
+  };
+  if (helpIndex !== -1) {
+    const positionals = args.slice(0, helpIndex).filter((argument) => !argument.startsWith('--'));
+    const screen = helpScreen(positionals);
+    stdout.write(screen ?? helpScreen(positionals.slice(0, 1)) ?? help);
+    return screen ? 0 : 2;
+  }
   if (process.env.MNEMONIK_DEV_RELEASE_DIR && !silent)
     stderr.write(
       'WARNING: MNEMONIK_DEV_RELEASE_DIR uses development artifacts; readiness remains LIMITED.\n'
@@ -1181,16 +1177,14 @@ export async function runCli(args: string[], deps: CliDependencies = {}): Promis
     output.line(await packageVersion());
     return 0;
   }
-  if (parsed.flags.has('help') || !parsed.positionals.length) {
-    if (parsed.positionals.length && !parsed.flags.has('help'))
-      return (output.error(`Unknown command: ${parsed.positionals[0]}`), 2);
-    output.line(help);
+  if (!parsed.positionals.length) {
+    stdout.write(help);
     return 0;
   }
 
   const [command, subcommand, ...rest] = parsed.positionals;
   if (command === 'install') {
-    if (subcommand) return (output.error(`Unexpected argument: ${subcommand}`), 2);
+    if (subcommand) return usageError(['install']);
     return installCommand(parsed, deps, output);
   }
   if (command === 'roots' || command === 'add' || command === 'remove') {
@@ -1203,10 +1197,7 @@ export async function runCli(args: string[], deps: CliDependencies = {}): Promis
       !['add', 'remove', 'list'].includes(action ?? '') ||
       actionArguments.length !== (action === 'list' ? 0 : 1)
     )
-      return (
-        output.error(invalid ?? 'Usage: mnemonik add <folder> or mnemonik remove <folder>'),
-        2
-      );
+      return invalid ? (output.error(invalid), 2) : usageError([command]);
     const stateDir =
       deps.installStateDir ?? stateDirectory(process.platform, process.env, deps.home);
     const saved = JSON.parse(
@@ -1219,7 +1210,7 @@ export async function runCli(args: string[], deps: CliDependencies = {}): Promis
       return 0;
     }
     if (
-      action === 'add' &&
+      (action === 'add' || action === 'remove') &&
       (parsed.flags.has('non-interactive') || parsed.flags.has('json')) &&
       !parsed.flags.has('apply')
     )
@@ -1310,7 +1301,8 @@ export async function runCli(args: string[], deps: CliDependencies = {}): Promis
     parsed.flags.get('component') === 'scanner'
   ) {
     const invalid = allowed(parsed, ['component']);
-    if (invalid || rest.length) return (output.error(invalid ?? 'Unexpected argument'), 2);
+    if (invalid || rest.length)
+      return invalid ? (output.error(invalid), 2) : usageError(['auth', 'logout']);
     try {
       const stateDir =
         deps.installStateDir ?? stateDirectory(process.platform, process.env, deps.home);
@@ -1341,10 +1333,27 @@ export async function runCli(args: string[], deps: CliDependencies = {}): Promis
     }
   }
   if (command === 'data') {
-    const invalid = allowed(parsed, ['project']);
+    const invalid = allowed(parsed, ['project', 'confirm']);
     const project = parsed.flags.get('project');
     if (invalid || subcommand !== 'delete' || rest.length || typeof project !== 'string')
-      return (output.error(invalid ?? 'Usage: mnemonik data delete --project <id>'), 2);
+      return invalid ? (output.error(invalid), 2) : usageError(['data', 'delete']);
+    if (!parsed.flags.has('confirm')) {
+      if (parsed.flags.has('non-interactive') || parsed.flags.has('json'))
+        return actionRequired(
+          output,
+          parsed.flags.has('json'),
+          'Rerun with --confirm',
+          '--confirm'
+        );
+      output.line(dataDeletePrompt(project));
+      const readline = createInterface({ input: deps.input ?? process.stdin, terminal: false });
+      const answer = String((await readline[Symbol.asyncIterator]().next()).value ?? '').trim();
+      readline.close();
+      if (!/^(?:y|yes)$/iu.test(answer)) {
+        output.line(NOTHING_DELETED_LINE);
+        return 130;
+      }
+    }
     try {
       const bearer = await ensureCliAuth(deps, output, false);
       const result = await deleteScannerIndex(project, bearer, deps.grantFetch);
@@ -1364,7 +1373,7 @@ export async function runCli(args: string[], deps: CliDependencies = {}): Promis
     parsed.flags.get('component') === 'scanner'
   ) {
     const invalid = allowed(parsed, ['component', 'confirm']);
-    if (invalid || subcommand) return (output.error(invalid ?? 'Unexpected argument'), 2);
+    if (invalid || subcommand) return invalid ? (output.error(invalid), 2) : usageError([command]);
     try {
       const options = {
         stateDir: deps.installStateDir ?? stateDirectory(process.platform, process.env, deps.home),
@@ -1452,8 +1461,7 @@ export async function runCli(args: string[], deps: CliDependencies = {}): Promis
       'apply',
       ...(command === 'update' ? ['automatic'] : []),
     ]);
-    if (invalid || subcommand)
-      return (output.error(invalid ?? `Unexpected argument: ${subcommand}`), 2);
+    if (invalid || subcommand) return invalid ? (output.error(invalid), 2) : usageError([command]);
     if (command === 'uninstall' && parsed.flags.has('non-interactive')) {
       const missing = requireConsent(parsed, output, ['confirm']);
       if (missing !== undefined) return missing;
@@ -1463,8 +1471,7 @@ export async function runCli(args: string[], deps: CliDependencies = {}): Promis
   }
   if (command === 'update') {
     const invalid = allowed(parsed, ['automatic']);
-    if (invalid || subcommand)
-      return (output.error(invalid ?? `Unexpected argument: ${subcommand}`), 2);
+    if (invalid || subcommand) return invalid ? (output.error(invalid), 2) : usageError(['update']);
     const runtimeUpdate = deps.runtimeUpdate;
     if (!runtimeUpdate)
       return placeholder(
@@ -1490,7 +1497,7 @@ export async function runCli(args: string[], deps: CliDependencies = {}): Promis
     return 0;
   }
   if (command === 'doctor') {
-    if (subcommand) return (output.error(`Unexpected argument: ${subcommand}`), 2);
+    if (subcommand) return usageError(['doctor']);
     return doctorCommand(parsed, deps, output);
   }
   if (command === 'diagnostics') {
@@ -1502,12 +1509,7 @@ export async function runCli(args: string[], deps: CliDependencies = {}): Promis
       (subcommand === 'preview' && rest.length) ||
       (subcommand === 'send' && (rest.length !== 1 || !bundleId))
     )
-      return (
-        output.error(
-          invalid ?? 'Usage: mnemonik diagnostics preview [--out <file>] | send <bundle-id>'
-        ),
-        2
-      );
+      return invalid ? (output.error(invalid), 2) : usageError(['diagnostics']);
     try {
       const result =
         subcommand === 'preview'
@@ -1555,8 +1557,7 @@ export async function runCli(args: string[], deps: CliDependencies = {}): Promis
   }
   if (command === 'status') {
     const invalid = allowed(parsed, []);
-    if (invalid || subcommand)
-      return (output.error(invalid ?? `Unexpected argument: ${subcommand}`), 2);
+    if (invalid || subcommand) return invalid ? (output.error(invalid), 2) : usageError(['status']);
     const document = await collectCurrentInstallation(deps, output);
     const version = await packageVersion();
     const store = new RuntimeStore(
@@ -1576,7 +1577,7 @@ export async function runCli(args: string[], deps: CliDependencies = {}): Promis
     const invalid = allowed(parsed, ['scope']);
     if (invalid) return (output.error(invalid), 2);
     if (!subcommand || rest.length || !hostOrder.includes(subcommand as never))
-      return (output.error(`Usage: mnemonik connect <${hostOrder.join('|')}>`), 2);
+      return usageError(['connect']);
     const host = subcommand as (typeof hostOrder)[number];
     const editor = (await localEditorStatus(deps.home ?? homedir())).find(
       (candidate) => candidate.host === host
@@ -1628,14 +1629,11 @@ export async function runCli(args: string[], deps: CliDependencies = {}): Promis
       !subcommand ||
       !['init', 'setup', 'status', 'link', 'ensure', 'delete'].includes(subcommand)
     )
-      return (output.error('Usage: mnemonik project <init|setup|status|link|ensure|delete>'), 2);
+      return usageError(['project']);
     if (subcommand === 'delete') {
       const unknown = allowed(parsed, ['confirm']);
       if (unknown || rest.length > 1)
-        return (
-          output.error(unknown ?? 'Usage: mnemonik project delete [<project id or name>]'),
-          2
-        );
+        return unknown ? (output.error(unknown), 2) : usageError(['project', 'delete']);
       return deleteProjectCommand(parsed, rest, deps, output);
     }
     const invalid = allowed(
@@ -1650,8 +1648,9 @@ export async function runCli(args: string[], deps: CliDependencies = {}): Promis
     );
     if (invalid) return (output.error(invalid), 2);
     if (subcommand === 'ensure') {
-      if (rest.length || !parsed.flags.has('agent') || !parsed.flags.has('json'))
-        return (output.error('Usage: mnemonik project ensure --agent --json'), 2);
+      // `--agent` and `--json` are accepted and ignored: older installed hooks
+      // still pass them, and the output is always JSON. It never asks.
+      if (rest.length) return usageError(['project', 'ensure']);
       return ensureProjectForAgent({
         output,
         cwd: deps.cwd ?? process.cwd(),
@@ -1667,12 +1666,7 @@ export async function runCli(args: string[], deps: CliDependencies = {}): Promis
       (subcommand === 'link' && (rest.length < 1 || rest.length > 2)) ||
       (subcommand !== 'link' && rest.length > 1)
     )
-      return (
-        output.error(
-          `Usage: mnemonik project ${subcommand}${subcommand === 'link' ? ' <project-id> [path]' : ' [path]'}`
-        ),
-        2
-      );
+      return usageError(['project', subcommand]);
     return runProjectCommand(
       {
         command: subcommand as 'init' | 'setup' | 'status' | 'link',
@@ -1701,14 +1695,7 @@ export async function runCli(args: string[], deps: CliDependencies = {}): Promis
     );
   }
   if (command === 'identity') {
-    if (subcommand !== 'migrate')
-      return (
-        output.error(
-          'Usage: mnemonik identity migrate [paths] [--report|--backup]\n' +
-            '       mnemonik identity migrate [--apply|--verify|--rollback <run-id>]'
-        ),
-        2
-      );
+    if (subcommand !== 'migrate') return usageError(['identity', 'migrate']);
     const invalid = allowed(parsed, ['report', 'backup', 'apply', 'verify', 'rollback']);
     if (invalid) return (output.error(invalid), 2);
     const selected = ['report', 'backup', 'apply', 'verify', 'rollback'].filter((flag) =>
@@ -1769,7 +1756,9 @@ export async function runCli(args: string[], deps: CliDependencies = {}): Promis
         'status',
       ].includes(subcommand)
     )
-      return (output.error('Usage: mnemonik scanner <enable|start|stop|uninstall|status>'), 2);
+      return usageError(
+        subcommand && helpScreen(['scanner', subcommand]) ? ['scanner', subcommand] : ['scanner']
+      );
     const invalid = allowed(
       parsed,
       subcommand === 'enable'
@@ -1948,10 +1937,11 @@ export async function runCli(args: string[], deps: CliDependencies = {}): Promis
       !['login', 'status', 'logout'].includes(subcommand ?? '') ||
       (parsed.flags.has('reopen-install') && subcommand !== 'login')
     )
-      return (
-        output.error(invalid ?? 'Usage: mnemonik auth <login|status|logout> [--host <host>]'),
-        2
-      );
+      return invalid
+        ? (output.error(invalid), 2)
+        : usageError(
+            subcommand && helpScreen(['auth', subcommand]) ? ['auth', subcommand] : ['auth']
+          );
     const host = parsed.flags.get('host');
     if (host && !hostOrder.includes(host as never)) return (output.error('Invalid host'), 2);
     if (subcommand === 'login') {
@@ -2063,7 +2053,7 @@ export async function runCli(args: string[], deps: CliDependencies = {}): Promis
     return 0;
   }
   if (command === 'logout') {
-    if (subcommand) return (output.error(`Unexpected argument: ${subcommand}`), 2);
+    if (subcommand) return usageError(['logout']);
     const invalid = allowed(parsed, []);
     if (invalid) return (output.error(invalid), 2);
     await auth(deps, output, false).logout();
@@ -2071,8 +2061,7 @@ export async function runCli(args: string[], deps: CliDependencies = {}): Promis
     else output.line('Logged out.');
     return 0;
   }
-  output.error(`Unknown command: ${command}`);
-  return 2;
+  return usageError([]);
 }
 
 const serializeReadiness: typeof baseReadiness = (input) => devReadiness(baseReadiness(input));
