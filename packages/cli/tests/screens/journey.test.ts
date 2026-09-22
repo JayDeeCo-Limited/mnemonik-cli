@@ -627,7 +627,7 @@ it('puts scanner failure before the editor authorization block', () => {
 `);
 });
 
-it('prints an interrupted non-interactive install as plain text without --json', async () => {
+it('removes an interrupted install in a non-interactive run and says so in one line', async () => {
   const stateDir = await mkdtemp(join(tmpdir(), 'joined-human-interrupted-'));
   try {
     await withInstall(
@@ -647,15 +647,12 @@ it('prints an interrupted non-interactive install as plain text without --json',
     );
     let text = '';
     const output = { write: (chunk: string) => void (text += chunk) };
-    expect(
-      await runCli(
-        ['install', '--non-interactive', '--accept-scanner', '--apply', '--scan-roots=/repo'],
-        { installStateDir: stateDir, stdout: output, stderr: output }
-      )
-    ).toBe(3);
-    expect(text).toBe(
-      'Previous installation was interrupted. Run mnemonik install interactively to resume or roll back.\n'
+    await runCli(
+      ['install', '--non-interactive', '--accept-scanner', '--apply', '--scan-roots=/repo'],
+      { installStateDir: stateDir, stdout: output, stderr: output }
     );
+    expect(text).toContain('An earlier installation did not finish and was removed.');
+    expect(text).not.toContain('Run mnemonik install interactively');
     expect(text).not.toContain('{');
   } finally {
     await rm(stateDir, { recursive: true, force: true });

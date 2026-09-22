@@ -90,6 +90,8 @@ export const connectFolderPrompt = (name: string): string => `Connect ${name} to
 export const removeFolderPrompt = (name: string): string =>
   `Stop indexing ${name}? Its memories stay in your account. [y/N]`;
 export const connectedFolderLine = (name: string): string => `  ✓ Connected ${name}.`;
+export const alreadyConnectedFolderLine = (name: string): string =>
+  `  ✓ ${name} is already connected and watched.`;
 export const removedFolderLine = (name: string): string => `  ✓ ${name} is no longer connected.`;
 
 export function maintenanceExitCode(results: readonly Pick<HostResult, 'status'>[]): number {
@@ -1083,6 +1085,12 @@ export async function runCli(args: string[], deps: CliDependencies = {}): Promis
         ? await realpath(pathArgument)
         : (saved.config.roots.find((root) => root === pathArgument) ?? pathArgument);
     const name = requested.split(/[\\/]/u).filter(Boolean).at(-1) ?? requested;
+    // Already connected and watched: say so and stop. Nothing is asked again.
+    if (action === 'add' && saved.config.roots.includes(requested)) {
+      if (parsed.flags.has('json')) output.json(saved.config.roots);
+      else output.line(alreadyConnectedFolderLine(name));
+      return 0;
+    }
     if (!parsed.flags.has('non-interactive') && !parsed.flags.has('json')) {
       output.line(action === 'add' ? connectFolderPrompt(name) : removeFolderPrompt(name));
       const readline = createInterface({ input: deps.input ?? process.stdin, terminal: false });

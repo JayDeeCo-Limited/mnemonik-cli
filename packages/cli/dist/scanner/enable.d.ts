@@ -72,7 +72,7 @@ export interface PreparedScanner {
     roots: string[];
     exclusions: string[];
     files: string[];
-    session: InstallSession;
+    session?: InstallSession;
     projectExecutor(): Promise<ProjectExecutor>;
     apply(journal?: Journal, roots?: readonly string[]): Promise<ReturnType<typeof serializeReadiness>>;
     rollback(journal: Journal): Promise<void>;

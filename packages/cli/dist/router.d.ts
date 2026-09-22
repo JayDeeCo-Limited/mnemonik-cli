@@ -16,6 +16,7 @@ import { type DiagnosticsDependencies } from './diagnostics.js';
 export declare const connectFolderPrompt: (name: string) => string;
 export declare const removeFolderPrompt: (name: string) => string;
 export declare const connectedFolderLine: (name: string) => string;
+export declare const alreadyConnectedFolderLine: (name: string) => string;
 export declare const removedFolderLine: (name: string) => string;
 export declare function maintenanceExitCode(results: readonly Pick<HostResult, 'status'>[]): number;
 export declare const help: string;

@@ -15,6 +15,7 @@ import { createCliAuth } from '../auth/index.js';
 import { REPOSITORY_APPROVAL_INSTRUCTION } from '../auth/device.js';
 import { createCliCredentials } from '../auth/credentials.js';
 import { type InstallSession } from '../auth/installSession.js';
+import { postCurrentReadiness } from '../installSession.js';
 import { readInstallVersions } from '../install/ownership.js';
 import { grantTransport } from '../auth/status.js';
 import { readInstallation, saveInstallation } from '../installation.js';
@@ -125,7 +126,7 @@ export interface PreparedScanner {
   roots: string[];
   exclusions: string[];
   files: string[];
-  session: InstallSession;
+  session?: InstallSession;
   projectExecutor(): Promise<ProjectExecutor>;
   apply(
     journal?: Journal,
@@ -307,6 +308,8 @@ export async function prepareScanner<T>(
         consent: Consent | null;
         disclosure: { version: string; statements: Array<{ text: string }> };
       };
+      // Approved means the account's accepted consent already covers every
+      // folder asked for, at the current disclosure. Asking again adds nothing.
       const matches = () =>
         remote.consent?.disclosureVersion === remote.disclosure.version &&
         (picked.candidates
@@ -314,12 +317,14 @@ export async function prepareScanner<T>(
             remote.consent.roots.every((root) =>
               picked.candidates?.some((candidate) => candidate.path === root)
             )
-          : JSON.stringify(remote.consent?.roots) === JSON.stringify(picked.roots)) &&
+          : picked.roots.every((root) => remote.consent?.roots.includes(root))) &&
         JSON.stringify(remote.consent?.exclusions) === JSON.stringify(picked.exclusions);
       const unconnectedRoots = remote.consent?.roots.some(
         (root) => !saved?.config.roots.includes(root)
       );
-      if (!matches() || !session || (!options.nonInteractive && unconnectedRoots)) {
+      // A run with no person present reuses the approval it already has. A
+      // fresh browser session is only opened when a folder is not approved yet.
+      if (!matches() || (!options.nonInteractive && (!session || unconnectedRoots))) {
         const listing = await grantTransport(async () => bearer, options.fetch).list();
         const installation =
           session?.device_installation_id ??
@@ -335,14 +340,23 @@ export async function prepareScanner<T>(
         session = (await request('GET', '/api/v1/install-sessions/current')) as InstallSession;
         remote = (await request('GET', '/api/v1/scanner-consent/current')) as typeof remote;
       }
-      if (!matches() || !remote.consent || !session) throw new Error('browser_consent_required');
       const listing = await grantTransport(async () => bearer, options.fetch).list();
-      await saveInstallation(options.stateDir, session.device_installation_id, {
+      const installationId =
+        session?.device_installation_id ??
+        listing.deviceInstallationId ??
+        (await readInstallation(options.stateDir, listing.account));
+      if (!matches() || !remote.consent || !installationId)
+        throw new Error('browser_consent_required');
+      await saveInstallation(options.stateDir, installationId, {
         account: listing.account,
       });
       const approvedSession = session;
       const approvedConsent = remote.consent;
-      const approvedRoots = [...approvedConsent.roots];
+      // Connect the folders this run asked for, not every folder the account
+      // has ever approved. The browser picker still decides its own list.
+      const approvedRoots = picked.candidates
+        ? [...approvedConsent.roots]
+        : approvedConsent.roots.filter((root) => picked.roots.includes(root));
       if (options.journal?.data.account === 'scanner') {
         options.journal.data.account = listing.account;
         options.journal.data.roots = [...approvedRoots];
@@ -353,7 +367,7 @@ export async function prepareScanner<T>(
         roots: approvedRoots,
         exclusions: picked.exclusions,
         files: [path, pointer],
-        session,
+        ...(session ? { session } : {}),
         projectExecutor: async () =>
           options.projectExecutor ??
           (
@@ -365,6 +379,10 @@ export async function prepareScanner<T>(
             })
           ).executor,
         complete: async (document) => {
+          // With no browser session to close, the readiness still has to reach
+          // the account, or the devices page keeps yesterday's answer.
+          if (!approvedSession)
+            return postCurrentReadiness(bearer, document, options.fetch ?? fetch);
           await request('POST', `/api/v1/install-sessions/${approvedSession.id}/complete`, {
             readiness: document,
             platform: process.platform,
@@ -413,7 +431,7 @@ export async function prepareScanner<T>(
               ],
               exclusions: picked.exclusions,
               serverUrl: apiOrigin(),
-              deviceInstallationId: approvedSession.device_installation_id,
+              deviceInstallationId: installationId,
             },
             consent: approvedConsent,
             paused: false,
@@ -458,7 +476,7 @@ export async function prepareScanner<T>(
                 !(Date.parse(family.refreshExpiresAt) > Date.now()) ||
                 !family.scopes.includes('scanner:upload') ||
                 saved.consent?.userId !== approvedConsent.userId ||
-                saved.config.deviceInstallationId !== approvedSession.device_installation_id
+                saved.config.deviceInstallationId !== installationId
               )
                 throw new Error('scanner_credential_unavailable');
               state.config.credentialFamilyId = existingFamily;

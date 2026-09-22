@@ -13,12 +13,16 @@ import { collectStatusDocument } from '../status.js';
 import { devReadiness } from '../runtime/releaseSource.js';
 import { completedStep, completedLine, ADD_ANOTHER_FOLDER, renderSetup, renderInterrupted, renderJourney, renderNoSupportedEditors, renderRollbackResult, journeyAnswers, INSTALLATION_STOPPED, stepProgress, } from '../screens/journey.js';
 import { interrupted } from './journal.js';
+import { postCurrentReadiness } from '../installSession.js';
 import { runHosts, hookStatusConditions, } from './hosts.js';
 import { compensate, revokeInstallComponent } from './transaction.js';
 import * as ownership from './ownership.js';
 import { ensureLauncher, launcherPathAction, LauncherError } from '../launcher.js';
 import { launchHostLabels as labels, launchHosts } from './adapters.js';
 const FINAL_REPORT_TIMEOUT_MS = 3_000;
+export const EARLIER_INSTALL_REMOVED = 'An earlier installation did not finish and was removed.';
+export const EARLIER_INSTALL_RUNNING = 'An earlier installation is still running. Try again when it finishes.';
+export const EARLIER_INSTALL_KEPT = 'An earlier installation did not finish and could not be removed.';
 export function hostReadinessConditions(results, scanner) {
     return results
         .filter((r) => r.status !== 'READY')
@@ -159,19 +163,7 @@ export async function joinedInstall(flags, deps, output, authorize, management) 
         closeInteraction();
         throw error;
     }
-    if (previous?.data.joined) {
-        if (automatic) {
-            if (json)
-                output.json({
-                    status: 'ACTION_REQUIRED',
-                    reason: 'interrupted_install',
-                    action: 'Run mnemonik install interactively to resume or roll back.',
-                });
-            else
-                output.error('Previous installation was interrupted. Run mnemonik install interactively to resume or roll back.');
-            closeInteraction();
-            return 3;
-        }
+    if (previous?.data.joined && !automatic) {
         cwd = previous.data.hostRequest?.selections[0]?.projectRoot ?? previous.data.roots[0] ?? cwd;
         components = previous.data.components;
         scanner = components.includes('scanner');
@@ -311,18 +303,51 @@ export async function joinedInstall(flags, deps, output, authorize, management) 
     };
     let restart = false;
     try {
-        if (previous?.data.joined)
+        if (previous?.data.joined && !automatic)
             renderInterrupted(output);
-        if (previous?.data.joined && (await answers?.choose(['Resume', 'Rollback'])) !== 'Resume') {
-            const restored = await runHosts('install', [], {
-                stateDir,
-                account: previous.data.account,
-                afterHosts: async () => { },
-                rollbackInstall,
-                recovery: async () => 'rollback',
-            });
-            renderRollbackResult(restored.journal.phase === 'rolled_back', output);
-            return restored.journal.phase === 'rolled_back' ? 130 : 1;
+        if (previous?.data.joined &&
+            (automatic || (await answers?.choose(['Resume', 'Rollback'])) !== 'Resume')) {
+            // A run with nobody watching resolves the unfinished record itself, unless
+            // the install lock shows the earlier run is still going.
+            // Only this machine's own account may have its record removed unasked.
+            const signedIn = JSON.parse(await readFile(join(stateDir, 'installation.json'), 'utf8').catch(() => '{}')).account;
+            if (automatic &&
+                typeof signedIn === 'string' &&
+                previous.data.account !== 'scanner' &&
+                previous.data.account !== signedIn) {
+                output.error(EARLIER_INSTALL_KEPT);
+                closeInteraction();
+                return 1;
+            }
+            let restored;
+            try {
+                restored = await runHosts('install', [], {
+                    stateDir,
+                    account: previous.data.account,
+                    afterHosts: async () => { },
+                    rollbackInstall,
+                    recovery: async () => 'rollback',
+                });
+            }
+            catch (error) {
+                if (!automatic || error.message !== 'lock_held')
+                    throw error;
+                output.error(EARLIER_INSTALL_RUNNING);
+                closeInteraction();
+                return 3;
+            }
+            const rolledBack = restored.journal.phase === 'rolled_back';
+            if (!automatic) {
+                renderRollbackResult(rolledBack, output);
+                return rolledBack ? 130 : 1;
+            }
+            if (!rolledBack) {
+                output.error(EARLIER_INSTALL_KEPT);
+                closeInteraction();
+                return 1;
+            }
+            output.line(EARLIER_INSTALL_REMOVED);
+            previous = undefined;
         }
         if (indexingOnly) {
             const indexingLines = renderJourney('indexing', output);
@@ -415,10 +440,15 @@ export async function joinedInstall(flags, deps, output, authorize, management) 
                                     headers,
                                     signal: controller.signal,
                                 });
-                                if (!response.ok)
+                                if (response.ok)
+                                    session = (await response.json());
+                                else if (response.status !== 404)
                                     throw new Error(`install_report_${response.status}`);
-                                session = (await response.json());
                             }
+                            // No browser session to close is the ordinary agent install. The
+                            // account still gets this run's readiness.
+                            if (!session)
+                                return postCurrentReadiness(bearer, serializeReadiness(readiness), fetcher);
                             const response = await fetcher(`${apiOrigin()}/api/v1/install-sessions/${session.id}/complete`, {
                                 method: 'POST',
                                 headers,

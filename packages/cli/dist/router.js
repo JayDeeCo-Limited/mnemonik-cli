@@ -39,6 +39,7 @@ import { DiagnosticsError, previewDiagnostics, sendDiagnostics, } from './diagno
 export const connectFolderPrompt = (name) => `Connect ${name} to Mnemonik? [Y/n]`;
 export const removeFolderPrompt = (name) => `Stop indexing ${name}? Its memories stay in your account. [y/N]`;
 export const connectedFolderLine = (name) => `  ✓ Connected ${name}.`;
+export const alreadyConnectedFolderLine = (name) => `  ✓ ${name} is already connected and watched.`;
 export const removedFolderLine = (name) => `  ✓ ${name} is no longer connected.`;
 export function maintenanceExitCode(results) {
     if (results.some((result) => result.status === 'FAILED'))
@@ -854,6 +855,14 @@ export async function runCli(args, deps = {}) {
             ? await realpath(pathArgument)
             : (saved.config.roots.find((root) => root === pathArgument) ?? pathArgument);
         const name = requested.split(/[\\/]/u).filter(Boolean).at(-1) ?? requested;
+        // Already connected and watched: say so and stop. Nothing is asked again.
+        if (action === 'add' && saved.config.roots.includes(requested)) {
+            if (parsed.flags.has('json'))
+                output.json(saved.config.roots);
+            else
+                output.line(alreadyConnectedFolderLine(name));
+            return 0;
+        }
         if (!parsed.flags.has('non-interactive') && !parsed.flags.has('json')) {
             output.line(action === 'add' ? connectFolderPrompt(name) : removeFolderPrompt(name));
             const readline = createInterface({ input: deps.input ?? process.stdin, terminal: false });
