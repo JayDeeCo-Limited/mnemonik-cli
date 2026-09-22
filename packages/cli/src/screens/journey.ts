@@ -4,11 +4,13 @@ import type { Output } from '../output.js';
 import { DEVICE_APPROVAL_INSTRUCTION } from '../auth/device.js';
 
 export interface JourneyValues {
+  scannerFailureMessage?: string;
   total?: number | null;
   completed?: number | null;
   skipped?: string;
   remaining?: number;
   reason?: string;
+  action?: string;
   hosts?: readonly ('claude-code' | 'codex' | 'cursor')[];
 }
 
@@ -21,6 +23,8 @@ export interface SetupItem {
 export const completedStep = (step: number, text: string): string => `Step ${step} of 5: ${text}`;
 export const completedLine = (text: string): string => `  ✓ ${text}`;
 export const INSTALLATION_STOPPED = 'Installation stopped.';
+export const SCANNER_FAILURE_MESSAGE = 'Background indexing could not be started.';
+export const SCANNER_RETRY_MESSAGE = 'Run mnemonik install to try again.';
 export const ADD_ANOTHER_FOLDER = 'To connect a folder somewhere else, run mnemonik add <folder>.';
 
 export const stepProgress = (output: Output, interactive: boolean, text: string) =>
@@ -127,13 +131,15 @@ export function renderJourney(screen: string, output: Output, v: JourneyValues =
       '',
     ],
     windows: [
-      '  Background indexing could not be started.',
-      '  Run mnemonik install to try again.',
+      // A bare reason code is never shown to a person: main's rule, kept here.
+      `  ${SCANNER_FAILURE_MESSAGE}`,
+      `  ${SCANNER_RETRY_MESSAGE}`,
       '',
     ],
     scanner_failed: [
-      '  Background indexing could not be started.',
-      '  Run mnemonik install to try again.',
+      `  ${v.scannerFailureMessage ?? SCANNER_FAILURE_MESSAGE}`,
+      // Some failures leave nothing for the person to do, and say so on one line.
+      ...(v.action === '' ? [] : [`  ${v.action ?? SCANNER_RETRY_MESSAGE}`]),
       ...(authorization.length ? ['', ...authorization] : ['']),
     ],
     authorization,

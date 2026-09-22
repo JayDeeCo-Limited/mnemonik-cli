@@ -129,6 +129,19 @@ function signedScanner(algorithm: 'ED' | 'Ed' = 'ED') {
 }
 
 describe('verified runtime transactions', () => {
+  it('verifies a retained runtime independently of the pointer and rejects later tampering', async () => {
+    const retained = await store.installRuntime('cli', '1.0.0', source('1.0.0'));
+    await store.installRuntime('cli', '2.0.0', source('2.0.0'));
+    expect((await store.verifyRetainedRuntime('cli', retained.reference)).entry).toBe(
+      retained.entry
+    );
+    expect((await store.verifyRuntime('cli')).reference.version).toBe('2.0.0');
+    await writeFile(retained.entry, 'tampered after retention');
+    await expect(store.verifyRetainedRuntime('cli', retained.reference)).rejects.toMatchObject({
+      reason: 'digest_mismatch',
+    });
+  });
+
   it('reuses an identical verified runtime without staging or writes', async () => {
     const candidate = source('1.0.0');
     const first = await store.installRuntime('cli', '1.0.0', candidate);
@@ -477,4 +490,16 @@ describe('platform signer contracts', () => {
     vi.unstubAllEnvs();
   });
   it.todo('real notarized macOS, Authenticode Windows and release-key Linux artifacts');
+});
+
+it('staging a scanner release verifies its files without publishing the active pointer', async () => {
+  const first = signedScanner().source;
+  await store.installRuntime('scanner', '1.0.0', first);
+  const before = await readFile(store.pointerPath('scanner'), 'utf8');
+  const next = { ...first, manifest: { ...first.manifest, version: '2.0.0' } };
+  const staged = await store.stageRuntime('scanner', '2.0.0', next);
+  expect(staged.reference.version).toBe('2.0.0');
+  expect(await readFile(store.pointerPath('scanner'), 'utf8')).toBe(before);
+  expect((await store.verifyRuntime('scanner')).reference.version).toBe('1.0.0');
+  expect((await store.verifyRetainedRuntime('scanner', staged.reference)).entry).toBe(staged.entry);
 });

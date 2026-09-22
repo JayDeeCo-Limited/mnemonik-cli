@@ -78,7 +78,7 @@ export interface PreparedScanner {
     rollback(journal: Journal): Promise<void>;
     complete(document: ReturnType<typeof serializeReadiness>): Promise<void>;
 }
-export declare function enableScanner(options: EnableOptions): Promise<import("@mnemonik/shared").ReadinessDocument>;
+export declare function enableScanner(options: EnableOptions): Promise<ReturnType<typeof serializeReadiness>>;
 /** The scanner lease spans browser review, Apply and compensation. */
 export declare function prepareScanner<T>(options: EnableOptions, work: (prepared: PreparedScanner) => Promise<T>): Promise<T>;
 /** Stop/unregister with the installed runtime, restore bytes, then restore the old definition. */

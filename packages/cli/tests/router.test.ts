@@ -394,23 +394,54 @@ describe('command router', () => {
     expect(isReadinessDocument(posted)).toBe(true);
   });
 
-  it('repair posts after its local recheck and a refusal changes nothing it printed', async () => {
+  it.each(['repair', 'update'])(
+    '%s posts after its terminal result and a refusal changes nothing it printed',
+    async (command) => {
+      const f = fixture();
+      f.deps.configuredHosts = [];
+      f.deps.projectHookConditions = [];
+      f.deps.scannerStatus = async () => ({ roots: [], exclusions: [], repositories: [] });
+      f.deps.grantFetch = vi.fn(async (input) => {
+        const path = new URL(String(input)).pathname;
+        if (path === '/api/v1/auth/grants')
+          return Response.json({ account: 'owner', deviceInstallationId: 'device', grants: [] });
+        expect(path).toBe('/api/v1/installations/current/readiness');
+        return new Response('{}', { status: 500 });
+      });
+      const args =
+        command === 'update' ? [command, '--host', 'codex', '--json'] : [command, '--json'];
+      const code = await runCli(args, f.deps);
+      expect(code).toBe(command === 'repair' ? 0 : 3);
+      expect(JSON.parse(f.stdout.text)).toMatchObject(
+        command === 'repair'
+          ? { status: 'READY', targets: [], remaining: { installation: { state: 'READY' } } }
+          : { status: 'ACTION_REQUIRED', reason: 'no_recorded_targets' }
+      );
+      expect(f.stderr.text).toBe('');
+      expect(f.deps.grantFetch).toHaveBeenCalledOnce();
+    }
+  );
+
+  it('automatic update reports unverified scanner coverage after failure without terminal output', async () => {
     const f = fixture();
     f.deps.configuredHosts = [];
     f.deps.projectHookConditions = [];
-    f.deps.scannerStatus = async () => ({ roots: [], exclusions: [], repositories: [] });
-    f.deps.grantFetch = vi.fn(async (input) => {
+    let posted: unknown;
+    f.deps.grantFetch = vi.fn(async (input, init) => {
       expect(new URL(String(input)).pathname).toBe('/api/v1/installations/current/readiness');
-      return new Response('{}', { status: 500 });
+      posted = JSON.parse(String(init?.body)).readiness;
+      return Response.json({ status: 'recorded' });
     });
-    expect(await runCli(['repair', '--json'], f.deps)).toBe(0);
-    expect(JSON.parse(f.stdout.text)).toMatchObject({
-      status: 'READY',
-      targets: [],
-      remaining: { installation: { state: 'READY' } },
-    });
-    expect(f.stderr.text).toBe('');
+    expect(await runCli(['update', '--host', 'codex', '--automatic'], f.deps)).toBe(3);
     expect(f.deps.grantFetch).toHaveBeenCalledOnce();
+    expect(isReadinessDocument(posted)).toBe(true);
+    expect(posted).toMatchObject({
+      installation: {
+        state: 'LIMITED',
+        reasons: ['background_indexing_not_verified'],
+      },
+    });
+    expect(f.stdout.text + f.stderr.text).toBe('');
   });
 });
 

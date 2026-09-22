@@ -13,6 +13,9 @@ import { RuntimeStore } from '../src/runtime/store.js';
 import * as runtimes from '../src/runtime/store.js';
 import * as hosts from '../src/install/hosts.js';
 import * as scanner from '../src/scanner/update.js';
+import * as scannerEnable from '../src/scanner/enable.js';
+import { ScannerServiceLimited } from '../src/scanner/service.js';
+import { SCANNER_FAILURE_MESSAGE, SCANNER_RETRY_MESSAGE } from '../src/screens/journey.js';
 
 const releaseKeyFixture = vi.hoisted(() => ({
   identity: 'RWRR4IuRRiDm099vVMtdLMArwPsHl94YS/XD3d3CkS4zrxBTwbP/sZzM',
@@ -230,11 +233,11 @@ it('keeps the owned launcher unchanged across a real CLI version update', async 
   expect(await readFile(launcher.path)).toEqual(bytes);
   expect((await stat(launcher.path)).mtimeMs).toBe(1000000);
 });
-it('updates without reading sign-in state or uploading readiness', async () => {
+it('updates successfully when sign-in state cannot be read for its readiness report', async () => {
   let text = '';
   let errors = '';
   const getCliBearer = vi.fn(async () => {
-    throw new Error('update must not read sign-in state');
+    throw new Error('sign-in state unavailable');
   });
   const grantFetch = vi.fn(async () => {
     throw new Error('update must not list grants or upload readiness');
@@ -263,8 +266,118 @@ it('updates without reading sign-in state or uploading readiness', async () => {
   });
   expect({ code, errors }).toEqual({ code: 0, errors: '' });
   expect(JSON.parse(text).cli).toMatchObject({ status: 'UPDATED', newVersion: '1.1.0' });
-  expect(getCliBearer).not.toHaveBeenCalled();
+  expect(getCliBearer).toHaveBeenCalledOnce();
   expect(grantFetch).not.toHaveBeenCalled();
+});
+it.each([
+  [true, false],
+  [false, false],
+  [false, true],
+])(
+  'failed update reports scanner recovery only if it is not running: %s (scanner-only: %s)',
+  async (running, scannerOnly) => {
+    await mkdir(join(state, 'scanner'));
+    await writeFile(join(state, 'scanner/state.json'), '{}');
+    const failure = new ScannerServiceLimited('systemd_session_unavailable');
+    vi.spyOn(scanner, 'updateScanner').mockRejectedValue(failure);
+    let errors = '';
+    const command = vi.fn(async () => ({
+      status: 'ok' as const,
+      supervisor: {
+        kind: 'launchd' as const,
+        installed: true,
+        running,
+        pid: running ? 1234 : null,
+      },
+    }));
+    const code = await runCli(['update', ...(scannerOnly ? ['--component=scanner'] : [])], {
+      installStateDir: state,
+      home: state,
+      stdout: { write: () => {} },
+      stderr: { write: (value) => (errors += value) },
+      scannerService: { stateDir: state, command },
+    });
+    expect(code).toBe(scannerOnly ? 3 : 1);
+    if (running) expect(errors).not.toContain(failure.summary);
+    else {
+      expect(errors).toContain(failure.summary);
+      expect(errors).toContain(failure.action);
+      expect(errors).not.toContain('Run mnemonik install to try again.');
+    }
+    expect(command).toHaveBeenCalledWith('status', undefined);
+  }
+);
+it.each([false, true])(
+  'rolled-back Mac update says the scanner went back a version (scanner-only: %s)',
+  async (scannerOnly) => {
+    await mkdir(join(state, 'scanner'));
+    await writeFile(join(state, 'scanner/state.json'), '{}');
+    const failure = new ScannerServiceLimited('scanner_replacement_rolled_back');
+    vi.spyOn(scanner, 'updateScanner').mockRejectedValue(failure);
+    let errors = '';
+    await runCli(['update', ...(scannerOnly ? ['--component=scanner'] : [])], {
+      installStateDir: state,
+      home: state,
+      stdout: { write: () => {} },
+      stderr: { write: (value) => (errors += value) },
+      scannerService: {
+        stateDir: state,
+        command: async () => ({
+          status: 'ok',
+          supervisor: { kind: 'launchd', installed: true, running: true, pid: 1234 },
+        }),
+      },
+    });
+    expect(errors.split('\n').slice(-3, -1)).toEqual([
+      'Background indexing went back to the previous version.',
+      SCANNER_RETRY_MESSAGE,
+    ]);
+    expect(errors).not.toContain(SCANNER_FAILURE_MESSAGE);
+    expect(errors).not.toContain('[COPY REVIEW REQUIRED]');
+  }
+);
+
+it.each([false, true])(
+  'update recovery reuses the approved installer sentences verbatim (scanner-only: %s)',
+  async (scannerOnly) => {
+    await mkdir(join(state, 'scanner'));
+    await writeFile(join(state, 'scanner/state.json'), '{}');
+    vi.spyOn(scanner, 'updateScanner').mockRejectedValue(new Error('fixture failure'));
+    let errors = '';
+    await runCli(['update', ...(scannerOnly ? ['--component=scanner'] : [])], {
+      installStateDir: state,
+      home: state,
+      stdout: { write: () => {} },
+      stderr: { write: (value) => (errors += value) },
+      scannerService: {
+        stateDir: state,
+        command: async () => ({
+          status: 'ok',
+          supervisor: { kind: 'systemd', installed: true, running: false, pid: null },
+        }),
+      },
+    });
+    expect(errors.split('\n').slice(-3, -1)).toEqual([
+      'Background indexing could not be started.',
+      'Run mnemonik install to try again.',
+    ]);
+  }
+);
+
+it('standalone scanner enable retains the supervisor recovery action for an SSH session', async () => {
+  const failure = new ScannerServiceLimited('systemd_session_unavailable');
+  vi.spyOn(scannerEnable, 'enableScanner').mockRejectedValue(failure);
+  let errors = '';
+  expect(
+    await runCli(['scanner', 'enable'], {
+      installStateDir: state,
+      home: state,
+      stdout: { write: () => {} },
+      stderr: { write: (value) => (errors += value) },
+    })
+  ).toBe(3);
+  expect(errors).toContain(failure.action);
+  expect(errors).not.toContain('mnemonik scanner enable');
 });
 it('bad tarball reports FAILED without changing the pointer or leaving a new directory', async () => {
   corrupt = true;
@@ -467,6 +580,13 @@ it.each([
       installStateDir: state,
       home: state,
       stdout: { write: (value) => void (text += value) },
+      scannerService: {
+        stateDir: state,
+        supervisorRun: async (_file, args) =>
+          args.includes('show')
+            ? 'LoadState=not-found\nActiveState=inactive\nMainPID=0\nUnitFileState='
+            : '',
+      },
       grantFetch,
     })
   ).toBe(0);
@@ -726,3 +846,33 @@ it.each([
   expect(Boolean(await cliUpdateHint(store, current))).toBe(newer);
   expect(registry).not.toHaveBeenCalled();
 });
+
+it.each([
+  ['mac_authorization_failed', false],
+  ['mac_authorization_failed', true],
+  ['mac_authorization_required', false],
+  ['mac_authorization_required', true],
+] as const)(
+  'manual update preserves %s wording while the old scanner runs (scanner-only: %s)',
+  async (reason, scannerOnly) => {
+    await mkdir(join(state, 'scanner'));
+    await writeFile(join(state, 'scanner/state.json'), '{}');
+    const failure = new ScannerServiceLimited(reason);
+    vi.spyOn(scanner, 'updateScanner').mockRejectedValue(failure);
+    let errors = '';
+    await runCli(['update', ...(scannerOnly ? ['--component=scanner'] : [])], {
+      installStateDir: state,
+      home: state,
+      stdout: { write: () => {} },
+      stderr: { write: (value) => (errors += value) },
+      scannerService: {
+        stateDir: state,
+        command: async () => ({
+          status: 'ok',
+          supervisor: { kind: 'launchd', installed: true, running: true, pid: 1234 },
+        }),
+      },
+    });
+    expect(errors.split('\n').slice(-3, -1)).toEqual([failure.summary, failure.action]);
+  }
+);

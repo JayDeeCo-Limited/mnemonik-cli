@@ -1,7 +1,8 @@
-import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { delimiter, dirname, join } from 'node:path';
+import { delimiter, join } from 'node:path';
 import { afterAll } from 'vitest';
+import './localNetworkOnly.js';
 
 // Loaded before every CLI test file (vitest.config.ts setupFiles). The CLI
 // falls back to the real home directory and the real state directory whenever a
@@ -16,6 +17,20 @@ const home = mkdtempSync(join(tmpdir(), 'mnemonik-cli-test-home-'));
 process.env.HOME = home;
 process.env.USERPROFILE = home;
 process.env.MNEMONIK_STATE_DIR = join(home, 'state');
+// Plain-folder identity lookup stops at HOME. A sibling temporary directory
+// would walk past that boundary and could overwrite the checkout's identity.
+const temporary = join(home, 'tmp');
+mkdirSync(temporary);
+for (const key of ['TMPDIR', 'TMP', 'TEMP']) process.env[key] = temporary;
+process.env.GIT_CEILING_DIRECTORIES = home;
+for (const key of [
+  'MNEMONIK_HOOK_FAMILY',
+  'MNEMONIK_API_KEY',
+  'MNEMONIK_TOKEN',
+  'DBUS_SESSION_BUS_ADDRESS',
+  'SSH_AUTH_SOCK',
+])
+  delete process.env[key];
 delete process.env.XDG_STATE_HOME;
 delete process.env.MNEMONIK_DEV_RELEASE_DIR;
 
@@ -35,11 +50,30 @@ if (process.platform !== 'win32') {
       : realPath.map((dir) => join(dir, name)).find((candidate) => existsSync(candidate));
   for (const tool of ['node', 'npm', 'npx', 'git', 'sh']) {
     const target = locate(tool);
-    if (target) symlinkSync(target, join(bin, tool));
+    if (!target) continue;
+    if (tool === 'git') {
+      // The resolver intentionally sanitizes Git's environment and also probes
+      // parent repositories explicitly. Enforce both boundaries in the test
+      // executable, so fixtures cannot inherit a worktree's real identity.
+      const quote = (value: string) => `'${value.replace(/'/gu, `'"'"'`)}'`;
+      writeFileSync(
+        join(bin, tool),
+        `#!/bin/sh
+if [ "$1" = rev-parse ]; then
+case "$(pwd -P)/" in
+  ${quote(home)}/*) ;;
+  *) echo 'fatal: not a git repository (test boundary)' >&2; exit 128 ;;
+esac
+fi
+GIT_CEILING_DIRECTORIES=${quote(home)} exec ${quote(target)} "$@"
+`,
+        { mode: 0o700 }
+      );
+    } else symlinkSync(target, join(bin, tool));
   }
-  // npm resolves node through its own directory first; keep that reachable.
-  const nodeDir = dirname(process.execPath);
-  process.env.PATH = [bin, nodeDir].join(delimiter);
+  // The node symlink is sufficient for npm's env lookup. Adding node's real
+  // directory would expose /usr/bin/secret-tool or security again.
+  process.env.PATH = bin;
 }
 
 afterAll(() => {

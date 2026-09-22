@@ -54,7 +54,23 @@ export async function maybeStartAutomaticUpdate(options = {}) {
                     args: ['/d', '/s', '/c', `""${launcher}" update --automatic"`],
                     windowsVerbatimArguments: true,
                 }
-                : { file: launcher, args: ['update', '--automatic'] };
+                : platform === 'linux' && (options.env ?? process.env).INVOCATION_ID
+                    ? {
+                        // detached creates a process group, not a new systemd cgroup. An
+                        // updater spawned by the scanner must survive stopping that service.
+                        file: 'systemd-run',
+                        args: [
+                            '--user',
+                            '--collect',
+                            '--quiet',
+                            `--setenv=MNEMONIK_STATE_DIR=${stateDir}`,
+                            '--',
+                            launcher,
+                            'update',
+                            '--automatic',
+                        ],
+                    }
+                    : { file: launcher, args: ['update', '--automatic'] };
             const child = (options.spawn ?? nodeSpawn)(command.file, command.args, {
                 detached: true,
                 stdio: 'ignore',

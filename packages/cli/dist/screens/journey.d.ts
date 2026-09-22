@@ -1,11 +1,13 @@
 import type { Readable } from 'node:stream';
 import type { Output } from '../output.js';
 export interface JourneyValues {
+    scannerFailureMessage?: string;
     total?: number | null;
     completed?: number | null;
     skipped?: string;
     remaining?: number;
     reason?: string;
+    action?: string;
     hosts?: readonly ('claude-code' | 'codex' | 'cursor')[];
 }
 export interface SetupItem {
@@ -16,6 +18,8 @@ export interface SetupItem {
 export declare const completedStep: (step: number, text: string) => string;
 export declare const completedLine: (text: string) => string;
 export declare const INSTALLATION_STOPPED = "Installation stopped.";
+export declare const SCANNER_FAILURE_MESSAGE = "Background indexing could not be started.";
+export declare const SCANNER_RETRY_MESSAGE = "Run mnemonik install to try again.";
 export declare const ADD_ANOTHER_FOLDER = "To connect a folder somewhere else, run mnemonik add <folder>.";
 export declare const stepProgress: (output: Output, interactive: boolean, text: string) => {
     complete(result: string): void;

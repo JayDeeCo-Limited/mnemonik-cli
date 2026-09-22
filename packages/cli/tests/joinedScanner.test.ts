@@ -103,10 +103,19 @@ it.each([
   ['scanner failure', 'prepared'],
   ['scanner stalled download', 'prepared'],
   ['scanner limited', 'prepared'],
+  ['systemd_linger_required', 'prepared'],
+  ['systemd_session_unavailable', 'prepared'],
+  ['mac_authorization_failed', 'prepared'],
   ['unresolved project', 'http'],
 ])(
   '%s via %s preserves completed hosts and finishes the joined journey with exit 3',
   async (failure, upload) => {
+    const sessionFailure =
+      failure.endsWith('_required') ||
+      failure.endsWith('_unavailable') ||
+      failure === 'mac_authorization_failed';
+    const human =
+      sessionFailure || failure === 'scanner limited' || failure === 'scanner stalled download';
     const home = await mkdtemp(join(tmpdir(), 'joined-scanner-'));
     homes.push(home);
     const stateDir = join(home, 'state');
@@ -125,6 +134,7 @@ it.each([
           group: 'scanner:test',
         })
       );
+      if (sessionFailure) throw new ScannerServiceLimited(failure);
       if (failure === 'scanner failure') throw new Error('service_start_failed');
       if (failure === 'scanner stalled download') {
         const started = Date.now();
@@ -218,9 +228,7 @@ it.each([
     let text = '';
     const code = await joinedInstall(
       new Map<string, string | true>([
-        ...(failure === 'scanner limited' || failure === 'scanner stalled download'
-          ? []
-          : ([['json', true]] as Array<[string, true]>)),
+        ...(human ? [] : ([['json', true]] as Array<[string, true]>)),
         ['components', 'scanner'],
         ['apply', true],
         ['accept-scanner', true],
@@ -229,9 +237,7 @@ it.each([
       {
         home,
         cwd: home,
-        ...(failure === 'scanner limited' || failure === 'scanner stalled download'
-          ? { input: Object.assign(Readable.from('\n'), { isTTY: true }) }
-          : {}),
+        ...(human ? { input: Object.assign(Readable.from('\n'), { isTTY: true }) } : {}),
         installStateDir: stateDir,
         preflight: {
           nodeVersion: '24.21.0',
@@ -265,7 +271,7 @@ it.each([
       })
     );
     expect(code).toBe(3);
-    if (failure !== 'scanner limited' && failure !== 'scanner stalled download') {
+    if (!human) {
       expect(complete).toHaveBeenCalledExactlyOnceWith(
         expect.objectContaining({
           installation: expect.objectContaining({
@@ -296,6 +302,18 @@ it.each([
           }),
         ])
       );
+    } else if (sessionFailure) {
+      expect(rollback).toHaveBeenCalledOnce();
+      const limited = new ScannerServiceLimited(failure);
+      expect(text).toContain(limited.summary);
+      expect(text).toContain(limited.action);
+      expect(text).not.toContain('[COPY REVIEW REQUIRED]');
+      if (failure === 'systemd_linger_required')
+        expect(text).toContain('sudo loginctl enable-linger');
+      if (failure === 'systemd_session_unavailable')
+        expect(text).toContain('enable systemd user services');
+      if (failure === 'mac_authorization_failed')
+        expect(text).toContain('the password was not accepted');
     } else if (failure === 'scanner failure') {
       expect(rollback).toHaveBeenCalledOnce();
       await expect(readFile(scannerFile)).rejects.toMatchObject({ code: 'ENOENT' });
@@ -903,3 +921,114 @@ it('keeps earlier projects and reports the skipped count when the plan limit is 
     'To connect more projects, upgrade your plan via the Mnemonik web console.'
   );
 });
+
+it.each([false, true])(
+  'hands the TTY and signals to scanner apply, then restores answers for later questions (authorization rejected: %s)',
+  async (rejected) => {
+    const { PassThrough } = await import('node:stream');
+    const home = await mkdtemp(join(tmpdir(), 'joined-scanner-tty-'));
+    homes.push(home);
+    const stateDir = join(home, 'state');
+    let raw = false;
+    const input = Object.assign(new PassThrough(), {
+      isTTY: true,
+      setRawMode: vi.fn((enabled: boolean) => {
+        raw = enabled;
+      }),
+    });
+    const sigintListeners = process.listenerCount('SIGINT');
+    const sighupListeners = process.listenerCount('SIGHUP');
+    let text = '';
+    const output = new Output({
+      isTTY: true,
+      write: (chunk) => {
+        text += chunk;
+      },
+    });
+    const progressLine = output.progressLine.bind(output);
+    const stops: ReturnType<typeof vi.fn>[] = [];
+    vi.spyOn(output, 'progressLine').mockImplementation((message, animated) => {
+      const progress = progressLine(message, animated);
+      const stop = vi.fn(progress.stop);
+      stops.push(stop);
+      return { ...progress, stop };
+    });
+    let handoffVerified = false;
+    let answersRestored = false;
+    const apply = vi.fn(async () => {
+      expect(raw).toBe(false);
+      expect(input.isPaused()).toBe(true);
+      expect(input.listenerCount('keypress')).toBe(0);
+      expect(process.listenerCount('SIGINT')).toBe(sigintListeners);
+      expect(process.listenerCount('SIGHUP')).toBe(sighupListeners);
+      expect(stops.at(-1)).toHaveBeenCalled();
+      input.write('fixture-password');
+      await new Promise<void>((resolve) => globalThis.setImmediate(resolve));
+      expect(input.readableLength).toBe('fixture-password'.length);
+      input.read('fixture-password'.length); // The privileged reader consumes these bytes.
+      expect(text).not.toContain('fixture-password');
+      handoffVerified = true;
+      if (rejected) throw new ScannerServiceLimited('mac_authorization_failed');
+      return serializeReadiness({ installation: { conditions: [] } });
+    });
+    mocks.prepare.mockImplementation(async (options, work) => {
+      expect(raw).toBe(true);
+      await work({
+        roots: [],
+        exclusions: [],
+        files: [],
+        session: { id: 'session' },
+        apply,
+        rollback: vi.fn(),
+        complete: vi.fn(),
+      });
+      expect(raw).toBe(true);
+      expect(input.isPaused()).toBe(false);
+      expect(input.listenerCount('keypress')).toBe(1);
+      const answer = options.readAnswer();
+      input.write('after\r');
+      expect(await answer).toBe('after');
+      answersRestored = true;
+    });
+    mocks.status.mockImplementation(async (options) => ({
+      ...serializeReadiness({ installation: { conditions: options.installationConditions } }),
+      cliCredential: { present: true, diagnostics: [] },
+    }));
+    expect(
+      await joinedInstall(
+        new Map<string, string | true>([
+          ['components', 'scanner'],
+          ['accept-indexing', true],
+          ['apply', true],
+          ['scan-roots', home],
+        ]),
+        {
+          home,
+          cwd: home,
+          input,
+          installStateDir: stateDir,
+          projectExecutor: {} as never,
+          preflight: {
+            nodeVersion: '24.21.0',
+            fetch: async () => Response.json({}),
+            resolveIdentity: async () => ({
+              kind: 'absent',
+              root: home,
+              repository: { kind: 'plain', root: home },
+              nested: [],
+            }),
+          },
+        },
+        output,
+        async () => 'owner',
+        async () => ({ stateDir, account: 'owner' })
+      )
+    ).toBe(rejected ? 3 : 0);
+    expect(apply).toHaveBeenCalledOnce();
+    expect(handoffVerified).toBe(true);
+    expect(answersRestored).toBe(true);
+    expect(raw).toBe(false);
+    expect(input.isPaused()).toBe(true);
+    expect(process.listenerCount('SIGINT')).toBe(sigintListeners);
+  }
+);

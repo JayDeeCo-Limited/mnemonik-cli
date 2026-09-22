@@ -111,6 +111,8 @@ export async function joinedInstall(
   const json = flags.has('json');
   const input = deps.input ?? process.stdin;
   const interactive = Boolean((input as Readable & { isTTY?: boolean }).isTTY);
+  const ownsTerminal =
+    interactive && typeof (input as Readable & { setRawMode?: unknown }).setRawMode === 'function';
   const automatic = json || flags.has('non-interactive') || !interactive;
   let components = String(
     flags.get('components') ?? (flags.has('without-scanner') ? 'hooks,mcp' : 'hooks,mcp,scanner')
@@ -162,6 +164,7 @@ export async function joinedInstall(
   let automaticSignals = false;
   const closeInteraction = () => {
     answers?.close();
+    answers = undefined;
     if (automaticSignals) {
       process.off('SIGINT', interruptBySigint);
       process.off('SIGHUP', interruptByHangup);
@@ -181,12 +184,16 @@ export async function joinedInstall(
     deps.hostManagement?.stateDir ??
     deps.installStateDir ??
     stateDirectory(process.platform, process.env, home);
-  if (!automatic) answers = journeyAnswers(input, output, { interrupt });
-  else {
-    process.on('SIGINT', interruptBySigint);
-    process.on('SIGHUP', interruptByHangup);
-    automaticSignals = true;
-  }
+  const openInteraction = () => {
+    if (answers || automaticSignals) return;
+    if (!automatic) answers = journeyAnswers(input, output, { interrupt });
+    else {
+      process.on('SIGINT', interruptBySigint);
+      process.on('SIGHUP', interruptByHangup);
+      automaticSignals = true;
+    }
+  };
+  openInteraction();
   if (!automatic) output.beginInstallation();
   let previous: Awaited<ReturnType<typeof interrupted>>[number] | undefined;
   try {
@@ -286,6 +293,7 @@ export async function joinedInstall(
     if (replacement) output.line(replacement);
   };
   const choose = async (title: string, choices: string[]) => {
+    if (ownsTerminal) openInteraction();
     output.line(`  ${title}`);
     output.line('  Use the Up/Down arrow keys and Enter.');
     output.line();
@@ -296,6 +304,8 @@ export async function joinedInstall(
   let prepared: PreparedScanner | undefined;
   let scannerInstallFailed = false;
   let scannerFailureRendered = false;
+  let scannerFailureAction: string | undefined;
+  let scannerFailureMessage: string | undefined;
   let executor: ProjectExecutor | undefined = deps.projectExecutor;
   let projectTransport = deps.projectTransport;
   let document: ReadinessDocument | undefined;
@@ -678,6 +688,8 @@ export async function joinedInstall(
           journal.data.roots = roots;
         }
         if (!automatic && !flags.has('apply')) {
+          activeProgress?.stop();
+          activeProgress = undefined;
           for (;;) {
             const applyLines = renderJourney('apply', output);
             const choice = await answers?.choose(['Install and upload', 'Back', 'Cancel']);
@@ -689,6 +701,7 @@ export async function joinedInstall(
             if (choice !== 'Install and upload') throw new Error('install_cancelled');
             break;
           }
+          if (scannerPlan) startProgress('Connecting your repositories');
         }
         journal.data.phase = 'applying';
         if (automatic) startProgress('Finishing installation');
@@ -717,7 +730,17 @@ export async function joinedInstall(
         let scannerDocument: ReadinessDocument | undefined;
         if (scannerPlan) {
           try {
-            scannerDocument = await scannerPlan.apply(journal, scannerPlan.roots);
+            // sudo must own a cooked, unread terminal, including Ctrl+C.
+            // Keep buffered non-TTY fixture/input readers intact.
+            if (ownsTerminal) {
+              activeProgress?.stop();
+              closeInteraction();
+            }
+            try {
+              scannerDocument = await scannerPlan.apply(journal, scannerPlan.roots);
+            } finally {
+              if (ownsTerminal) openInteraction();
+            }
             await rm(indexingSkippedPath, { force: true });
             if (!json) {
               if (scannerPlan.roots.length) {
@@ -732,6 +755,8 @@ export async function joinedInstall(
           } catch (error) {
             if (!(error instanceof ScannerServiceLimited)) throw error;
             scannerInstallFailed = true;
+            scannerFailureMessage = error.summary;
+            scannerFailureAction = error.action;
             activeProgress?.stop();
             activeProgress = undefined;
             await scannerPlan.rollback(journal);
@@ -767,7 +792,7 @@ export async function joinedInstall(
           conditions.push({
             kind: 'scanner_omitted',
             reason: 'Background indexing was skipped.',
-            action: 'mnemonik install',
+            action: scannerFailureAction ?? 'mnemonik install',
           });
         const check = async () =>
           collectStatusDocument({
@@ -833,7 +858,12 @@ export async function joinedInstall(
               stateDir,
               cwd: root,
               input: deps.input ?? process.stdin,
-              readAnswer: answers?.text,
+              readAnswer: answers
+                ? async () => {
+                    if (ownsTerminal) openInteraction();
+                    return answers?.text();
+                  }
+                : undefined,
               output,
               nonInteractive: automatic,
               ...(roots.length ? { roots } : {}),
@@ -871,6 +901,10 @@ export async function joinedInstall(
             throw error;
           const reason = error instanceof Error ? error.message : 'scanner_install_failed';
           scannerInstallFailed = true;
+          if (error instanceof ScannerServiceLimited) {
+            scannerFailureMessage = error.summary;
+            scannerFailureAction = error.action;
+          }
           activeProgress?.stop();
           activeProgress = undefined;
           journal.data.reports.push(`Scanner could not be installed: ${reason}`);
@@ -912,7 +946,7 @@ export async function joinedInstall(
                   {
                     kind: 'scanner_not_verified',
                     reason: `Background indexing could not be started: ${reason}`,
-                    action: 'mnemonik install',
+                    action: scannerFailureAction ?? 'mnemonik install',
                   },
                 ],
               },
@@ -1015,7 +1049,11 @@ export async function joinedInstall(
             output.line(`  ${action}`);
       } else if (scannerInstallFailed) {
         if (!scannerFailureRendered)
-          renderJourney('scanner_failed', output, { hosts: authorizationHosts });
+          renderJourney('scanner_failed', output, {
+            hosts: authorizationHosts,
+            action: scannerFailureAction,
+            scannerFailureMessage,
+          });
         else renderJourney('authorization', output, { hosts: authorizationHosts });
       } else if (final.installation.state === 'READY')
         renderJourney(indexingOnly ? 'indexing_done' : 'done', output, {

@@ -3,7 +3,8 @@ export { RuntimeError, hash, safePath } from '@mnemonik/shared/hook-runtime';
 export type { Artifact, HostArtifact, Reason, Manifest, NpmReceipt, RuntimeSource, Verified, } from '@mnemonik/shared/hook-runtime';
 export declare class RuntimeStore extends RuntimeReader {
     withMutationLock<T>(artifact: Artifact, work: (assertOwned: () => Promise<void>) => Promise<T>): Promise<T>;
-    installRuntime(artifact: Artifact, version: string, source: RuntimeSource): Promise<Verified>;
+    stageRuntime(artifact: Artifact, version: string, source: RuntimeSource): Promise<Verified>;
+    installRuntime(artifact: Artifact, version: string, source: RuntimeSource, activate?: boolean): Promise<Verified>;
     rollbackRuntime(artifact: Artifact, expectedCurrent?: Reference): Promise<Verified>;
 }
 /** Updating restarts managed services; obtaining a release source does not execute it. */

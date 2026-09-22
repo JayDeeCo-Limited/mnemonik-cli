@@ -84,6 +84,8 @@ export async function compensate(journal, deps, keepCli = false) {
     await journal.save();
     let localOK = true;
     for (const service of [...journal.data.services].reverse()) {
+        if (service.managed)
+            continue;
         try {
             if (service.started) {
                 if (!deps.services)
@@ -121,7 +123,10 @@ export async function compensate(journal, deps, keepCli = false) {
         localOK = false;
     if (localOK) {
         for (const credential of journal.data.credentials) {
-            if (credential.revoked || (keepCli && credential.kind === 'cli'))
+            if (credential.revoked ||
+                (keepCli && credential.kind === 'cli') ||
+                (credential.component === 'scanner' &&
+                    journal.data.services.some((service) => service.id === 'scanner' && service.managed)))
                 continue;
             try {
                 if (credential.kind === 'cli')
@@ -321,7 +326,7 @@ export async function runInstall(deps, resume) {
                         if (!(error instanceof ScannerServiceLimited))
                             throw error;
                         journal.data.state = 'LIMITED';
-                        report(journal, `${error.reason}: ${error.message}. Retry: ${error.action}, or skip.`);
+                        report(journal, `${error.summary} ${error.action}`.trim());
                     }
                 }
             }

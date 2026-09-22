@@ -33,6 +33,8 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { Readable } from 'node:stream';
 import { Output, type Writable } from './output.js';
+import { SCANNER_RESTART_MESSAGE } from './scanner/service.js';
+import { SCANNER_FAILURE_MESSAGE, SCANNER_RETRY_MESSAGE } from './screens/journey.js';
 import { renderPreflight, runPreflight, type PreflightDependencies } from './preflight.js';
 import { postCurrentReadiness, type InstallSessionTransport } from './installSession.js';
 import {
@@ -516,11 +518,14 @@ async function runHostCommand(
           status: string;
           version?: string;
           reason?: string;
+          action?: string;
+          summary?: string;
           verbs?: string[];
           retained?: string[];
         }
       | undefined;
     let launcher: { status: 'removed' | 'not_installed' | 'retained' } | undefined;
+    let scannerRecovery: { message: string; action: string } | undefined;
     if (
       all &&
       (await readFile(`${state}/scanner/state.json`).then(
@@ -531,7 +536,16 @@ async function runHostCommand(
       try {
         const before = await store.verifyRuntime('scanner').catch(() => undefined);
         const runtime = await retryUpdateOnce(() =>
-          updateScanner({ stateDir: state, ...deps.scannerService }, deps.scannerEnable?.source)
+          updateScanner(
+            {
+              stateDir: state,
+              ...deps.scannerService,
+              onScannerRestartRequested: () => {
+                if (!json) output.line(SCANNER_RESTART_MESSAGE);
+              },
+            },
+            deps.scannerEnable?.source
+          )
         );
         scanner = {
           status:
@@ -540,6 +554,11 @@ async function runHostCommand(
         };
       } catch (error) {
         scanner = { status: 'FAILED', reason: (error as Error).message };
+        if (!json)
+          scannerRecovery = await scannerRecoveryAction(error, {
+            stateDir: state,
+            ...deps.scannerService,
+          });
       }
     }
     let failed = scanner?.status === 'FAILED' || cli?.status === 'FAILED';
@@ -557,11 +576,19 @@ async function runHostCommand(
       (target) => target.reason === 'codex_trust_pending'
     );
     if (fullUninstall && hostExit === 0) {
-      const scannerPointer = await readFile(new RuntimeStore(state).pointerPath('scanner')).then(
-        () => true,
-        () => false
+      // A damaged install can lose the runtime pointer and still leave a service
+      // registered, so the saved scanner state also counts as one to remove. A
+      // machine that never had a scanner must not be asked about one.
+      const installed = await Promise.all(
+        [new RuntimeStore(state).pointerPath('scanner'), `${state}/scanner/state.json`].map(
+          (path) =>
+            readFile(path).then(
+              () => true,
+              () => false
+            )
+        )
       );
-      if (scannerPointer) {
+      if (installed.some(Boolean)) {
         try {
           await scannerService({ stateDir: state, ...deps.scannerService }).uninstall();
           scanner = {
@@ -570,7 +597,15 @@ async function runHostCommand(
             retained: ['credentials', 'cloud data', 'consent'],
           };
         } catch (error) {
-          scanner = { status: 'failed', reason: (error as Error).message };
+          const failure =
+            scannerFailure(error) ??
+            new ScannerServiceLimited('scanner_service_unavailable', (error as Error).message);
+          scanner = {
+            status: 'failed',
+            reason: (error as Error).message,
+            action: failure.action,
+            summary: failure.summary,
+          };
           failed = true;
         }
       } else scanner = { status: 'not_installed' };
@@ -612,6 +647,10 @@ async function runHostCommand(
       )
         output.line('Mnemonik updated.');
       else output.line('Mnemonik is up to date.');
+      if (scannerRecovery) {
+        output.error(scannerRecovery.message);
+        if (scannerRecovery.action) output.error(scannerRecovery.action);
+      }
     } else {
       for (const target of result.results)
         output.line(target.status === 'READY' ? 'Done.' : humanReason(target.reason));
@@ -623,7 +662,8 @@ async function runHostCommand(
         output.line(
           'Stopped collection; removed local software. Credentials, cloud data and consent retained.'
         );
-      else if (scanner)
+      // A failure is said once, as an error below, never also as a line here.
+      else if (scanner && scanner.status !== 'failed')
         output.line(
           scanner.reason
             ? humanReason(scanner.reason)
@@ -633,9 +673,12 @@ async function runHostCommand(
         );
     }
     if (scanner?.status === 'failed') {
-      const reason = scanner.reason ?? 'scanner_uninstall_failed';
-      if (json) output.error(reason, false);
-      else output.error(humanReason(reason));
+      // Machine output keeps the reason on stderr; stdout stays pure JSON.
+      if (json) output.error(scanner.reason ?? 'scanner_uninstall_failed', false);
+      else {
+        output.error(scanner.summary ?? SCANNER_FAILURE_MESSAGE);
+        if (scanner.action) output.error(scanner.action);
+      }
     }
     if (failed || remainingExit === 1) return 1;
     return hostExit || remainingExit;
@@ -667,8 +710,33 @@ async function hostCommand(
   scannerSelected = false
 ): Promise<number> {
   const code = await runHostCommand(command, parsed, deps, output, scannerSelected);
-  if (command === 'repair') await reportCurrentInstallation(deps, output);
+  if (command === 'repair' || command === 'update') await reportCurrentInstallation(deps, output);
   return code;
+}
+
+function scannerFailure(error: unknown): ScannerServiceLimited | undefined {
+  if (error instanceof ScannerServiceLimited) return error;
+  if (error instanceof Error && error.message === 'scanner_stop_failed')
+    return new ScannerServiceLimited('scanner_stop_failed');
+  return undefined;
+}
+
+async function scannerRecoveryAction(error: unknown, options: ScannerServiceOptions) {
+  const failure = scannerFailure(error);
+  if (
+    failure?.reason !== 'scanner_replacement_rolled_back' &&
+    !failure?.reason.startsWith('mac_authorization_') &&
+    (
+      await scannerService(options)
+        .status()
+        .catch(() => undefined)
+    )?.running
+  )
+    return undefined;
+  return {
+    message: failure?.summary ?? SCANNER_FAILURE_MESSAGE,
+    action: failure?.action ?? SCANNER_RETRY_MESSAGE,
+  };
 }
 
 async function enableCommand(
@@ -712,13 +780,19 @@ async function enableCommand(
     else renderStatusSummaries(result, output);
     return result.installation.state === 'READY' ? 0 : 3;
   } catch (error) {
+    const failure =
+      scannerFailure(error) ??
+      new ScannerServiceLimited('scanner_service_unavailable', (error as Error).message);
     const result = {
       status: 'ACTION_REQUIRED',
       reason: (error as Error).message,
-      action: 'mnemonik scanner enable',
+      action: failure.action,
     };
     if (json) output.json(result);
-    else output.error(humanReason(result.reason));
+    else {
+      output.error(failure.summary);
+      if (failure.action) output.error(failure.action);
+    }
     return 3;
   }
 }
@@ -1144,7 +1218,15 @@ export async function runCli(args: string[], deps: CliDependencies = {}): Promis
         const store = new RuntimeStore(options.stateDir);
         const before = await store.verifyRuntime('scanner').catch(() => undefined);
         const runtime = await retryUpdateOnce(() =>
-          updateScanner(options, deps.scannerEnable?.source)
+          updateScanner(
+            {
+              ...options,
+              onScannerRestartRequested: () => {
+                if (!parsed.flags.has('json')) output.line(SCANNER_RESTART_MESSAGE);
+              },
+            },
+            deps.scannerEnable?.source
+          )
         );
         const result = {
           status:
@@ -1175,9 +1257,33 @@ export async function runCli(args: string[], deps: CliDependencies = {}): Promis
       }
       return 0;
     } catch (error) {
-      output.error(
-        command === 'update' ? updateFailureMessage : humanReason((error as Error).message)
-      );
+      const failure = scannerFailure(error);
+      if (command === 'uninstall' && parsed.flags.has('json'))
+        output.json({
+          status: 'FAILED',
+          reason: failure?.reason ?? (error as Error).message,
+          action: failure?.action,
+        });
+      else
+        output.error(
+          command === 'update'
+            ? updateFailureMessage
+            : (failure?.summary ?? humanReason((error as Error).message))
+        );
+      // A failure that leaves nothing to do says so on one line, not a blank one.
+      if (command === 'uninstall' && !parsed.flags.has('json') && failure?.action)
+        output.error(failure.action);
+      if (command === 'update' && !parsed.flags.has('json')) {
+        const action = await scannerRecoveryAction(error, {
+          stateDir:
+            deps.installStateDir ?? stateDirectory(process.platform, process.env, deps.home),
+          ...deps.scannerService,
+        });
+        if (action) {
+          output.error(action.message);
+          if (action.action) output.error(action.action);
+        }
+      }
       return 3;
     }
   }
@@ -1596,8 +1702,12 @@ export async function runCli(args: string[], deps: CliDependencies = {}): Promis
           return 3;
         }
         await service.start();
-      } else if (subcommand === 'stop') await service.stop();
-      else if (subcommand === 'uninstall') await service.uninstall();
+      } else if (subcommand === 'stop') {
+        await service.stop();
+        // The boot registration stays, so say what stopping does and does not do.
+        if ((deps.scannerService?.platform ?? process.platform) === 'darwin')
+          output.line('Background indexing will start again when this Mac restarts.');
+      } else if (subcommand === 'uninstall') await service.uninstall();
       const includesStatus = ['status', 'pause', 'resume'].includes(subcommand);
       const supervisor = includesStatus ? await service.status() : undefined;
       const receipt = includesStatus ? await scannerReceipt(options.stateDir) : undefined;
@@ -1624,16 +1734,21 @@ export async function runCli(args: string[], deps: CliDependencies = {}): Promis
       }
       return 0;
     } catch (error) {
+      const failure =
+        scannerFailure(error) ??
+        new ScannerServiceLimited('scanner_service_unavailable', (error as Error).message);
       const result = {
         status: 'LIMITED',
-        reason:
-          error instanceof ScannerServiceLimited ? error.reason : 'scanner_service_unavailable',
-        detail: (error as Error).message,
-        action: 'mnemonik scanner enable',
+        reason: failure.reason,
+        detail: failure.message,
+        action: failure.action,
         choices: ['retry', 'skip'],
       };
       if (json) output.json(result);
-      else output.line(humanReason(result.reason));
+      else {
+        output.line(failure.summary);
+        if (failure.action) output.line(failure.action);
+      }
       return 3;
     }
   }

@@ -68,6 +68,7 @@ export interface JournalData {
         id: string;
         before: string;
         started?: boolean;
+        managed?: true;
     }>;
     mutations: Array<{
         sequence: number;

@@ -478,6 +478,14 @@ export class RuntimeReader {
     }
     return { directory, manifest: m, entry: join(directory, m.entry), reference: ref };
   }
+  verifyRetainedRuntime(artifact: Artifact, reference: Reference): Promise<Verified> {
+    versionName(reference.version);
+    return this.verifyAt(
+      artifact,
+      reference,
+      join(dirname(this.pointerPath(artifact)), reference.version)
+    );
+  }
   async verifyRuntime(artifact: Artifact): Promise<Verified> {
     return this.operation(async () => {
       const p = await this.pointer(artifact);

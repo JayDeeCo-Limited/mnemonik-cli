@@ -5,12 +5,7 @@ import { dirname, join } from 'node:path';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createProjectSetupExecutor } from '@mnemonik/local-setup';
 import { SimulatedSecretStore } from '@mnemonik/credentials';
-import {
-  serializeReadiness,
-  type Inspection,
-  type ServiceOperation,
-  type ServiceResult,
-} from '@mnemonik/shared';
+import { serializeReadiness, type Inspection } from '@mnemonik/shared';
 import {
   hostOrder,
   hostPackageImports,
@@ -1066,13 +1061,18 @@ describe('host state matrix', () => {
     await runHosts('install', targets(f, 'hooks'), f.deps);
     f.deps.source = async (host) => bump(packed.sources[host]);
     f.deps.now = Date.now;
-    const getCliBearer = vi.fn(async () => {
-      throw new Error('update must not read sign-in state');
-    });
+    // Update reports its own readiness like repair does. A signed-out machine
+    // must still finish, upload nothing and never be asked to sign in.
+    const getCliBearer = vi.fn(async () => ({
+      status: 'missing' as const,
+      reason: 'not_signed_in',
+    }));
     const list = vi
       .spyOn(f.deps.grants!, 'list')
       .mockRejectedValue(new Error('update must not list grants'));
-    f.deps.getCliBearer = getCliBearer;
+    f.deps.getCliBearer = async () => {
+      throw new Error('host maintenance must not read sign-in state');
+    };
     const stdout = capture();
     expect(
       await runCli(['update', '--json'], {
@@ -1094,7 +1094,7 @@ describe('host state matrix', () => {
     expect(
       (await readOwnership(f.deps.stateDir)).targets.every((row) => row.version === '99.0.0')
     ).toBe(true);
-    expect(getCliBearer).not.toHaveBeenCalled();
+    expect(getCliBearer).toHaveBeenCalledOnce();
     expect(list).not.toHaveBeenCalled();
   }, 240_000);
 
@@ -1363,20 +1363,17 @@ describe('host state matrix', () => {
     const pointer = new RuntimeStore(f.deps.stateDir).pointerPath('scanner');
     await mkdir(dirname(pointer), { recursive: true });
     await writeFile(pointer, 'pointer');
-    const operations: ServiceOperation[] = [];
-    const command = vi.fn(async (operation: ServiceOperation): Promise<ServiceResult> => {
-      operations.push(operation);
+    const commands: string[][] = [];
+    // Removal is verified natively: the CLI asks systemd directly and waits for
+    // the processes to go, rather than trusting the executable it is removing.
+    const supervisorRun = vi.fn(async (file: string, args: string[]) => {
+      commands.push([file, ...args]);
       expect((await readOwnership(f.deps.stateDir)).targets).toEqual([]);
       expect((await launcherStatus(launcher)).ownership).toBe('ours');
-      return {
-        status: 'ok',
-        supervisor: {
-          kind: 'systemd',
-          installed: operation !== 'uninstall',
-          running: false,
-          pid: null,
-        },
-      };
+      if (file === 'ps') throw Object.assign(new Error('no such process'), { code: 1 });
+      if (args.includes('show'))
+        return 'LoadState=not-found\nActiveState=inactive\nMainPID=0\nUnitFileState=\n';
+      return '';
     });
     const stdout = capture();
 
@@ -1384,13 +1381,25 @@ describe('host state matrix', () => {
       await runCli(['uninstall', '--non-interactive', '--confirm', '--json'], {
         home: f.home,
         hostManagement: f.deps,
-        scannerService: { stateDir: f.deps.stateDir, command },
+        scannerService: {
+          stateDir: f.deps.stateDir,
+          home: f.home,
+          platform: 'linux',
+          supervisorRun,
+        },
         launcher,
         stdout,
       })
     ).toBe(0);
 
-    expect(operations).toEqual(['stop', 'uninstall']);
+    expect(commands.map((call) => call.slice(0, 3).join(' '))).toEqual([
+      'systemctl --user show',
+      'systemctl --user disable',
+      'systemctl --user show',
+      'systemctl --user show',
+      'systemctl --user daemon-reload',
+      'systemctl --user show',
+    ]);
     expect((await launcherStatus(launcher)).ownership).toBe('missing');
     expect(JSON.parse(stdout.text)).toMatchObject({
       targets: [expect.objectContaining({ status: 'READY', reason: 'uninstalled' })],
@@ -1416,8 +1425,10 @@ describe('host state matrix', () => {
         hostManagement: f.deps,
         scannerService: {
           stateDir: f.deps.stateDir,
-          command: async () => {
-            throw new Error('scanner_uninstall_failed');
+          home: f.home,
+          platform: 'linux',
+          supervisorRun: async () => {
+            throw new Error('systemd_refused_the_removal');
           },
         },
         launcher,
@@ -1430,10 +1441,16 @@ describe('host state matrix', () => {
     expect(JSON.parse(stdout.text)).toMatchObject({
       status: 'FAILED',
       targets: [expect.objectContaining({ status: 'READY', reason: 'uninstalled' })],
-      scanner: { status: 'failed', reason: expect.stringContaining('scanner_uninstall_failed') },
+      scanner: {
+        status: 'failed',
+        reason: expect.stringContaining('systemd_refused_the_removal'),
+        action: 'Restart this computer, then run mnemonik uninstall again.',
+      },
       launcher: { status: 'retained' },
     });
-    expect(stderr.text).toContain('scanner_uninstall_failed');
+    // Machine output keeps the reason; the sentence belongs to the human path.
+    expect(stderr.text).toContain('systemd_refused_the_removal');
+    expect(stderr.text).not.toContain('Background indexing could not be stopped.');
   }, 120_000);
 
   it('uninstall: removes all owned declarations and runtime pointers but keeps foreign and other-scope files without revoking grants', async () => {

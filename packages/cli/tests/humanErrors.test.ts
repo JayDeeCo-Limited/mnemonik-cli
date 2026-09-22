@@ -70,12 +70,15 @@ async function fixture() {
 
 const REPAIR_STEP = 'Run mnemonik doctor on this machine and follow the first repair step.';
 it.each([
-  // Diagnostics says what failed and what to do about that; the rest fall back
-  // to the general repair step.
+  // Diagnostics and the scanner say what failed and what to do about that; the
+  // rest fall back to the general repair step.
   [['diagnostics', 'preview'], 'Run mnemonik install to try again.'],
   [['data', 'delete', '--project', 'test'], REPAIR_STEP],
-  [['scanner', 'status'], REPAIR_STEP],
-  [['uninstall', '--component', 'scanner', '--confirm'], REPAIR_STEP],
+  [['scanner', 'status'], 'Run mnemonik install to try again.'],
+  [
+    ['uninstall', '--component', 'scanner', '--confirm'],
+    'Restart this computer, then run mnemonik uninstall again.',
+  ],
 ])('gives a next step when %j fails', async (args, nextStep) => {
   const f = await fixture();
   expect(await runCli(args, f.deps)).toBeGreaterThan(0);

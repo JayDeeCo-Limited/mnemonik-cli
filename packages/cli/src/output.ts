@@ -198,8 +198,9 @@ export class Output {
         this.lastHumanLineBlank = true;
         count++;
       }
-      const text =
-        this.installationLayout && line.text && line.text !== 'Mnemonik' && !heading
+      const text = approvalLink
+        ? (line.url ?? line.text)
+        : this.installationLayout && line.text && line.text !== 'Mnemonik' && !heading
           ? line.text.startsWith('  ')
             ? line.text
             : `  ${line.text}`

@@ -96,6 +96,7 @@ export declare class RuntimeReader {
     private operation;
     protected verifyAt(artifact: Artifact, ref: Reference, directory: string): Promise<Verified>;
     private verifyOpen;
+    verifyRetainedRuntime(artifact: Artifact, reference: Reference): Promise<Verified>;
     verifyRuntime(artifact: Artifact): Promise<Verified>;
 }
 export * from './runtimeSigners.js';

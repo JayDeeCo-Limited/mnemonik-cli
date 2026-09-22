@@ -1,9 +1,21 @@
-import { genericReadinessMessage, messageFor } from './humanReason.js';
+import { genericReadinessMessage, messageFor as humanMessageFor } from './humanReason.js';
 export { CODEX_TRUST_MESSAGE } from './humanReason.js';
 import { cliCredentialStatus } from './auth/credentials.js';
 import { readOwnership } from './install/ownership.js';
 import { scannerReceipt } from './scanner/control.js';
+import {
+  scannerService,
+  ScannerServiceLimited,
+  SCANNER_RESTART_MESSAGE,
+  SCANNER_RESTART_ACTION,
+  type ScannerServiceOptions,
+} from './scanner/service.js';
 import { stateDirectory } from '@mnemonik/local-setup';
+import {
+  scannerAttemptHealthy,
+  SCANNER_HANDOFF_BUDGET_MS,
+  SCANNER_RECEIPT_STALE_MS,
+} from '@mnemonik/shared';
 import { readFile, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -203,6 +215,7 @@ export interface ReadProjectStatusInput {
 }
 
 export interface CollectStatusInput extends ReadProjectStatusInput {
+  scannerRecovery?: Omit<ScannerServiceOptions, 'stateDir'>;
   launcher?: LauncherOptions;
   /** Accepted for callers that also expose grant diagnostics; readiness ignores editor grants. */
   grants?: unknown;
@@ -294,16 +307,24 @@ function projectConditions(input: StatusDocumentInput): ReadinessCondition[] {
 }
 
 export function buildStatusDocument(input: StatusDocumentInput): ReadinessDocument {
-  const scannerNotVerified: ReadinessCondition[] = input.scannerStatus
-    ? []
-    : [
-        {
-          kind: 'scanner_not_verified',
-          component: 'scanner',
-          reason: 'background_indexing_not_verified',
-          action: 'Run mnemonik status after indexing starts.',
-        },
-      ];
+  const scannerNotVerified: ReadinessCondition[] =
+    input.scannerStatus ||
+    input.installationConditions.some(
+      (condition) =>
+        condition.component === 'scanner' &&
+        /^(scanner_replacement_|mac_authorization_required|scanner_restart_requested|scanner_stopped)/u.test(
+          condition.reason
+        )
+    )
+      ? []
+      : [
+          {
+            kind: 'scanner_not_verified',
+            component: 'scanner',
+            reason: 'background_indexing_not_verified',
+            action: 'Run mnemonik status after indexing starts.',
+          },
+        ];
   const hooksNotVerified: ReadinessCondition[] = input.projectHookConditions
     ? []
     : (input.configuredHosts ?? ['host']).map((host) => ({
@@ -366,6 +387,22 @@ export function buildStatusDocument(input: StatusDocumentInput): ReadinessDocume
   });
 }
 
+/**
+ * Scanner service failures carry their own approved sentence and next step; every
+ * other reason keeps the wording shared with humanReason.
+ */
+function messageFor(reason: string, actions: readonly string[]) {
+  if (reason === 'scanner_restart_requested')
+    return { sentence: SCANNER_RESTART_MESSAGE, nextStep: SCANNER_RESTART_ACTION };
+  if (
+    /^(scanner_replacement_|scanner_other_account|scanner_stopped|mac_authorization_)/u.test(reason)
+  ) {
+    const failure = new ScannerServiceLimited(reason.split(':')[0] ?? reason, reason);
+    return { sentence: failure.summary, nextStep: failure.action };
+  }
+  return humanMessageFor(reason, actions);
+}
+
 function renderAttention(
   label: string,
   summary: ReadinessSummary,
@@ -381,7 +418,8 @@ function renderAttention(
     if (rendered.has(key)) continue;
     rendered.add(key);
     output.line(message.sentence);
-    output.line(message.nextStep);
+    // Some states leave nothing for the person to do, and say so on one line.
+    if (message.nextStep) output.line(message.nextStep);
   }
 }
 
@@ -473,8 +511,42 @@ export async function collectStatusDocument(input: CollectStatusInput): Promise<
   let scannerStatus = await input.scannerStatus?.();
   let scannerHeartbeat: StatusDocumentInput['scannerHeartbeat'];
   let scannerReason: ReadinessCondition | undefined;
+  const restarted =
+    !input.scannerStatus &&
+    (await scannerService({
+      stateDir: statusStateDir,
+      ...input.scannerRecovery,
+    })
+      .recover()
+      .catch(() => false));
+  const receipt = await scannerReceipt(statusStateDir);
+  const attempt = await readFile(
+    join(statusStateDir, 'scanner/service-replacement/result.json'),
+    'utf8'
+  )
+    .then(
+      (text) =>
+        JSON.parse(text) as {
+          authorizationRequired?: boolean;
+          stopped?: boolean;
+          pid?: number;
+          startedAt?: number;
+          fallback?: boolean;
+          candidateError?: string;
+          fallbackError?: string;
+        }
+    )
+    .catch(() => undefined);
+  const pid = attempt?.pid ?? receipt?.snapshot.lifecycle.pid;
+  let alive = false;
+  if (pid)
+    try {
+      process.kill(pid, 0);
+      alive = true;
+    } catch {
+      /* exited */
+    }
   if (!input.scannerStatus) {
-    const receipt = await scannerReceipt(statusStateDir);
     const state = JSON.parse(
       await readFile(join(statusStateDir, 'scanner/state.json'), 'utf8').catch(() => 'null')
     ) as {
@@ -501,9 +573,12 @@ export async function collectStatusDocument(input: CollectStatusInput): Promise<
       };
     if (
       state &&
+      alive &&
+      snapshot?.lifecycle.pid === pid &&
+      !restarted &&
       (snapshot?.lifecycle.state === 'running' || snapshot?.lifecycle.state === 'starting') &&
       heartbeat &&
-      Date.now() - heartbeat < 360000
+      Date.now() - heartbeat < SCANNER_RECEIPT_STALE_MS
     ) {
       scannerStatus = {
         roots: state.config.roots,
@@ -516,6 +591,13 @@ export async function collectStatusDocument(input: CollectStatusInput): Promise<
         disclosureVersion: state.consent?.disclosureVersion ?? null,
       };
     }
+    if (restarted)
+      scannerReason = {
+        kind: 'scanner_not_verified',
+        component: 'scanner',
+        reason: 'scanner_restart_requested',
+        action: SCANNER_RESTART_ACTION,
+      };
   }
   const installationConditions: ReadinessCondition[] = [
     ...(input.installationConditions ?? []),
@@ -538,6 +620,48 @@ export async function collectStatusDocument(input: CollectStatusInput): Promise<
         action: `mnemonik add ${repository.path}`,
       })) ?? []),
   ];
+  if (attempt && !restarted) {
+    const checkedAt = receipt?.recordedAt ?? 0;
+    const healthy =
+      alive &&
+      scannerAttemptHealthy(
+        receipt,
+        { pid: attempt.pid, startedAt: attempt.startedAt ?? Infinity },
+        true
+      ) &&
+      Date.now() >= checkedAt &&
+      Date.now() - checkedAt <= SCANNER_RECEIPT_STALE_MS;
+    const reason = attempt.stopped
+      ? 'scanner_stopped'
+      : attempt.authorizationRequired
+        ? 'mac_authorization_required'
+        : healthy
+          ? attempt.fallback
+            ? 'scanner_replacement_rolled_back'
+            : undefined
+          : attempt.fallbackError
+            ? attempt.fallbackError === 'scanner_fallback_missing'
+              ? 'scanner_replacement_candidate_failed'
+              : 'scanner_replacement_failed'
+            : alive && Date.now() - (attempt.startedAt ?? 0) <= SCANNER_HANDOFF_BUDGET_MS
+              ? 'scanner_replacement_pending'
+              : 'scanner_replacement_interrupted';
+    if (reason) {
+      const detail = [attempt.candidateError, attempt.fallbackError].filter(Boolean).join('; ');
+      const failure = new ScannerServiceLimited(reason, detail);
+      installationConditions.push({
+        kind:
+          reason === 'mac_authorization_required'
+            ? 'login_pending'
+            : reason === 'scanner_replacement_pending' || reason === 'scanner_stopped'
+              ? 'scanner_not_verified'
+              : 'selected_component_failed',
+        component: 'scanner',
+        reason: detail ? `${reason}: ${detail}` : reason,
+        action: failure.action,
+      });
+    }
+  }
   const owned = await readOwnership(statusStateDir);
   const details = { ...input.details };
   const projectStatus = input.preflight.project.root ? await readProjectStatus(input) : undefined;

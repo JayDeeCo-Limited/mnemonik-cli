@@ -140,7 +140,7 @@ export interface JournalData {
     empty?: boolean;
     nonGitSelected?: true;
   }>;
-  services: Array<{ id: string; before: string; started?: boolean }>;
+  services: Array<{ id: string; before: string; started?: boolean; managed?: true }>;
   mutations: Array<{ sequence: number; event: string; target?: string }>;
   reports: string[];
   phase:
@@ -284,6 +284,11 @@ export class Journal implements AdapterWriter {
   async restoreFiles() {
     const failures: string[] = [];
     for (const target of [...this.data.targets].reverse()) {
+      if (
+        target.group?.startsWith('scanner:') &&
+        this.data.services.some((service) => service.id === 'scanner' && service.managed)
+      )
+        continue;
       try {
         await this.restore(target);
       } catch {

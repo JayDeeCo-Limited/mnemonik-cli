@@ -7,7 +7,12 @@ import { pathToFileURL } from 'node:url';
 import { afterAll, beforeAll, expect, it } from 'vitest';
 import { guardNpmLaunch, installBootstrap, npmSource, unpack } from '../src/runtime/bootstrap.js';
 import { RuntimeStore, hash } from '../src/runtime/store.js';
+import { allowExternalNetwork } from './setup/localNetworkOnly.js';
 import packageJson from '../package.json' with { type: 'json' };
+
+// npmSource reads the published tarball, so this file works against the real
+// registry rather than an injected transport.
+allowExternalNetwork();
 
 // The packed CLI is this workspace package, whose version the release bot bumps
 // on every release; the tests below pin what `--version` prints to that file.

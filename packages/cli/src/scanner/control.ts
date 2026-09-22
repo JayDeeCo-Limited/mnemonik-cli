@@ -21,6 +21,7 @@ export interface ScannerReceipt {
       action?: string;
     };
     heartbeat: { lastSuccess: number | null };
+    startupTimings?: { localReadyAt?: number | null };
     transfers?: {
       sinceStart: { files: number; bytes: number };
       sinceInstall: { files: number; bytes: number };

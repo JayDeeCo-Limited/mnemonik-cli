@@ -1,11 +1,10 @@
-import { atomicWrite, withLock } from '@mnemonik/local-setup';
+import { withLock } from '@mnemonik/local-setup';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { RuntimeStore, updateRuntime, type RuntimeSource } from '../runtime/store.js';
 import { releaseSource } from '../runtime/releaseSource.js';
 import { scannerService, type ScannerServiceOptions } from './service.js';
-import { controlScanner } from './control.js';
-import { scannerStateBytes, type SavedState } from './enable.js';
+import type { SavedState } from './enable.js';
 export async function updateScanner(
   options: ScannerServiceOptions,
   source = () => releaseSource('scanner')
@@ -15,7 +14,11 @@ export async function updateScanner(
     new RuntimeStore(options.stateDir, undefined, {
       allowUnsigned: !!process.env.MNEMONIK_DEV_RELEASE_DIR,
     });
-  const service = scannerService({ ...options, store });
+  let service = scannerService({ ...options, store });
+  let retainedSupervisor = false;
+  const before = await store.verifyRuntime('scanner');
+  await service.recover();
+  let replacement = false;
   const checkedSource = async (): Promise<RuntimeSource> => {
     return withLock(join(options.stateDir, 'scanner/enable'), 5000, async () => {
       const candidate = await source();
@@ -26,21 +29,55 @@ export async function updateScanner(
         candidate.manifest.disclosureVersion &&
         candidate.manifest.disclosureVersion !== state.consent?.disclosureVersion
       ) {
-        if ((await service.status()).running) await controlScanner('pause', { ...options, store });
-        else {
-          state.paused = true;
-          await atomicWrite(join(options.stateDir, 'scanner/state.json'), scannerStateBytes(state));
-        }
+        // The running release still has valid consent. Reject the new release without
+        // suspending indexing that the person already approved.
         throw new Error('release_consent_required: mnemonik scanner enable');
       }
+      replacement = candidate.manifest.version !== before.reference.version;
       return candidate;
     });
   };
+  if ((options.platform ?? process.platform) === 'darwin') {
+    return withLock(join(options.stateDir, 'scanner/replace'), 5000, async () => {
+      const candidate = await checkedSource();
+      // Stage the complete, verified release without changing what the old scanner reads.
+      const runtime = await store.stageRuntime('scanner', candidate.manifest.version, candidate);
+      if (!replacement) {
+        const candidateService = scannerService({ ...options, store, supervisorRuntime: runtime });
+        const active = await candidateService.status();
+        if (active.running && active.binaryPath === runtime.entry) {
+          await candidateService.start();
+          return runtime;
+        }
+      }
+      const pointer = await readFile(store.pointerPath('scanner'), 'utf8');
+      const current = JSON.parse(pointer) as { current: typeof before.reference };
+      await service.replace(runtime, {
+        pointer: {
+          after:
+            current.current.version === runtime.reference.version &&
+            current.current.manifestSha256 === runtime.reference.manifestSha256
+              ? pointer
+              : JSON.stringify({ current: runtime.reference, previous: current.current }),
+        },
+      });
+      return runtime;
+    });
+  }
   return updateRuntime({
     store,
     source: checkedSource,
     restartManagedServices: async () => {
-      await service.restart();
+      if (replacement && !retainedSupervisor) {
+        service = scannerService({
+          ...options,
+          store,
+          supervisorRuntime: await store.verifyRuntime('scanner'),
+        });
+        retainedSupervisor = true;
+      }
+      if (replacement) await service.restart();
+      else await service.start();
     },
   });
 }

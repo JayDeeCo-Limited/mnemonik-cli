@@ -18,6 +18,10 @@ const capture = () => ({
     this.text += chunk;
   },
 });
+// The CLI shows a path inside the home directory as ~, and the isolated
+// fixture puts its temporary directories there. The home directory itself is
+// reported as it is.
+const shown = (path: string) => path.replace(`${homedir()}/`, '~/');
 
 describe('project ensure --agent --json', () => {
   it('prints the exact action when no credential adapter exists', async () => {
@@ -79,7 +83,11 @@ describe('project ensure --agent --json', () => {
         projectExecutor: executor,
       })
     ).toBe(0);
-    expect(JSON.parse(stdout.text)).toMatchObject({ status: 'done', root, projectId });
+    expect(JSON.parse(stdout.text)).toMatchObject({
+      status: 'done',
+      root: shown(root),
+      projectId,
+    });
   });
 
   it.each(['home', 'temp', 'host-config', 'broad-workspace', 'plain'])(
@@ -122,7 +130,7 @@ describe('project ensure --agent --json', () => {
       expect(JSON.parse(stdout.text)).toMatchObject({
         status: 'action_required',
         action: 'mnemonik project init <path>',
-        root: kind === 'host-config' ? '~/.codex' : root,
+        root: shown(root),
       });
       expect(ensureProject).not.toHaveBeenCalled();
     }

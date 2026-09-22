@@ -24,7 +24,7 @@ import { Output } from '../output.js';
 import { evaluateRoot, repositoryAt } from '../project/eligibility.js';
 import { scannerService, type ScannerServiceOptions } from './service.js';
 import { controlScanner, scannerReceipt } from './control.js';
-import { bytesAt, digest, type Journal } from '../install/journal.js';
+import { bytesAt, digest, withInstall, type Journal } from '../install/journal.js';
 import {
   connectedProjectsMessage,
   createRealProjectRuntime,
@@ -134,7 +134,41 @@ export interface PreparedScanner {
   rollback(journal: Journal): Promise<void>;
   complete(document: ReturnType<typeof serializeReadiness>): Promise<void>;
 }
-export async function enableScanner(options: EnableOptions) {
+export async function enableScanner(
+  options: EnableOptions
+): Promise<ReturnType<typeof serializeReadiness>> {
+  if (!options.journal) {
+    return withInstall(
+      options.stateDir,
+      {
+        account: 'scanner',
+        joined: true,
+        hostRequest: { command: 'install', selections: [], allowMigration: false },
+        hosts: [],
+        components: ['scanner'],
+        scopes: {},
+        roots: options.roots ?? [],
+        credentials: [],
+      },
+      undefined,
+      async (journal) => {
+        try {
+          const document = await enableScanner({ ...options, journal });
+          journal.data.state = document.installation.state;
+          journal.data.phase = 'complete';
+          await journal.save();
+          return document;
+        } catch (error) {
+          journal.data.phase = 'rolling_back';
+          await journal.save();
+          await restoreScannerInstall(journal, options);
+          journal.data.phase = 'rolled_back';
+          await journal.save();
+          throw error;
+        }
+      }
+    );
+  }
   return prepareScanner(options, async (prepared) => {
     const executor = await prepared.projectExecutor();
     const connected: string[] = [];
@@ -152,7 +186,7 @@ export async function enableScanner(options: EnableOptions) {
       }
     }
     prepared.roots.splice(0, prepared.roots.length, ...connected);
-    const document = await prepared.apply(undefined, connected);
+    const document = await prepared.apply(options.journal, connected);
     if (document.installation.state === 'READY') await prepared.complete(document);
     if (!options.nonInteractive) {
       if (connected.length) options.output.line(connectedProjectsMessage(connected));
@@ -226,7 +260,8 @@ export async function prepareScanner<T>(
     const previous = before
       ? (JSON.parse(before) as SupervisorStatus & { definition?: ServiceDefinition })
       : null;
-    let restore = previous?.running && !saved?.paused;
+    const managedReplacement = (options.platform ?? process.platform) === 'darwin';
+    let restore = !managedReplacement && previous?.running && !saved?.paused;
     if (restore && options.journal && before) {
       const journal = options.journal;
       if (!journal.data.services.some((s) => s.id === 'scanner'))
@@ -281,7 +316,10 @@ export async function prepareScanner<T>(
             )
           : JSON.stringify(remote.consent?.roots) === JSON.stringify(picked.roots)) &&
         JSON.stringify(remote.consent?.exclusions) === JSON.stringify(picked.exclusions);
-      if (!matches() || !session) {
+      const unconnectedRoots = remote.consent?.roots.some(
+        (root) => !saved?.config.roots.includes(root)
+      );
+      if (!matches() || !session || (!options.nonInteractive && unconnectedRoots)) {
         const listing = await grantTransport(async () => bearer, options.fetch).list();
         const installation =
           session?.device_installation_id ??
@@ -305,6 +343,11 @@ export async function prepareScanner<T>(
       const approvedSession = session;
       const approvedConsent = remote.consent;
       const approvedRoots = [...approvedConsent.roots];
+      if (options.journal?.data.account === 'scanner') {
+        options.journal.data.account = listing.account;
+        options.journal.data.roots = [...approvedRoots];
+        await options.journal.save();
+      }
       const pointer = store.pointerPath('scanner');
       return await work({
         roots: approvedRoots,
@@ -339,7 +382,7 @@ export async function prepareScanner<T>(
             });
             return journal.commit(target);
           };
-          if (journal) {
+          if (journal && !managedReplacement) {
             if (!journal.data.services.some((s) => s.id === 'scanner'))
               journal.data.services.push({
                 id: 'scanner',
@@ -351,14 +394,23 @@ export async function prepareScanner<T>(
             await journal.event('service_start_intent', 'scanner');
           }
           // Stop the old writer before replacing state; refusal above leaves its consent untouched.
-          if (previous?.running) await service.stop();
+          if (!managedReplacement && previous?.running) await service.stop();
           if (journal) await observeScannerState(journal, path);
           restore = false;
           const state: SavedState = {
             schemaVersion: 1,
             ...(picked.boundary ? { boundary: picked.boundary } : {}),
             config: {
-              roots: [...roots],
+              // A failed project reconnection must not remove an existing watch.
+              // Explicit removals in this browser approval still take effect.
+              roots: [
+                ...new Set([
+                  ...roots,
+                  ...(saved?.config.roots ?? []).filter((root) =>
+                    approvedConsent.roots.includes(root)
+                  ),
+                ]),
+              ],
               exclusions: picked.exclusions,
               serverUrl: apiOrigin(),
               deviceInstallationId: approvedSession.device_installation_id,
@@ -370,7 +422,7 @@ export async function prepareScanner<T>(
           };
           for (const interval of state.pauseIntervals)
             if (interval.end === null) interval.end = Date.now();
-          await put(path, scannerStateBytes(state));
+          if (!managedReplacement) await put(path, scannerStateBytes(state));
           const source = await (options.source ?? (() => releaseSource('scanner')))();
           if (
             source.manifest.disclosureVersion &&
@@ -381,46 +433,116 @@ export async function prepareScanner<T>(
             options.output.error(
               'WARNING: development scanner release; readiness remains LIMITED.'
             );
-          const prior = await bytesAt(pointer);
-          const pointerTarget = journal
-            ? await journal.plan(
-                pointer,
-                Buffer.from(
-                  JSON.stringify({
-                    current: {
-                      version: source.manifest.version,
-                      manifestSha256: hash(JSON.stringify(source.manifest)),
-                    },
-                    previous: prior
-                      ? (JSON.parse(prior.toString()) as { current: unknown }).current
-                      : undefined,
-                  })
-                ),
-                { kind: 'runtime', group: `scanner:${journal.data.targets.length}` }
+          if (managedReplacement) {
+            const runtime = await store.stageRuntime('scanner', source.manifest.version, source);
+            const prior = await bytesAt(pointer);
+            const current = prior
+              ? (
+                  JSON.parse(prior.toString()) as {
+                    current: { version: string; manifestSha256: string };
+                  }
+                ).current
+              : undefined;
+            const nextPointer =
+              prior &&
+              current?.version === runtime.reference.version &&
+              current.manifestSha256 === runtime.reference.manifestSha256
+                ? prior.toString()
+                : JSON.stringify({ current: runtime.reference, previous: current });
+            const existingFamily = saved?.config.credentialFamilyId;
+            if (existingFamily) {
+              const family = await credentials.readFamily(existingFamily);
+              if (
+                !family ||
+                family.componentKind !== 'scanner' ||
+                !(Date.parse(family.refreshExpiresAt) > Date.now()) ||
+                !family.scopes.includes('scanner:upload') ||
+                saved.consent?.userId !== approvedConsent.userId ||
+                saved.config.deviceInstallationId !== approvedSession.device_installation_id
               )
-            : undefined;
-          await store.installRuntime('scanner', source.manifest.version, source);
-          if (pointerTarget) await journal?.commit(pointerTarget);
-          const issued = (await request('POST', '/api/v1/component-credentials', {
-            component_kind: 'scanner',
-          })) as ComponentCredentialResponse;
-          if (journal) {
-            journal.data.credentials.push({
-              reference: issued.id,
-              kind: 'component',
-              component: 'scanner',
+                throw new Error('scanner_credential_unavailable');
+              state.config.credentialFamilyId = existingFamily;
+            } else {
+              const issued = (await request('POST', '/api/v1/component-credentials', {
+                component_kind: 'scanner',
+              })) as ComponentCredentialResponse;
+              await credentials.putFamily('scanner', issued);
+              state.config.credentialFamilyId = issued.id;
+              if (journal) {
+                journal.data.credentials.push({
+                  reference: issued.id,
+                  kind: 'component',
+                  component: 'scanner',
+                });
+                await journal.save();
+              }
+            }
+            const nextState = scannerStateBytes(state);
+            if (journal) {
+              const serviceRecord = journal.data.services.find((record) => record.id === 'scanner');
+              if (serviceRecord) Object.assign(serviceRecord, { started: true, managed: true });
+              else
+                journal.data.services.push({
+                  id: 'scanner',
+                  before: JSON.stringify(previous ?? { installed: false, running: false }),
+                  started: true,
+                  managed: true,
+                });
+              // Ownership is durable before handoff. Even a transport timeout must not
+              // race launchd's replacement or compensation.
+              await journal.event('service_start_intent', 'scanner');
+              await journal.event('upload_intent', 'scanner');
+            }
+            await service.replace(runtime, {
+              pointer: { after: nextPointer },
+              state: {
+                before: (await bytesAt(path))?.toString() ?? null,
+                after: nextState.toString(),
+              },
             });
-            await journal.save();
+          } else {
+            const prior = await bytesAt(pointer);
+            const pointerTarget = journal
+              ? await journal.plan(
+                  pointer,
+                  Buffer.from(
+                    JSON.stringify({
+                      current: {
+                        version: source.manifest.version,
+                        manifestSha256: hash(JSON.stringify(source.manifest)),
+                      },
+                      previous: prior
+                        ? (JSON.parse(prior.toString()) as { current: unknown }).current
+                        : undefined,
+                    })
+                  ),
+                  { kind: 'runtime', group: `scanner:${journal.data.targets.length}` }
+                )
+              : undefined;
+            await store.installRuntime('scanner', source.manifest.version, source);
+            if (pointerTarget) await journal?.commit(pointerTarget);
+            const issued = (await request('POST', '/api/v1/component-credentials', {
+              component_kind: 'scanner',
+            })) as ComponentCredentialResponse;
+            if (journal) {
+              journal.data.credentials.push({
+                reference: issued.id,
+                kind: 'component',
+                component: 'scanner',
+              });
+              await journal.save();
+            }
+            await credentials.putFamily('scanner', issued);
+            state.config.credentialFamilyId = issued.id;
+            await put(path, scannerStateBytes(state));
+            await journal?.event('upload_intent', 'scanner');
+            if (previous?.installed) await service.restart();
+            else await service.start();
           }
-          await credentials.putFamily('scanner', issued);
-          state.config.credentialFamilyId = issued.id;
-          await put(path, scannerStateBytes(state));
-          await journal?.event('upload_intent', 'scanner');
-          if (previous?.installed) await service.restart();
-          else await service.start();
           const receipt = await scannerReceipt(options.stateDir);
           const heartbeat = receipt?.snapshot.heartbeat.lastSuccess;
-          if (typeof heartbeat !== 'number') throw new Error('scanner_receipt_missing');
+          if (!managedReplacement && typeof heartbeat !== 'number')
+            throw new Error('scanner_receipt_missing');
           const document = devReadiness(
             serializeReadiness({
               platform: process.platform,
@@ -432,7 +554,8 @@ export async function prepareScanner<T>(
               },
               scanner: {
                 roots: state.config.roots,
-                heartbeatAt: new Date(heartbeat).toISOString(),
+                heartbeatAt:
+                  typeof heartbeat === 'number' ? new Date(heartbeat).toISOString() : null,
                 version: source.manifest.version,
                 readiness: null,
                 acceptedDisclosureVersion: approvedConsent.disclosureVersion,
@@ -455,9 +578,23 @@ export async function restoreScannerInstall(
   options: ScannerServiceOptions & { fetch?: typeof fetch }
 ) {
   const record = journal.data.services.find((s) => s.id === 'scanner');
-  const service = scannerService(options);
+  // A launchd-owned replacement compensates independently, even after this caller dies.
+  if (record?.managed) return;
   const before = record ? (JSON.parse(record.before) as SupervisorStatus) : undefined;
-  const hasRuntime = await bytesAt(new RuntimeStore(options.stateDir).pointerPath('scanner'));
+  const store =
+    options.store ??
+    new RuntimeStore(options.stateDir, undefined, {
+      allowUnsigned: !!process.env.MNEMONIK_DEV_RELEASE_DIR,
+    });
+  const hasRuntime = await bytesAt(store.pointerPath('scanner'));
+  const service = scannerService({
+    ...options,
+    store,
+    // The restored older binary may not know how to manage an SSH user service.
+    supervisorRuntime:
+      options.supervisorRuntime ??
+      (record?.started && hasRuntime ? await store.verifyRuntime('scanner') : undefined),
+  });
   if (record?.started && hasRuntime) {
     await service.stop();
     if (!before?.installed) await service.restore('scanner', record.before);

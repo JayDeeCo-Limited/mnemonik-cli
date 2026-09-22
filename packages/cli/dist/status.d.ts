@@ -1,5 +1,6 @@
 export { CODEX_TRUST_MESSAGE } from './humanReason.js';
 import { cliCredentialStatus } from './auth/credentials.js';
+import { type ScannerServiceOptions } from './scanner/service.js';
 import type { Readable } from 'node:stream';
 import { type ReadinessCondition, type ReadinessDocument, type ReadinessDocumentInput } from '@mnemonik/shared';
 import { Output } from './output.js';
@@ -51,6 +52,7 @@ export interface ReadProjectStatusInput {
     transport?: ProjectReadTransport;
 }
 export interface CollectStatusInput extends ReadProjectStatusInput {
+    scannerRecovery?: Omit<ScannerServiceOptions, 'stateDir'>;
     launcher?: LauncherOptions;
     /** Accepted for callers that also expose grant diagnostics; readiness ignores editor grants. */
     grants?: unknown;

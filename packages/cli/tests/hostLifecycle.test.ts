@@ -2,6 +2,7 @@ import { pathToFileURL } from 'node:url';
 import { execFile } from 'node:child_process';
 import { afterAll, afterEach, beforeAll, expect, it } from 'vitest';
 import { chmod, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { runCli } from '../src/router.js';
 import { runHosts } from '../src/install/hosts.js';
@@ -439,7 +440,9 @@ it('mcp selection and ambiguous profiles stop with ACTION_REQUIRED', async () =>
   expect(JSON.parse(output.join(''))).toMatchObject({
     status: 'ACTION_REQUIRED',
     reason: 'ambiguous_profile',
-    profiles: targets.map((t) => t.profilePath),
+    // The CLI shows a path inside the home directory as ~, and the isolated
+    // fixture puts its temporary directories there.
+    profiles: targets.map((t) => t.profilePath.replace(homedir(), '~')),
   });
   expect(await readFile(ownershipPath(f.deps.stateDir), 'utf8')).toBe(bytes);
 });

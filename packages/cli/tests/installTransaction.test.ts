@@ -20,12 +20,16 @@ import { runCli } from '../src/router.js';
 
 const dirs: string[] = [];
 afterEach(async () => {
+  vi.unstubAllEnvs();
   await Promise.all(dirs.splice(0).map((d) => rm(d, { recursive: true, force: true })));
 });
 const uuid = '12345678-1234-4234-8234-123456789012';
 async function fixture() {
   const home = await mkdtemp(join(tmpdir(), 'install-'));
   dirs.push(home);
+  // Plain-folder identity walks stop at home; fixtures must not inherit the checkout identity.
+  vi.stubEnv('HOME', home);
+  vi.stubEnv('USERPROFILE', home);
   const stateDir = join(home, 'state');
   const root = join(home, 'repo');
   await mkdir(root);

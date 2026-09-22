@@ -35,10 +35,14 @@ export class RuntimeStore extends RuntimeReader {
     const { withLock } = await import('@mnemonik/local-setup');
     return withLock(join(dirname(this.pointerPath(artifact)), 'mutation'), 5000, work);
   }
+  stageRuntime(artifact: Artifact, version: string, source: RuntimeSource): Promise<Verified> {
+    return this.installRuntime(artifact, version, source, false);
+  }
   async installRuntime(
     artifact: Artifact,
     version: string,
-    source: RuntimeSource
+    source: RuntimeSource,
+    activate = true
   ): Promise<Verified> {
     const base = dirname(this.pointerPath(artifact));
     versionName(version);
@@ -124,6 +128,7 @@ export class RuntimeStore extends RuntimeReader {
           await rename(stage, target);
         }
         await this.verifyAt(artifact, ref, target);
+        if (!activate) return this.verifyAt(artifact, ref, target);
         if (previous?.current.version !== version)
           await atomicWrite(
             this.pointerPath(artifact),

@@ -5,6 +5,7 @@ import { setImmediate as immediate } from 'node:timers/promises';
 import { createProjectSetupExecutor, withLock } from '@mnemonik/local-setup';
 import { resolveProjectIdentity } from '@mnemonik/shared';
 import { bytesAt, withInstall } from '../src/install/journal.js';
+import { compensate, type InstallDependencies } from '../src/install/transaction.js';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { mkdtemp, mkdir, readFile, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -47,8 +48,8 @@ if(process.argv[2]==='run') {
 } else if(op==='describe') console.log(JSON.stringify({binaryPath:__filename,arguments:['start'],workingDirectory:__dirname,environment:{MNEMONIK_STATE_DIR:dir},runAtLogin:true,restart:{policy:'on-failure',delayMs:1},logDestination:path.join(p,'log')}));
 else {
  let s=read('supervisor.json',{installed:false,pid:null});
- if(op==='install')s.installed=true;
- if(op==='start'&&!alive()) {const child=cp.spawn(process.execPath,[__filename,'run'],{detached:true,stdio:'ignore',env:process.env});s.pid=child.pid;child.unref();}
+ if(op==='install'){s.installed=true;s.binaryPath=JSON.parse(fs.readFileSync(0,'utf8')).binaryPath;try{process.kill(s.pid,'SIGTERM')}catch{}s.pid=null;}
+ if(op==='install'||(op==='start'&&!alive())) {const child=cp.spawn(process.execPath,[s.binaryPath||__filename,'run'],{detached:true,stdio:'ignore',env:process.env});s.pid=child.pid;child.unref();}
  if(op==='stop'||op==='uninstall'){try{process.kill(s.pid,'SIGTERM')}catch{}s.pid=null;if(op==='uninstall')s.installed=false;}
  write('supervisor.json',s);console.log(JSON.stringify({status:'ok',supervisor:{kind:'systemd',installed:s.installed,running:!!s.pid,pid:s.pid}}));
 }
@@ -547,6 +548,14 @@ it('good update swaps; tamper never becomes current; missed heartbeat restores v
   ).rejects.toMatchObject({ reason: 'digest_mismatch' });
   expect((await store.verifyRuntime('scanner')).manifest.version).toBe('2.0.0');
   let time = Date.now();
+  // The fixture daemon uses the real clock. Reset the accelerated timeout clock
+  // before rollback so its genuinely new heartbeat is after restore began.
+  const rollback = store.rollbackRuntime.bind(store);
+  vi.spyOn(store, 'rollbackRuntime').mockImplementation(async (...args) => {
+    const result = await rollback(...args);
+    time = Date.now();
+    return result;
+  });
   await expect(
     updateScanner(
       {
@@ -582,11 +591,9 @@ it('serializes consent updates with enable and preserves the enable state shape'
   });
   await expect(update).rejects.toThrow('release_consent_required');
   const afterUpdate = await readFile(join(state, 'scanner/state.json'), 'utf8');
-  expect(afterUpdate).toContain('\n  "schemaVersion": 1,');
-  expect(afterUpdate.endsWith('\n')).toBe(true);
   expect(JSON.parse(afterUpdate)).toMatchObject({
     schemaVersion: 1,
-    paused: true,
+    paused: false,
     config: { roots: consent.roots, exclusions: [] },
     consent,
     pauseIntervals: [],
@@ -618,7 +625,31 @@ it('retains consent across refusal and uninstall, then reinstalls from retained 
   expect(
     await runCli(['uninstall', '--component', 'scanner', '--json'], {
       installStateDir: state,
-      scannerService: { stateDir: state, store },
+      scannerService: {
+        stateDir: state,
+        store,
+        // This fixture supervises its own child. Native commands must never reach
+        // the host's systemd manager when exercising the CLI removal path.
+        supervisorRun: async (file, args) => {
+          if (file === 'ps') {
+            try {
+              process.kill(Number(args[1]), 0);
+              return args[1]!;
+            } catch {
+              return '';
+            }
+          }
+          if (file !== 'systemctl') throw Error('unexpected fixture supervisor command');
+          if (args[1] === 'stop' || args[1] === 'disable') {
+            const runtime = await store.verifyRuntime('scanner');
+            await promisify(execFile)(runtime.entry, ['service', 'uninstall'], {
+              env: { ...process.env, MNEMONIK_STATE_DIR: state },
+            });
+          }
+          const saved = JSON.parse(await readFile(join(state, 'scanner/supervisor.json'), 'utf8'));
+          return `LoadState=${saved.installed ? 'loaded' : 'not-found'}\nActiveState=${saved.pid ? 'active' : 'inactive'}\nMainPID=${saved.pid ?? 0}\nUnitFileState=${saved.installed ? 'enabled' : ''}`;
+        },
+      },
       stdout: {
         write: (text) => {
           report += text;
@@ -950,3 +981,301 @@ it.each([false, true])(
     );
   }
 );
+
+it.each(['connected', 'partial', 'missing', 'changed-consent', 'missing-session'] as const)(
+  'interactive reinstall only requests needed repository approval (%s)',
+  async (scenario) => {
+    const secondRoot = join(home, 'different');
+    consent.roots.push(secondRoot);
+    if (scenario !== 'missing') {
+      await mkdir(join(state, 'scanner'), { recursive: true });
+      await writeFile(
+        join(state, 'scanner/state.json'),
+        JSON.stringify({
+          schemaVersion: 1,
+          config: {
+            roots: scenario === 'partial' ? [consent.roots[0]] : consent.roots,
+            exclusions: [],
+            serverUrl: 'https://api.mnemonik.dev',
+          },
+          consent,
+          paused: false,
+          pauseIntervals: [],
+        })
+      );
+    }
+    const fetcher = options.fetch!;
+    let approved = false;
+    const authorize = vi.fn(async (selection?: unknown) => {
+      if (selection) approved = true;
+      return 'cli-token';
+    });
+    await prepareScanner(
+      {
+        ...options,
+        nonInteractive: false,
+        authorize,
+        fetch: async (url, init) => {
+          if (
+            !approved &&
+            scenario === 'missing-session' &&
+            String(url).includes('install-sessions')
+          )
+            return new Response(null, { status: 404 });
+          if (
+            !approved &&
+            scenario === 'changed-consent' &&
+            String(url).includes('scanner-consent')
+          )
+            return Response.json({
+              consent: { ...consent, disclosureVersion: 'old' },
+              disclosure: { version: consent.disclosureVersion, statements: [] },
+            });
+          return fetcher(url, init);
+        },
+      },
+      async (prepared) => {
+        expect(prepared.roots).toEqual(consent.roots);
+      }
+    );
+    const approvalCalls = authorize.mock.calls.filter(([selection]) => selection);
+    expect(approvalCalls).toEqual(
+      scenario === 'connected'
+        ? []
+        : [[{ roots: consent.roots, exclusions: [] }, '11111111-1111-4111-8111-111111111111']]
+    );
+  }
+);
+
+it('failed reconnection keeps an approved existing watch while explicit removal still takes effect', async () => {
+  const retained = consent.roots[0]!;
+  const removed = join(home, 'different');
+  await mkdir(join(state, 'scanner'), { recursive: true, mode: 0o700 });
+  await writeFile(
+    join(state, 'scanner/state.json'),
+    JSON.stringify({
+      schemaVersion: 1,
+      config: { roots: [retained, removed], exclusions: [], serverUrl: 'https://api.mnemonik.dev' },
+      consent: { ...consent, roots: [retained, removed] },
+      paused: false,
+      pauseIntervals: [],
+    }),
+    { mode: 0o600 }
+  );
+  await prepareScanner(options, async (prepared) => {
+    prepared.roots.splice(0);
+    const result = await prepared.apply(undefined, prepared.roots);
+    expect(result.scanner?.roots).toEqual([retained]);
+  });
+  const saved = JSON.parse(await readFile(join(state, 'scanner/state.json'), 'utf8'));
+  expect(saved.config.roots).toEqual([retained]);
+  expect(saved.consent.roots).toEqual([retained]);
+});
+
+it('standalone scanner enable restores the running scanner when its replacement download fails', async () => {
+  await enableScanner(options);
+  const path = join(state, 'scanner/state.json');
+  const before = await bytesAt(path);
+  const pointer = await bytesAt(store.pointerPath('scanner'));
+  await expect(
+    enableScanner({
+      ...options,
+      source: async () => {
+        throw new Error('download_failed');
+      },
+    })
+  ).rejects.toThrow('download_failed');
+  expect((await scannerService({ stateDir: state, store }).status()).running).toBe(true);
+  expect(await bytesAt(path)).toEqual(before);
+  expect(await bytesAt(store.pointerPath('scanner'))).toEqual(pointer);
+});
+
+it('Mac approval and final review leave existing indexing running without a pause', async () => {
+  await enableScanner(options);
+  const before = await bytesAt(join(state, 'scanner/state.json'));
+  const pointer = await bytesAt(store.pointerPath('scanner'));
+  await prepareScanner({ ...options, platform: 'darwin' }, async () => {
+    expect((await scannerReceipt(state))?.snapshot.lifecycle.state).toBe('running');
+    expect(await bytesAt(join(state, 'scanner/state.json'))).toEqual(before);
+    expect(await bytesAt(join(state, 'scanner/control.json'))).toBeNull();
+  });
+  expect(await bytesAt(store.pointerPath('scanner'))).toEqual(pointer);
+}, 20000);
+
+it.each(['success', 'offline-ready', 'transport-lost'] as const)(
+  'Mac reinstall stages a complete replacement before independent handoff (%s)',
+  async (ending) => {
+    await enableScanner(options);
+    const statePath = join(state, 'scanner/state.json');
+    const pointerPath = store.pointerPath('scanner');
+    const beforeState = await bytesAt(statePath);
+    const beforePointer = await bytesAt(pointerPath);
+    const priorPid = (await scannerReceipt(state))!.snapshot.lifecycle.pid!;
+    events = [];
+    const command = vi.fn<NonNullable<EnableOptions['command']>>(async (operation, definition) => {
+      expect(['status', 'install']).toContain(operation);
+      if (operation === 'install') {
+        // At this seam the independent supervisor has not yet accepted ownership.
+        expect(await bytesAt(statePath)).toEqual(beforeState);
+        expect(await bytesAt(pointerPath)).toEqual(beforePointer);
+        expect((await scannerReceipt(state))?.snapshot.lifecycle.state).toBe('running');
+        expect(await bytesAt(join(state, 'scanner/control.json'))).toBeNull();
+        const replacement = definition!.replacement!;
+        const nextState = JSON.parse(replacement.state!.after);
+        expect(nextState.config.credentialFamilyId).toBe('family-one');
+        expect(nextState.paused).toBe(false);
+        expect(JSON.parse(replacement.pointer.after).current.version).toBe('2.0.0');
+        expect(events).not.toContain('/api/v1/component-credentials');
+        // The native supervisor owns these writes and may finish after its caller loses contact.
+        await writeFile(statePath, replacement.state!.after);
+        await writeFile(pointerPath, replacement.pointer.after);
+        const receipt = (await scannerReceipt(state))!;
+        const startedAt = Date.now();
+        await mkdir(join(state, 'scanner/service-replacement'), { recursive: true });
+        await writeFile(
+          join(state, 'scanner/service-replacement/result.json'),
+          JSON.stringify({ pid: priorPid, startedAt })
+        );
+        receipt.recordedAt = startedAt + 1;
+        receipt.snapshot.heartbeat.lastSuccess = ending === 'offline-ready' ? null : startedAt + 1;
+        if (ending === 'offline-ready') {
+          receipt.snapshot.lifecycle.state = 'starting';
+          receipt.snapshot.startupTimings = { localReadyAt: startedAt + 1 };
+        }
+        await writeFile(join(state, 'scanner/status.json'), JSON.stringify(receipt));
+        if (ending === 'transport-lost') throw new Error('helper_transport_lost');
+      }
+      return {
+        status: 'ok',
+        supervisor: { kind: 'launchd', installed: true, running: true, pid: priorPid },
+      };
+    });
+    const run = enableScanner({
+      ...options,
+      platform: 'darwin',
+      command,
+      source: async () => source('2.0.0'),
+    });
+    if (ending !== 'transport-lost')
+      await expect(run).resolves.toMatchObject({
+        scanner: { version: '2.0.0', ...(ending === 'offline-ready' ? { heartbeatAt: null } : {}) },
+      });
+    else await expect(run).rejects.toThrow('helper_transport_lost');
+    expect(command.mock.calls.filter(([operation]) => operation === 'install')).toHaveLength(1);
+    expect(JSON.parse((await bytesAt(pointerPath))!.toString()).current.version).toBe('2.0.0');
+    expect(JSON.parse((await bytesAt(statePath))!.toString()).config.credentialFamilyId).toBe(
+      'family-one'
+    );
+    expect(events.some((event) => event.endsWith('/revoke'))).toBe(false);
+  },
+  20000
+);
+
+it('Mac managed replacement is preserved by later general install compensation', async () => {
+  await enableScanner(options);
+  const path = join(state, 'scanner/state.json');
+  const proposed = Buffer.from(
+    JSON.stringify({ ...JSON.parse((await bytesAt(path))!.toString()), boundary: 'new' })
+  );
+  await withInstall(
+    state,
+    {
+      account: 'owner',
+      hosts: [],
+      components: ['scanner'],
+      scopes: {},
+      roots: consent.roots,
+      credentials: [],
+      joined: true,
+    },
+    undefined,
+    async (journal) => {
+      const target = await journal.plan(path, proposed, {
+        kind: 'runtime',
+        group: 'scanner:managed-state',
+      });
+      await journal.commit(target);
+      journal.data.services.push({ id: 'scanner', before: '{}', started: true, managed: true });
+      journal.data.credentials.push({
+        reference: 'candidate-family',
+        kind: 'component',
+        component: 'scanner',
+      });
+      const restore = vi.fn(async () => {});
+      const revokeComponent = vi.fn(async () => true);
+      await compensate(journal, {
+        stateDir: state,
+        services: { restore },
+        revokeComponent,
+      } as unknown as InstallDependencies);
+      expect(restore).not.toHaveBeenCalled();
+      expect(revokeComponent).not.toHaveBeenCalled();
+      expect(await bytesAt(path)).toEqual(proposed);
+    }
+  );
+});
+
+it('fresh Mac install hands off only after its complete credential and state are staged', async () => {
+  const statePath = join(state, 'scanner/state.json');
+  const pointerPath = store.pointerPath('scanner');
+  const fetcher = options.fetch!;
+  const command = vi.fn<NonNullable<EnableOptions['command']>>(async (operation, definition) => {
+    if (operation === 'status')
+      return {
+        status: 'ok',
+        supervisor: { kind: 'launchd', installed: true, running: true, pid: 1234 },
+      };
+    expect(operation).toBe('install');
+    expect(await bytesAt(statePath)).toBeNull();
+    expect(await bytesAt(pointerPath)).toBeNull();
+    const replacement = definition!.replacement!;
+    expect(JSON.parse(replacement.state!.after).config.credentialFamilyId).toBe('new-family');
+    expect(await options.credentials!.readFamily('new-family')).not.toBeNull();
+    await writeFile(statePath, replacement.state!.after, { mode: 0o600 });
+    await writeFile(pointerPath, replacement.pointer.after, { mode: 0o600 });
+    const startedAt = Date.now();
+    await mkdir(join(state, 'scanner/service-replacement'), { recursive: true });
+    await writeFile(
+      join(state, 'scanner/service-replacement/result.json'),
+      JSON.stringify({ pid: 1234, startedAt })
+    );
+    await writeFile(
+      join(state, 'scanner/status.json'),
+      JSON.stringify({
+        recordedAt: startedAt + 1,
+        snapshot: {
+          lifecycle: { pid: 1234, state: 'running' },
+          heartbeat: { lastSuccess: startedAt + 1 },
+        },
+      })
+    );
+    return {
+      status: 'ok',
+      supervisor: { kind: 'launchd', installed: true, running: true, pid: 1234 },
+    };
+  });
+  await expect(
+    enableScanner({
+      ...options,
+      platform: 'darwin',
+      command,
+      fetch: async (url, init) => {
+        if (String(url).endsWith('/component-credentials')) {
+          expect(await bytesAt(statePath)).toBeNull();
+          expect(await bytesAt(pointerPath)).toBeNull();
+          return Response.json({
+            id: 'new-family',
+            access_token: 'fixture-access',
+            refresh_token: 'fixture-refresh',
+            scope: 'scanner:upload',
+            expires_in: 3600,
+            refresh_expires_in: 86400,
+            token_type: 'Bearer',
+          });
+        }
+        return fetcher(url, init);
+      },
+    })
+  ).resolves.toMatchObject({ scanner: { version: '1.0.0' } });
+  expect(command.mock.calls.filter(([operation]) => operation === 'install')).toHaveLength(1);
+}, 20000);

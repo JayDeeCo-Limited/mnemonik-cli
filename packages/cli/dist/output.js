@@ -172,11 +172,13 @@ export class Output {
                 this.lastHumanLineBlank = true;
                 count++;
             }
-            const text = this.installationLayout && line.text && line.text !== 'Mnemonik' && !heading
-                ? line.text.startsWith('  ')
-                    ? line.text
-                    : `  ${line.text}`
-                : line.text;
+            const text = approvalLink
+                ? (line.url ?? line.text)
+                : this.installationLayout && line.text && line.text !== 'Mnemonik' && !heading
+                    ? line.text.startsWith('  ')
+                        ? line.text
+                        : `  ${line.text}`
+                    : line.text;
             stream.write(`${line.url ? terminalUrl(line.url, stream, text) : text}\n`);
             this.lastHumanLineBlank = !text;
             count++;

@@ -675,3 +675,304 @@ it.each(['duplicate_project_id', 'fingerprint_mismatch'])(
     expect(JSON.parse(JSON.stringify(document)).installation.reasons).toEqual([reason]);
   }
 );
+
+it('a rolled-back automatic Mac update remains visible while the old scanner is healthy', async () => {
+  const { mkdtemp, mkdir, writeFile, rm } = await import('node:fs/promises');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { Readable } = await import('node:stream');
+  const { collectStatusDocument } = await import('../src/status.js');
+  const stateDir = await mkdtemp(join(tmpdir(), 'scanner-update-status-'));
+  try {
+    await mkdir(join(stateDir, 'scanner/service-replacement'), { recursive: true });
+    await writeFile(
+      join(stateDir, 'scanner/service-replacement/result.json'),
+      JSON.stringify({ fallback: true, pid: process.pid, startedAt: Date.now() - 100 })
+    );
+    const options = {
+      stateDir,
+      cwd: stateDir,
+      input: Readable.from(''),
+      preflight: {
+        status: 'ready' as const,
+        node: { supported: true, version: '24' },
+        os: 'macOS',
+        hosts: [],
+        project: { resolution: 'absent' as const },
+        network: { reachable: true, discoveryUrl: '' },
+      },
+      scannerStatus: async () => ({ roots: [stateDir], exclusions: [], repositories: [] }),
+      projectHookConditions: [],
+    };
+    await writeFile(
+      join(stateDir, 'scanner/status.json'),
+      JSON.stringify({
+        recordedAt: Date.now(),
+        snapshot: {
+          lifecycle: { pid: process.pid, state: 'running' },
+          heartbeat: { lastSuccess: Date.now() },
+        },
+      })
+    );
+    const failed = await collectStatusDocument(options);
+    expect(failed.installation).toMatchObject({
+      state: 'FAILED',
+      reasons: ['scanner_replacement_rolled_back'],
+      actions: ['Run mnemonik install to try again.'],
+    });
+    const lines: string[] = [];
+    renderStatusSummaries(failed, {
+      line: (value = '') => {
+        lines.push(value);
+        return 1;
+      },
+    });
+    expect(lines).toContain('Background indexing went back to the previous version.');
+    expect(lines).toContain('Run mnemonik install to try again.');
+    expect(lines).not.toContain('This machine needs attention before Mnemonik can work fully.');
+    const restoredAt = Date.now();
+    await writeFile(
+      join(stateDir, 'scanner/service-replacement/result.json'),
+      JSON.stringify({
+        fallback: true,
+        pid: process.pid,
+        startedAt: restoredAt - 100,
+      })
+    );
+    await writeFile(
+      join(stateDir, 'scanner/status.json'),
+      JSON.stringify({
+        recordedAt: restoredAt,
+        snapshot: {
+          lifecycle: { pid: process.pid, state: 'running' },
+          heartbeat: { lastSuccess: restoredAt },
+        },
+      })
+    );
+    expect((await collectStatusDocument(options)).installation).toEqual(failed.installation);
+    await writeFile(
+      join(stateDir, 'scanner/service-replacement/result.json'),
+      JSON.stringify({ pid: process.pid, startedAt: restoredAt - 100 })
+    );
+    const recovered = await collectStatusDocument(options);
+    expect(recovered.installation.reasons).not.toContain(
+      'Background indexing could not be started.'
+    );
+  } finally {
+    await rm(stateDir, { recursive: true, force: true });
+  }
+});
+
+it.each([
+  {
+    name: 'automatic legacy Mac update needs permission while its old scanner remains healthy',
+    receipt: { authorizationRequired: true },
+    reason: 'mac_authorization_required',
+    sentence: 'Mnemonik needs your Mac password to set up background indexing.',
+    action: 'Run mnemonik install in a terminal and enter your Mac password.',
+  },
+  {
+    name: 'scanner is still within its startup window',
+    receipt: { pid: process.pid, startedAt: Date.now() },
+    reason: 'scanner_replacement_pending',
+    sentence: 'Background indexing is restarting with a new version.',
+    action: 'Wait a minute, then run mnemonik status.',
+  },
+  {
+    name: 'first install failed without any previous scanner',
+    receipt: {
+      candidateError: 'ENOENT',
+      fallbackError: 'scanner_fallback_missing',
+    },
+    reason: 'scanner_replacement_candidate_failed',
+    sentence: 'Background indexing could not be started.',
+    action: 'Run mnemonik install to try again.',
+  },
+  {
+    name: 'both versions failed',
+    receipt: {
+      candidateError: 'candidate_spawn_EACCES',
+      fallbackError: 'fallback_spawn_ENOEXEC',
+    },
+    reason: 'scanner_replacement_failed',
+    sentence:
+      'Background indexing could not be started. Mnemonik tried the new version and the last working one.',
+    action: 'Run mnemonik install to try again.',
+  },
+  {
+    name: 'both versions failed without disk space',
+    receipt: {
+      candidateError: 'candidate_spawn_ENOSPC',
+      fallbackError: 'fallback_spawn_ENOSPC',
+    },
+    reason: 'scanner_replacement_failed',
+    sentence:
+      'Background indexing could not be started. Mnemonik tried the new version and the last working one.',
+    action: 'Free disk space on this computer, then run mnemonik install.',
+  },
+  {
+    name: 'a deliberate stop is not an interrupted replacement',
+    receipt: { stopped: true },
+    reason: 'scanner_stopped',
+    sentence: 'Background indexing is stopped on this computer.',
+    action: 'Run mnemonik scanner start and enter your Mac password to start it again.',
+  },
+  {
+    name: 'startup is overdue even if its PID is reused',
+    receipt: { pid: process.pid, startedAt: 1 },
+    reason: 'scanner_replacement_interrupted',
+    sentence: 'Background indexing could not be started.',
+    action: 'Run mnemonik install to try again.',
+  },
+])(
+  'real status names $name and provides an SSH recovery action',
+  async ({ receipt, reason, sentence, action }) => {
+    const { mkdtemp, mkdir, writeFile, rm } = await import('node:fs/promises');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const { Readable } = await import('node:stream');
+    const { collectStatusDocument } = await import('../src/status.js');
+    const stateDir = await mkdtemp(join(tmpdir(), 'scanner-recovery-status-'));
+    try {
+      const directory = join(stateDir, 'scanner/service-replacement');
+      await mkdir(directory, { recursive: true });
+      if (receipt) await writeFile(join(directory, 'result.json'), JSON.stringify(receipt));
+      const result = await collectStatusDocument({
+        stateDir,
+        cwd: stateDir,
+        input: Readable.from(''),
+        preflight: {
+          status: 'ready',
+          node: { supported: true, version: '24' },
+          os: 'macOS',
+          hosts: [],
+          project: { resolution: 'absent' },
+          network: { reachable: true, discoveryUrl: '' },
+        },
+        projectHookConditions: [],
+        ...(reason === 'mac_authorization_required'
+          ? { scannerStatus: async () => ({ roots: [stateDir], exclusions: [], repositories: [] }) }
+          : {}),
+      });
+      expect(result.installation.state).toBe(
+        reason === 'mac_authorization_required'
+          ? 'ACTION_REQUIRED'
+          : reason === 'scanner_replacement_pending' || reason === 'scanner_stopped'
+            ? 'LIMITED'
+            : 'FAILED'
+      );
+      expect(result.installation.reasons).toEqual([expect.stringContaining(reason)]);
+      if (receipt && 'candidateError' in receipt) {
+        expect(result.installation.reasons[0]).toContain(receipt.candidateError);
+        expect(result.installation.reasons[0]).toContain(receipt.fallbackError);
+      }
+      const lines: string[] = [];
+      renderStatusSummaries(result, {
+        line: (line = '') => {
+          lines.push(line);
+          return 1;
+        },
+      });
+      expect(lines.join('\n')).toContain(sentence);
+      expect(lines.join('\n')).toContain(action);
+      expect(lines.join('\n')).not.toContain('The scanner has not checked in yet.');
+      expect(lines.join('\n')).not.toContain('after the scanner starts');
+    } finally {
+      await rm(stateDir, { recursive: true, force: true });
+    }
+  }
+);
+
+it.each(['candidate', 'fallback', 'stale-readiness', 'wrong-pid', 'stale-receipt'])(
+  'offline local readiness gives truthful update status: %s',
+  async (mode) => {
+    const { mkdtemp, mkdir, writeFile, rm } = await import('node:fs/promises');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const { Readable } = await import('node:stream');
+    const { collectStatusDocument } = await import('../src/status.js');
+    const stateDir = await mkdtemp(join(tmpdir(), 'scanner-local-ready-status-'));
+    try {
+      const now = Date.now();
+      const startedAt = now - 200000;
+      await mkdir(join(stateDir, 'scanner/service-replacement'), { recursive: true });
+      await writeFile(
+        join(stateDir, 'scanner/service-replacement/result.json'),
+        JSON.stringify({
+          pid: process.pid,
+          startedAt,
+          fallback: mode === 'fallback',
+        })
+      );
+      await writeFile(
+        join(stateDir, 'scanner/state.json'),
+        JSON.stringify({ config: { roots: [] } })
+      );
+      await writeFile(
+        join(stateDir, 'scanner/status.json'),
+        JSON.stringify({
+          recordedAt: mode === 'stale-receipt' ? startedAt - 1 : now,
+          snapshot: {
+            lifecycle: {
+              state: 'starting',
+              pid: mode === 'wrong-pid' ? process.pid + 1 : process.pid,
+            },
+            startupTimings: {
+              localReadyAt: mode === 'stale-readiness' ? startedAt - 1 : startedAt + 1,
+            },
+            heartbeat: { lastSuccess: null },
+          },
+        })
+      );
+      const document = await collectStatusDocument({
+        stateDir,
+        cwd: stateDir,
+        input: Readable.from(''),
+        projectHookConditions: [],
+        scannerRecovery: { platform: 'linux' },
+        preflight: {
+          status: 'ready',
+          node: { supported: true, version: '24' },
+          os: 'macOS',
+          hosts: [],
+          project: { resolution: 'absent' },
+          network: { reachable: false, discoveryUrl: '' },
+        },
+      });
+      if (mode === 'candidate') {
+        expect(
+          document.installation.reasons.some((reason) => reason.startsWith('scanner_replacement_'))
+        ).toBe(false);
+        expect(document.installation.state).not.toBe('READY');
+      } else if (mode === 'fallback') {
+        const lines: string[] = [];
+        renderStatusSummaries(document, {
+          line: (line = '') => {
+            lines.push(line);
+            return 1;
+          },
+        });
+        expect(lines).toContain('Background indexing went back to the previous version.');
+        expect(lines).toContain('Run mnemonik install to try again.');
+        expect(document.installation.reasons).not.toContain('scanner_replacement_interrupted');
+      } else expect(document.installation.reasons).toContain('scanner_replacement_interrupted');
+    } finally {
+      await rm(stateDir, { recursive: true, force: true });
+    }
+  }
+);
+
+it('a state with nothing to do about it says so on one line', () => {
+  const document = buildStatusDocument({
+    installationConditions: [
+      { kind: 'selected_component_failed', component: 'scanner', reason: 'scanner_other_account' },
+    ],
+    scannerStatus: { roots: [], exclusions: [], repositories: [] },
+    projectHookConditions: [],
+  });
+  const lines: string[] = [];
+  renderStatusSummaries(document, { line: (line = '') => lines.push(line) });
+  const sentence = 'Background indexing is already set up for another account on this Mac.';
+  expect(lines).toContain(sentence);
+  expect(lines[lines.indexOf(sentence) + 1]).not.toBe('');
+});

@@ -3,6 +3,8 @@ import { DEVICE_APPROVAL_INSTRUCTION } from '../auth/device.js';
 export const completedStep = (step, text) => `Step ${step} of 5: ${text}`;
 export const completedLine = (text) => `  ✓ ${text}`;
 export const INSTALLATION_STOPPED = 'Installation stopped.';
+export const SCANNER_FAILURE_MESSAGE = 'Background indexing could not be started.';
+export const SCANNER_RETRY_MESSAGE = 'Run mnemonik install to try again.';
 export const ADD_ANOTHER_FOLDER = 'To connect a folder somewhere else, run mnemonik add <folder>.';
 export const stepProgress = (output, interactive, text) => output.progressLine(interactive ? text : `  ${text}`, interactive);
 function setupLines(items, cursor = 0) {
@@ -100,13 +102,15 @@ export function renderJourney(screen, output, v = {}) {
             '',
         ],
         windows: [
-            '  Background indexing could not be started.',
-            '  Run mnemonik install to try again.',
+            // A bare reason code is never shown to a person: main's rule, kept here.
+            `  ${SCANNER_FAILURE_MESSAGE}`,
+            `  ${SCANNER_RETRY_MESSAGE}`,
             '',
         ],
         scanner_failed: [
-            '  Background indexing could not be started.',
-            '  Run mnemonik install to try again.',
+            `  ${v.scannerFailureMessage ?? SCANNER_FAILURE_MESSAGE}`,
+            // Some failures leave nothing for the person to do, and say so on one line.
+            ...(v.action === '' ? [] : [`  ${v.action ?? SCANNER_RETRY_MESSAGE}`]),
             ...(authorization.length ? ['', ...authorization] : ['']),
         ],
         authorization,

@@ -202,6 +202,9 @@ export class Journal {
     async restoreFiles() {
         const failures = [];
         for (const target of [...this.data.targets].reverse()) {
+            if (target.group?.startsWith('scanner:') &&
+                this.data.services.some((service) => service.id === 'scanner' && service.managed))
+                continue;
             try {
                 await this.restore(target);
             }

@@ -182,7 +182,11 @@ it.each(['indexing-skipped marker', 'retired host ownership'])(
   }
 );
 
-async function runJourney(uncheckCodex = false, onlyIndexing = false) {
+async function runJourney(
+  uncheckCodex = false,
+  onlyIndexing = false,
+  beforeApply?: (terminal: Terminal) => Promise<void>
+) {
   const home = await mkdtemp(join(tmpdir(), 'journey-transcript-'));
   homes.push(home);
   const stateDir = join(home, 'state');
@@ -339,6 +343,7 @@ async function runJourney(uncheckCodex = false, onlyIndexing = false) {
   await vi.waitFor(() => expect(terminal.text()).toContain('Install and upload'), {
     timeout: 5_000,
   });
+  await beforeApply?.(terminal);
   input.write('\r');
   await expect(install).resolves.toBe(0);
   return { text: terminal.text(), selections };
@@ -356,7 +361,7 @@ Step 1 of 5: Choose what to set up
 Step 2 of 5: Sign in
   Please approve the device by opening the link below.
 
-  https://auth.mnemonik.ai/oauth/device?user_code=XCDM-KZGJ
+https://auth.mnemonik.ai/oauth/device?user_code=XCDM-KZGJ
 
   Approve only a request on a device you control.
   ✓ Signed in
@@ -369,7 +374,7 @@ Step 4 of 5: Connect repositories
   ~/projects
   Please choose your repositories by opening the link below.
 
-  https://auth.mnemonik.ai/oauth/device?user_code=WKSG-ZKHW
+https://auth.mnemonik.ai/oauth/device?user_code=WKSG-ZKHW
 
   Approve only a request on a device you control.
   ✓ Connected 15 repositories.
@@ -388,27 +393,46 @@ Step 5 of 5: Finish
   expect(text).not.toMatch(/Waiting for|Repositories connected|Recommended/u);
 });
 
-it('keeps an approval link on its own selectable line while progress redraws below it', () => {
-  vi.useFakeTimers();
-  const terminal = new Terminal();
-  const output = new Output(terminal);
-  output.beginInstallation();
-  output.line(DEVICE_APPROVAL_INSTRUCTION);
-  const progress = output.progressLine('Waiting for approval', true);
+it('leaves the finish menu still while waiting for the install decision', async () => {
+  await runJourney(false, false, async (terminal) => {
+    const waiting = terminal.text();
+    expect(waiting).not.toContain('Connecting your repositories');
+    expect(waiting).toContain('  > Install and upload\n    Back\n    Cancel');
+    await new Promise((resolve) => setTimeout(resolve, 240));
+    expect(terminal.text()).toBe(waiting);
+  });
+});
 
-  expect(output.line('https://auth.mnemonik.ai/oauth/device?user_code=XCDM-KZGJ')).toBe(3);
-  expect(terminal.text()).toBe(`Mnemonik
+it.each([false, true])(
+  'keeps approval links flush left with blank lines while progress redraws (hyperlinks: %s)',
+  (supportsHyperlinks) => {
+    vi.useFakeTimers();
+    const terminal = new Terminal();
+    terminal.supportsHyperlinks = supportsHyperlinks;
+    const write = vi.spyOn(terminal, 'write');
+    const output = new Output(terminal);
+    output.beginInstallation();
+    output.line(DEVICE_APPROVAL_INSTRUCTION);
+    const progress = output.progressLine('Waiting for approval', true);
+
+    expect(output.line('https://auth.mnemonik.ai/oauth/device?user_code=XCDM-KZGJ')).toBe(3);
+    expect(terminal.text()).toBe(`Mnemonik
 
   Please approve the device by opening the link below.
 
-  https://auth.mnemonik.ai/oauth/device?user_code=XCDM-KZGJ
+https://auth.mnemonik.ai/oauth/device?user_code=XCDM-KZGJ
 
   / Waiting for approval`);
-  expect(terminal.text().split('\n')).toHaveLength(7);
+    expect(terminal.text().split('\n')).toHaveLength(7);
+    const url = 'https://auth.mnemonik.ai/oauth/device?user_code=XCDM-KZGJ';
+    expect(write).toHaveBeenCalledWith(
+      supportsHyperlinks ? `\u001b]8;;${url}\u0007${url}\u001b]8;;\u0007\n` : `${url}\n`
+    );
 
-  progress.stop();
-  vi.useRealTimers();
-});
+    progress.stop();
+    vi.useRealTimers();
+  }
+);
 
 it('Space on Codex then Enter configures only the other two editors', async () => {
   const { text, selections } = await runJourney(true);

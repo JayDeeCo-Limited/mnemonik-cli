@@ -2,9 +2,11 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
+import { SystemdAdapter } from '../../scanner/src/supervisor/systemd.js';
 import {
   maybeStartAutomaticUpdate,
   startAutomaticUpdateForSession,
+  type AutomaticUpdateOptions,
 } from '../src/automaticUpdate.js';
 
 const directories: string[] = [];
@@ -17,11 +19,11 @@ afterEach(async () => {
 async function fixture() {
   const stateDir = await mkdtemp(join(tmpdir(), 'automatic-update-'));
   directories.push(stateDir);
-  const spawn = vi.fn(() => ({
+  const spawn = vi.fn<NonNullable<AutomaticUpdateOptions['spawn']>>(() => ({
     once: vi.fn(),
     unref: vi.fn(),
   }));
-  return { stateDir, spawn };
+  return { stateDir, spawn, env: { INVOCATION_ID: 'fixture-service' } };
 }
 
 it('claims exactly at the 24-hour boundary', async () => {
@@ -35,10 +37,64 @@ it('claims exactly at the 24-hour boundary', async () => {
   expect(await maybeStartAutomaticUpdate({ ...options, now: () => 86_400_000 })).toBe(true);
   expect(f.spawn).toHaveBeenCalledOnce();
   expect(f.spawn).toHaveBeenCalledWith(
+    'systemd-run',
+    [
+      '--user',
+      '--collect',
+      '--quiet',
+      `--setenv=MNEMONIK_STATE_DIR=${f.stateDir}`,
+      '--',
+      join(f.stateDir, '.local', 'bin', 'mnemonik'),
+      'update',
+      '--automatic',
+    ],
+    expect.objectContaining({ detached: true, stdio: 'ignore' })
+  );
+});
+
+it('a scanner-triggered Linux update runs outside the scanner service cgroup', async () => {
+  const f = await fixture();
+  let updaterAlive = false;
+  let updaterCgroup = '';
+  f.spawn.mockImplementation((file: string) => {
+    updaterAlive = true;
+    updaterCgroup = file === 'systemd-run' ? 'run-update.service' : 'mnemonik-scanner.service';
+    return { once: vi.fn(), unref: vi.fn() };
+  });
+  await maybeStartAutomaticUpdate({ ...f, home: f.stateDir, platform: 'linux' });
+  await new SystemdAdapter({
+    run: async (_file, args) => {
+      // systemd stop kills the scanner's whole cgroup, including detached children.
+      if (args.includes('stop') && updaterCgroup === 'mnemonik-scanner.service')
+        updaterAlive = false;
+      return '';
+    },
+  }).stop();
+  expect(updaterAlive).toBe(true);
+});
+
+it('an ordinary Linux host updates without requiring a systemd user manager', async () => {
+  const f = await fixture();
+  expect(
+    await maybeStartAutomaticUpdate({ ...f, home: f.stateDir, platform: 'linux', env: {} })
+  ).toBe(true);
+  expect(f.spawn).toHaveBeenCalledWith(
     join(f.stateDir, '.local', 'bin', 'mnemonik'),
     ['update', '--automatic'],
     expect.objectContaining({ detached: true, stdio: 'ignore' })
   );
+});
+
+it('failure to launch a separate Linux update service never falls back to a scanner child', async () => {
+  const f = await fixture();
+  f.spawn.mockImplementation(() => {
+    throw new Error('systemd-run unavailable');
+  });
+  expect(await maybeStartAutomaticUpdate({ ...f, home: f.stateDir, platform: 'linux' })).toBe(
+    false
+  );
+  expect(f.spawn).toHaveBeenCalledOnce();
+  expect(f.spawn.mock.calls[0]?.[0]).toBe('systemd-run');
 });
 
 it('allows one of 20 concurrent starts to spawn', async () => {
