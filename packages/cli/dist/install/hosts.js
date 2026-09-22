@@ -561,6 +561,7 @@ export async function runHosts(command, selections, deps, allowMigration = false
                     elapsedMs: run.elapsedMs ?? 0,
                     status: inspection?.trustPending ? 'ACTION_REQUIRED' : 'READY',
                     reason: run.reason,
+                    ...((inspection?.grant ?? beforeInspection.grant) ? { signedIn: true } : {}),
                     ...(actionFor(run.reason, selection, inspection?.resolvedPath)
                         ? {
                             action: actionFor(run.reason, selection, inspection?.resolvedPath),

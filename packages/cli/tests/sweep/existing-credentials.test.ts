@@ -110,7 +110,9 @@ describe('existing credentials', () => {
     f.cli.cliAuth = createCliAuth({ credentials, now: () => now });
 
     expect(await f.run()).toBe(1);
-    expect(f.stderr.text).toContain('This machine needs attention before Mnemonik can work fully.');
+    expect(f.stderr.text).toContain(
+      'A Mnemonik credential file can be read by other users on this computer.'
+    );
     expect(f.stderr.text).not.toContain('weak_permissions');
     expect(await readFile(path)).toEqual(before);
     expect((await stat(path)).mode & 0o777).toBe(0o644);

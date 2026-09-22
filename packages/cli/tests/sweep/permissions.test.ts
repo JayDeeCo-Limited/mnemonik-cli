@@ -25,7 +25,7 @@ describe.runIf(process.platform !== 'win32')('permission failures', () => {
     const f = await fixture();
     await chmod(f.stateDir, 0o500);
     expect(await f.run()).toBe(1);
-    expect(f.stderr.text).toContain('This machine needs attention before Mnemonik can work fully.');
+    expect(f.stderr.text).toContain('Mnemonik does not have permission to write a file it needs.');
     expect(f.stderr.text).not.toContain('permission_denied');
     await expectOriginalHosts(f);
     await expect(f.journal()).rejects.toThrow();
@@ -40,7 +40,7 @@ describe.runIf(process.platform !== 'win32')('permission failures', () => {
     const f = await fixture();
     await chmod(f.hostPaths.codex, 0o400);
     expect(await f.run()).toBe(1);
-    expect(f.stdout.text).toContain('This machine needs attention before Mnemonik can work fully.');
+    expect(f.stdout.text).toContain('An editor settings file cannot be written.');
     expect(f.stdout.text).not.toContain('target_read_only');
     await expectOriginalHosts(f);
     expect((await f.journal()).targets.filter((target) => target.kind === 'host')).toHaveLength(1);
@@ -55,7 +55,7 @@ describe.runIf(process.platform !== 'win32')('permission failures', () => {
     const f = await fixture();
     await chmod(f.root, 0o500);
     expect(await f.run()).toBe(1);
-    expect(f.stdout.text).toContain('This machine needs attention before Mnemonik can work fully.');
+    expect(f.stdout.text).toContain('Mnemonik does not have permission to write a file it needs.');
     expect(f.stdout.text).not.toContain('permission_denied');
     expect(f.counts.remoteCreates).toBe(0);
     await expectOriginalHosts(f);

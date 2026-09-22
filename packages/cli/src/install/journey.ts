@@ -1057,11 +1057,17 @@ export async function joinedInstall(
     const selectedHosts = names.filter((name): name is (typeof launchHosts)[number] =>
       launchHosts.includes(name as never)
     );
-    const authorizationHosts = indexingOnly
-      ? []
-      : selectedHosts.length
-        ? selectedHosts
-        : launchHosts.filter((host) => configuredTargets.some((target) => target.host === host));
+    // An editor that already holds a Mnemonik grant has nothing left to authorize.
+    const authorized = new Set(
+      result.results.filter((entry) => entry.signedIn).map((entry) => entry.target.split(':')[0])
+    );
+    const authorizationHosts = (
+      indexingOnly
+        ? []
+        : selectedHosts.length
+          ? selectedHosts
+          : launchHosts.filter((host) => configuredTargets.some((target) => target.host === host))
+    ).filter((host) => !authorized.has(host));
     if (json)
       output.json({
         ...final,

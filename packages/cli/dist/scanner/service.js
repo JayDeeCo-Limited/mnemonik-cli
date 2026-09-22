@@ -54,11 +54,11 @@ const SCANNER_SENTENCES = {
     ],
     scanner_replacement_pending: [
         'Background indexing is restarting with a new version.',
-        'Wait a minute, then run mnemonik status.',
+        'Wait a minute, then check again.',
     ],
     heartbeat_timeout: [
         'Background indexing started but has not reported yet.',
-        'Wait a minute, then run mnemonik status.',
+        'Wait a minute, then check again.',
     ],
 };
 export class ScannerServiceLimited extends Error {

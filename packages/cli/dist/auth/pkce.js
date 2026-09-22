@@ -61,6 +61,92 @@ function parseTokens(response, body) {
         scope: body.scope,
     };
 }
+export const EDITOR_SIGN_IN_INSTRUCTION = 'Open this link to sign in:';
+/** The editor's exit code, or -1 once the sign-in deadline has passed. */
+async function exitedBy(exited, milliseconds) {
+    let timer;
+    try {
+        return await Promise.race([
+            exited,
+            new Promise((resolve) => {
+                timer = setTimeout(() => resolve(-1), Math.max(0, milliseconds));
+            }),
+        ]);
+    }
+    finally {
+        if (timer)
+            clearTimeout(timer);
+    }
+}
+const isLoopbackCallback = (url) => !!url && url.protocol === 'http:' && LOOPBACK_HOSTS.has(url.hostname);
+const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '[::1]']);
+/**
+ * Sign an editor on this machine in when the browser is on another machine.
+ * The editor keeps its PKCE verifier and its loopback port; only its redirect
+ * travels, collected once from the server and replayed to that port here.
+ */
+export async function runEditorLogin(options) {
+    const [file, ...args] = options.command;
+    if (!file)
+        return 'failed';
+    const fetchImpl = options.fetch ?? fetch;
+    const sleep = options.sleep ??
+        ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)));
+    const now = options.now ?? Date.now;
+    const deadline = now() + (options.timeoutMs ?? 600_000);
+    const child = (options.spawn ?? spawn)(file, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    const exited = new Promise((resolve) => {
+        child.once('error', () => resolve(1));
+        child.once('close', (code) => resolve(code ?? 1));
+    });
+    let settle;
+    const printed = new Promise((resolve) => (settle = resolve));
+    let seen = '';
+    for (const stream of [child.stdout, child.stderr])
+        stream?.on('data', (chunk) => {
+            seen += chunk.toString();
+            const match = /https?:\/\/[^\s'"]*\/oauth\/authorize\?[^\s'"]+/.exec(seen);
+            if (match)
+                settle(match[0].replace(/[.,;)\]]+$/u, ''));
+        });
+    const authorizeUrl = await Promise.race([printed, exited.then(() => '')]);
+    // Only this server's own authorize URL is worth showing or polling for.
+    const authorize = authorizeUrl ? URL.parse(authorizeUrl) : null;
+    const state = authorize && authorize.origin === URL.parse(options.issuer)?.origin
+        ? authorize.searchParams.get('state')
+        : null;
+    if (!state) {
+        child.kill();
+        return 'failed';
+    }
+    options.print(EDITOR_SIGN_IN_INSTRUCTION);
+    options.print(authorizeUrl);
+    const poll = new URL(`/api/v1/auth/editor-callback/${encodeURIComponent(state)}`, options.apiOrigin);
+    while (now() < deadline) {
+        // A blip on the way to the server is worth another poll, not a failure.
+        const response = await fetchImpl(poll, {
+            headers: { authorization: `Bearer ${await options.bearer()}` },
+        }).catch(() => undefined);
+        const body = response?.ok
+            ? (await response.json().catch(() => ({})))
+            : {};
+        if (typeof body.url === 'string') {
+            // The editor is listening on this machine's loopback port, not the browser's.
+            const callback = URL.parse(body.url);
+            if (!isLoopbackCallback(callback))
+                return 'failed';
+            const delivered = await fetchImpl(callback, { redirect: 'manual' }).then(() => true, () => false);
+            // An editor that has its callback but will not exit has had its chance.
+            const code = delivered ? await exitedBy(exited, deadline - now()) : -1;
+            if (code !== 0)
+                child.kill();
+            return code === 0 ? 'signed_in' : 'failed';
+        }
+        await sleep(options.pollMs ?? 2000);
+    }
+    child.kill();
+    return 'not_approved';
+}
 export async function runPkce(options) {
     const issuer = options.issuer.replace(/\/$/u, '');
     const random = options.random ?? randomBytes;

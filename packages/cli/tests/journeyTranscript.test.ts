@@ -185,7 +185,8 @@ it.each(['indexing-skipped marker', 'retired host ownership'])(
 async function runJourney(
   uncheckCodex = false,
   onlyIndexing = false,
-  beforeApply?: (terminal: Terminal) => Promise<void>
+  beforeApply?: (terminal: Terminal) => Promise<void>,
+  signedIn: string[] = []
 ) {
   const home = await mkdtemp(join(tmpdir(), 'journey-transcript-'));
   homes.push(home);
@@ -249,6 +250,7 @@ async function runJourney(
               status: 'READY',
               reason: '',
               action: '',
+              ...(signedIn.includes(selection.host) ? { signedIn: true } : {}),
             }) as HostResult
         );
         await dependencies.afterHosts?.(journal, results, async () => undefined);
@@ -441,6 +443,22 @@ it('omits authorization for a previously configured editor unticked at Step 1', 
   const { text, selections } = await runJourney(false, true);
   expect(selections).toEqual([]);
   expect(text).toContain('  ✓ automatic project indexing');
+  expect(text).not.toContain('Authorize the Mnemonik MCP connection');
+  expect(text).not.toContain('Codex CLI');
+});
+
+it('asks only the editors that are not signed in to authorize', async () => {
+  const { text } = await runJourney(false, false, undefined, ['claude-code', 'cursor']);
+  expect(text).not.toContain('Claude Code      type /mcp');
+  expect(text).not.toContain('Cursor Desktop');
+  expect(text).toContain(
+    '  One step is left in each editor: Authorize the Mnemonik MCP connection.'
+  );
+  expect(text).toContain('Codex CLI        run codex mcp login mnemonik');
+});
+
+it('says nothing about authorizing when every editor is signed in', async () => {
+  const { text } = await runJourney(false, false, undefined, ['claude-code', 'codex', 'cursor']);
   expect(text).not.toContain('Authorize the Mnemonik MCP connection');
   expect(text).not.toContain('Codex CLI');
 });

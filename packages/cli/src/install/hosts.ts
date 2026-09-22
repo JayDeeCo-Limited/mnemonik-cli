@@ -79,6 +79,8 @@ export interface HostResult {
   reason: string;
   detail?: string;
   action?: string;
+  /** The editor already holds a Mnemonik grant, so it has nothing left to authorize. */
+  signedIn?: true;
 }
 export function codexTrustAction(resolvedPath?: string): string {
   const desktop =
@@ -696,6 +698,7 @@ export async function runHosts(
             elapsedMs: run.elapsedMs ?? 0,
             status: inspection?.trustPending ? 'ACTION_REQUIRED' : 'READY',
             reason: run.reason,
+            ...((inspection?.grant ?? beforeInspection.grant) ? { signedIn: true as const } : {}),
             ...(actionFor(run.reason, selection, inspection?.resolvedPath)
               ? {
                   action: actionFor(run.reason, selection, inspection?.resolvedPath),

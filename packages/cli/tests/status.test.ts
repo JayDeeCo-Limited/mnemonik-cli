@@ -96,9 +96,9 @@ describe('installation and project status', () => {
     expect(lines).toEqual([
       'Installation: Needs attention.',
       'The scanner has not checked in yet.',
-      'Run mnemonik status on this machine after the scanner starts.',
+      'Wait a minute for indexing to start.',
       'Mnemonik has not received context from an editor hook yet.',
-      'Start a new editor session, then run mnemonik status.',
+      'Start a new session in that editor.',
     ]);
   });
 });
@@ -138,7 +138,15 @@ it('hides launcher paths, credential diagnostics and readiness reason codes', ()
 
   expect(lines).toContain('An editor is signed out of Mnemonik on this machine.');
   expect(lines).toContain('Sign in to Mnemonik from that editor to restore context.');
-  expect(lines).toContain('This machine needs attention before Mnemonik can work fully.');
+  // A code with no words says a failure plainly; the old catch-all sentence is gone.
+  expect(lines).not.toContain('This machine needs attention before Mnemonik can work fully.');
+  expect(lines).toEqual([
+    'Installation: Needs attention.',
+    'An editor is signed out of Mnemonik on this machine.',
+    'Sign in to Mnemonik from that editor to restore context.',
+    'Mnemonik stopped before it finished.',
+    'Run mnemonik repair.',
+  ]);
   expect(document.installation.reasons).toEqual(['host_grant_unbound', 'future_readiness_code']);
   expect(lines.join('\n')).not.toMatch(
     /\/home\/dev|CLI credential|Launcher:|host_grant_unbound|future_readiness_code|os_store_unavailable/u
@@ -776,7 +784,7 @@ it.each([
     receipt: { pid: process.pid, startedAt: Date.now() },
     reason: 'scanner_replacement_pending',
     sentence: 'Background indexing is restarting with a new version.',
-    action: 'Wait a minute, then run mnemonik status.',
+    action: 'Wait a minute, then check again.',
   },
   {
     name: 'first install failed without any previous scanner',
@@ -975,4 +983,173 @@ it('a state with nothing to do about it says so on one line', () => {
   const sentence = 'Background indexing is already set up for another account on this Mac.';
   expect(lines).toContain(sentence);
   expect(lines[lines.indexOf(sentence) + 1]).not.toBe('');
+});
+
+it('says the machine lines only from a folder that is not a project', async () => {
+  const { mkdtemp, rm } = await import('node:fs/promises');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { Readable } = await import('node:stream');
+  const { collectStatusDocument } = await import('../src/status.js');
+  const stateDir = await mkdtemp(join(tmpdir(), 'root-folder-status-'));
+  try {
+    const document = await collectStatusDocument({
+      stateDir,
+      cwd: stateDir,
+      input: Readable.from(''),
+      executor: {
+        stage: async () => {
+          throw new Error('a folder that is not a project must not be read as one');
+        },
+      } as never,
+      preflight: {
+        status: 'ready',
+        node: { supported: true, version: '24' },
+        os: 'Linux',
+        hosts: [],
+        // What a root projects folder resolves to: a folder, with no project file.
+        project: { root: stateDir, resolution: 'absent' },
+        network: { reachable: true, discoveryUrl: '' },
+      },
+      scannerStatus: async () => ({
+        roots: ['/work/beta', '/work/Alpha'],
+        exclusions: [],
+        repositories: [],
+      }),
+      projectHookConditions: [],
+    });
+    expect(document.projects).toBeUndefined();
+    const lines: string[] = [];
+    renderStatusSummaries(document, { line: (line = '') => lines.push(line) });
+    expect(lines).toEqual(['Mnemonik is installed and working.', 'Connected: Alpha, beta']);
+  } finally {
+    await rm(stateDir, { recursive: true, force: true });
+  }
+});
+
+it('lists each connected project once, in alphabetical order', () => {
+  const lines: string[] = [];
+  renderStatusSummaries(
+    buildStatusDocument({
+      installationConditions: [],
+      scannerStatus: {
+        roots: ['/a/dokploy-mcp-server', '/b/dokploy-mcp-server', '/c/Bolt', '/d/apples'],
+        exclusions: [],
+        repositories: [],
+      },
+      projectHookConditions: [],
+    }),
+    { line: (line = '') => lines.push(line) }
+  );
+  expect(lines).toContain('Connected: apples, Bolt, dokploy-mcp-server');
+});
+
+it('says nothing about indexing once the scanner has reported', () => {
+  const reported = buildStatusDocument({
+    installationConditions: [],
+    scannerReported: true,
+    projectHookConditions: [],
+  });
+  expect(reported.installation).toEqual({ state: 'READY', reasons: [], actions: [] });
+  expect(reported.conditions).toEqual([]);
+  const silent = buildStatusDocument({ installationConditions: [], projectHookConditions: [] });
+  expect(silent.installation.actions).toEqual(['Run mnemonik status after indexing starts.']);
+});
+
+it('says nothing under a heading it cannot fill', () => {
+  const lines: string[] = [];
+  const hook: ReadinessCondition = {
+    kind: 'hook_not_verified',
+    component: 'codex',
+    reason: 'hook_not_verified',
+    action: 'Start a new session in that editor.',
+  };
+  // The same hook condition reaches both sections; the second copy is dropped.
+  renderStatusSummaries(
+    buildStatusDocument({
+      installationConditions: [hook],
+      projectStatus: project,
+      scannerStatus: { roots: ['/work'], exclusions: [], repositories: [] },
+      projectHookConditions: [hook],
+    }),
+    { line: (line = '') => lines.push(line) }
+  );
+  expect(lines).toEqual([
+    'Installation: Needs attention.',
+    'Mnemonik has not received context from an editor hook yet.',
+    'Start a new session in that editor.',
+    'Connected: work',
+  ]);
+  expect(lines).not.toContain('This project: Needs attention.');
+});
+
+it('keeps the line for a repository nobody has connected yet', () => {
+  const lines: string[] = [];
+  renderStatusSummaries(
+    buildStatusDocument({
+      installationConditions: [],
+      projectStatus: { ...project, identity: 'absent', projectId: null },
+      scannerStatus: { roots: ['/elsewhere'], exclusions: [], repositories: [] },
+      projectHookConditions: [],
+    }),
+    { line: (line = '') => lines.push(line) }
+  );
+  expect(lines).toEqual([
+    'Mnemonik is installed and working.',
+    'Connected: elsewhere',
+    'This project: Needs attention.',
+    'This project is not connected.',
+    'Run mnemonik add /work/acme.',
+  ]);
+});
+
+it('keeps the words a condition wrote for a root that is gone', () => {
+  const lines: string[] = [];
+  renderStatusSummaries(
+    buildStatusDocument({
+      installationConditions: [],
+      projectStatus: { ...project, reachability: 'unreachable' },
+      scannerStatus: { roots: [], exclusions: [], repositories: [] },
+      projectHookConditions: [],
+    }),
+    { line: (line = '') => lines.push(line) }
+  );
+  expect(lines).toContain('The recorded project root is unreachable.');
+  expect(lines).toContain('Run mnemonik project status /work/acme.');
+  expect(lines).not.toContain('Part of Mnemonik did not finish setting up.');
+});
+
+it('reports a repository that has never been connected', async () => {
+  const { mkdtemp, mkdir, rm } = await import('node:fs/promises');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { Readable } = await import('node:stream');
+  const { collectStatusDocument } = await import('../src/status.js');
+  const stateDir = await mkdtemp(join(tmpdir(), 'unconnected-repo-status-'));
+  try {
+    await mkdir(join(stateDir, '.git'));
+    const document = await collectStatusDocument({
+      stateDir,
+      cwd: stateDir,
+      input: Readable.from(''),
+      preflight: {
+        status: 'ready',
+        node: { supported: true, version: '24' },
+        os: 'Linux',
+        hosts: [],
+        project: { root: stateDir, resolution: 'absent' },
+        network: { reachable: true, discoveryUrl: '' },
+      },
+      scannerStatus: async () => ({ roots: [], exclusions: [], repositories: [] }),
+      projectHookConditions: [],
+    });
+    expect(document.projects).toHaveLength(1);
+    const lines: string[] = [];
+    renderStatusSummaries(document, { line: (line = '') => lines.push(line) });
+    expect(lines).toContain('This project: Needs attention.');
+    expect(lines).toContain('This project is not connected.');
+    expect(lines).toContain(`Run mnemonik add ${stateDir}.`);
+  } finally {
+    await rm(stateDir, { recursive: true, force: true });
+  }
 });

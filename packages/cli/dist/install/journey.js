@@ -941,11 +941,13 @@ export async function joinedInstall(flags, deps, output, authorize, management) 
             ? []
             : (await ownership.readOwnership(stateDir)).targets;
         const selectedHosts = names.filter((name) => launchHosts.includes(name));
-        const authorizationHosts = indexingOnly
+        // An editor that already holds a Mnemonik grant has nothing left to authorize.
+        const authorized = new Set(result.results.filter((entry) => entry.signedIn).map((entry) => entry.target.split(':')[0]));
+        const authorizationHosts = (indexingOnly
             ? []
             : selectedHosts.length
                 ? selectedHosts
-                : launchHosts.filter((host) => configuredTargets.some((target) => target.host === host));
+                : launchHosts.filter((host) => configuredTargets.some((target) => target.host === host))).filter((host) => !authorized.has(host));
         if (json)
             output.json({
                 ...final,

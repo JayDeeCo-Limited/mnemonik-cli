@@ -68,7 +68,7 @@ async function fixture() {
   return { deps, stdout, stderr };
 }
 
-const REPAIR_STEP = 'Run mnemonik doctor on this machine and follow the first repair step.';
+const REPAIR_STEP = 'Mnemonik stopped before it finished.';
 it.each([
   // Diagnostics and the scanner say what failed and what to do about that; the
   // rest fall back to the general repair step.
@@ -106,7 +106,7 @@ it('turns an unexpected bare error code into an action at the output boundary', 
   const output = new Output(stdout);
   output.error('future_reason');
   expect(stdout.text).not.toContain('future_reason');
-  expect(stdout.text).toContain('Run mnemonik doctor');
+  expect(stdout.text).toContain('Mnemonik stopped before it finished.');
   output.json({ reason: 'future_reason' });
   expect(stdout.text).toContain('"reason":"future_reason"');
 });
@@ -202,7 +202,7 @@ it('keeps self-update failure codes out of human copy', async () => {
   const { cliUpdateLine } = await import('../src/runtime/selfUpdate.js');
   expect(cliUpdateLine({ status: 'FAILED', reason: 'permission' })).not.toContain('permission');
   expect(cliUpdateLine({ status: 'FAILED', reason: 'permission' })).toContain(
-    'Run mnemonik doctor'
+    'This copy of Mnemonik is not the one npm installed.'
   );
 });
 
@@ -221,7 +221,7 @@ it('renders reason-bearing journal reports while retaining approved instructions
       ])
     ).toBe('resume');
     expect(stdout.text).not.toContain('future_reason');
-    expect(stdout.text.replace(/\s+/gu, ' ')).toContain('Run mnemonik doctor');
+    expect(stdout.text.replace(/\s+/gu, ' ')).toContain('Mnemonik stopped before it finished.');
     expect(stdout.text).toContain(
       'Credentials retained until local rollback succeeds; retry rollback.'
     );
@@ -254,7 +254,7 @@ it('keeps legacy installation-summary reason codes out of the terminal', async (
     new Output(stdout)
   );
   expect(stdout.text).not.toMatch(/not_signed_in|not_implemented/);
-  expect(stdout.text).toContain('Run mnemonik doctor');
+  expect(stdout.text).toContain('Mnemonik stopped before it finished.');
 });
 
 it('explains an unsupported identity version and retains the state in JSON', async () => {
@@ -266,7 +266,7 @@ it('explains an unsupported identity version and retains the state in JSON', asy
   );
   expect(await runCli(['identity', 'migrate', f.deps.home!, '--report'], f.deps)).toBe(0);
   expect(f.stdout.text).not.toMatch(/unknown_version|schemaVersion=999/);
-  expect(f.stdout.text).toContain('Run mnemonik doctor');
+  expect(f.stdout.text).toContain('This project file was written by a newer Mnemonik.');
   f.stdout.text = '';
   expect(await runCli(['identity', 'migrate', f.deps.home!, '--report', '--json'], f.deps)).toBe(0);
   expect(JSON.parse(f.stdout.text).report.entries).toEqual(

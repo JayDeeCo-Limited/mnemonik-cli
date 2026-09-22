@@ -153,7 +153,8 @@ it('keeps unavailable-keychain detail in auth status but not human installation 
   await ensureLauncher({ home: stateDir, stateDir });
   for (const [args, code, installationConditions] of [
     [['auth', 'status'], 3, undefined],
-    [['status'], 3, undefined],
+    // A folder that is not a project reports the machine, and the machine is well.
+    [['status'], 0, undefined],
     [['status'], 1, [{ kind: 'selected_component_failed' as const, reason: 'Scanner failed.' }]],
   ] as const) {
     let text = '';

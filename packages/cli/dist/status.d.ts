@@ -39,6 +39,8 @@ export interface StatusDocumentInput {
         version: string | null;
         disclosureVersion: string | null;
     };
+    /** True once the scanner has sent a heartbeat, so indexing needs no announcement. */
+    scannerReported?: boolean;
     generatedAt?: string;
 }
 export interface ReadProjectStatusInput {
@@ -64,10 +66,13 @@ export interface CollectStatusInput extends ReadProjectStatusInput {
     details?: StatusDocumentInput['details'];
     generatedAt?: string;
 }
-export declare function buildStatusDocument(input: StatusDocumentInput): ReadinessDocument;
+export declare function buildStatusDocument(input: StatusDocumentInput): ReadinessDocument & {
+    conditions: ReadinessCondition[];
+};
 export declare function renderStatusSummaries(document: ReadinessDocument & {
     cliCredential?: Awaited<ReturnType<typeof cliCredentialStatus>>;
     launcher?: LauncherStatus;
+    conditions?: readonly ReadinessCondition[];
 }, output: Pick<Output, 'line'>, options?: {
     diagnostics?: boolean;
 }): void;

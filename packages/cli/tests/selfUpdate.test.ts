@@ -666,8 +666,9 @@ it('reports one failure after both host update attempts fail', async () => {
 
   expect(await update(false)).toMatchObject({
     code: 3,
-    text: '',
-    errors: 'Mnemonik could not update. It will try again automatically tomorrow.\n',
+    text: 'The mnemonik command updated.\n',
+    errors:
+      'Your editors could not update.\nRun mnemonik repair, then start a new session in each editor.\n',
   });
   expect(runHosts).toHaveBeenCalledTimes(2);
 });
@@ -678,7 +679,8 @@ it('manual update failure reports one automatic-follow-up line without internal 
   expect(result).toMatchObject({
     code: 1,
     text: '',
-    errors: 'Mnemonik could not update. It will try again automatically tomorrow.\n',
+    errors:
+      'The mnemonik command could not update.\nRun npx -y @mnemonik/cli@latest install to update it.\n',
   });
 });
 
@@ -876,3 +878,28 @@ it.each([
     expect(errors.split('\n').slice(-3, -1)).toEqual([failure.summary, failure.action]);
   }
 );
+
+it('names what updated and what did not when only the scanner step fails', async () => {
+  await mkdir(join(state, 'scanner'));
+  await writeFile(join(state, 'scanner/state.json'), '{}');
+  const failure = new ScannerServiceLimited('systemd_session_unavailable');
+  vi.spyOn(scanner, 'updateScanner').mockRejectedValue(failure);
+  let text = '';
+  let errors = '';
+  await runCli(['update'], {
+    installStateDir: state,
+    home: state,
+    stdout: { write: (value) => (text += value) },
+    stderr: { write: (value) => (errors += value) },
+    scannerService: {
+      stateDir: state,
+      command: async () => ({
+        status: 'ok',
+        supervisor: { kind: 'systemd', installed: true, running: false, pid: null },
+      }),
+    },
+  });
+  expect(text).toBe('The mnemonik command updated.\n');
+  expect(errors).toBe(`${failure.summary}\n${failure.action}\n`);
+  expect(`${text}${errors}`).not.toContain('Mnemonik could not update.');
+});

@@ -49,6 +49,8 @@ export interface HostResult {
     reason: string;
     detail?: string;
     action?: string;
+    /** The editor already holds a Mnemonik grant, so it has nothing left to authorize. */
+    signedIn?: true;
 }
 export declare function codexTrustAction(resolvedPath?: string): string;
 export declare const CODEX_TRUST_ACTION: string;

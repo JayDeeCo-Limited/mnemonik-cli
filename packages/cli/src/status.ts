@@ -1,4 +1,4 @@
-import { genericReadinessMessage, messageFor as humanMessageFor } from './humanReason.js';
+import { messageFor as humanMessageFor } from './humanReason.js';
 export { CODEX_TRUST_MESSAGE } from './humanReason.js';
 import { cliCredentialStatus } from './auth/credentials.js';
 import { readOwnership } from './install/ownership.js';
@@ -200,6 +200,8 @@ export interface StatusDocumentInput {
   configuredHosts?: readonly string[];
   details?: Omit<ReadinessDocumentInput, 'installation' | 'projects' | 'generatedAt'>;
   scannerHeartbeat?: { at: string; version: string | null; disclosureVersion: string | null };
+  /** True once the scanner has sent a heartbeat, so indexing needs no announcement. */
+  scannerReported?: boolean;
   generatedAt?: string;
 }
 
@@ -284,20 +286,15 @@ function projectConditions(input: StatusDocumentInput): ReadinessCondition[] {
   else if (project.identity !== 'ok')
     conditions.push({
       kind: 'project_identity_choice_pending',
-      reason: `Project identity is ${project.identity}.`,
-      action: `mnemonik project init ${project.resolvedRoot}`,
-    });
-  else if (!project.server)
-    conditions.push({
-      kind: 'login_pending',
-      reason: 'Project access has not been verified.',
-      action: 'Run mnemonik install to sign in.',
-    });
-  else if (project.server !== 'access')
-    conditions.push({
-      kind: 'project_identity_choice_pending',
-      reason: `Project access is ${project.server}.`,
-      action: `mnemonik project status ${project.resolvedRoot}`,
+      // A folder holding no project file says what the scanner says about it, once.
+      reason:
+        project.identity === 'absent'
+          ? 'This project is not connected.'
+          : `Project identity is ${project.identity}.`,
+      action:
+        project.identity === 'absent'
+          ? `mnemonik add ${project.resolvedRoot}`
+          : `mnemonik project init ${project.resolvedRoot}`,
     });
   conditions.push(
     ...scannerConditions(input.installationConditions, project.resolvedRoot, input.scannerStatus),
@@ -306,9 +303,12 @@ function projectConditions(input: StatusDocumentInput): ReadinessCondition[] {
   return conditions;
 }
 
-export function buildStatusDocument(input: StatusDocumentInput): ReadinessDocument {
+export function buildStatusDocument(
+  input: StatusDocumentInput
+): ReadinessDocument & { conditions: ReadinessCondition[] } {
   const scannerNotVerified: ReadinessCondition[] =
     input.scannerStatus ||
+    input.scannerReported ||
     input.installationConditions.some(
       (condition) =>
         condition.component === 'scanner' &&
@@ -331,7 +331,7 @@ export function buildStatusDocument(input: StatusDocumentInput): ReadinessDocume
         kind: 'hook_not_verified' as const,
         component: host,
         reason: 'hook_not_verified',
-        action: `run mnemonik status after the ${host} hook starts`,
+        action: 'Start a new session in that editor.',
       }));
   const installationConditions = [
     ...input.installationConditions,
@@ -347,7 +347,7 @@ export function buildStatusDocument(input: StatusDocumentInput): ReadinessDocume
   const scannerOmitted = installationConditions.some(
     (condition) => condition.kind === 'scanner_omitted'
   );
-  return serializeReadiness({
+  const document = serializeReadiness({
     ...input.details,
     installation: { conditions: installationConditions },
     ...(project
@@ -385,13 +385,14 @@ export function buildStatusDocument(input: StatusDocumentInput): ReadinessDocume
       : null,
     generatedAt: input.generatedAt,
   });
+  return { ...document, conditions: [...installationConditions, ...conditions] };
 }
 
 /**
  * Scanner service failures carry their own approved sentence and next step; every
  * other reason keeps the wording shared with humanReason.
  */
-function messageFor(reason: string, actions: readonly string[]) {
+function messageFor(reason: string, actions: readonly string[], action?: string) {
   if (reason === 'scanner_restart_requested')
     return { sentence: SCANNER_RESTART_MESSAGE, nextStep: SCANNER_RESTART_ACTION };
   if (
@@ -400,33 +401,41 @@ function messageFor(reason: string, actions: readonly string[]) {
     const failure = new ScannerServiceLimited(reason.split(':')[0] ?? reason, reason);
     return { sentence: failure.summary, nextStep: failure.action };
   }
-  return humanMessageFor(reason, actions);
+  return humanMessageFor(reason, actions, action);
 }
 
 function renderAttention(
   label: string,
   summary: ReadinessSummary,
   output: Pick<Output, 'line'>,
-  rendered: Set<string>
+  rendered: Set<string>,
+  conditions: readonly ReadinessCondition[] = []
 ): void {
-  output.line(`${label}: Needs attention.`);
-  const messages = summary.reasons.length
-    ? summary.reasons.map((reason) => messageFor(reason, summary.actions))
-    : [genericReadinessMessage];
-  for (const message of messages) {
+  const lines: string[] = [];
+  for (const reason of summary.reasons) {
+    const message = messageFor(
+      reason,
+      summary.actions,
+      conditions.find((c) => c.reason === reason)?.action
+    );
     const key = `${message.sentence}\n${message.nextStep}`;
-    if (rendered.has(key)) continue;
+    if (!message.sentence || rendered.has(key)) continue;
     rendered.add(key);
-    output.line(message.sentence);
+    lines.push(message.sentence);
     // Some states leave nothing for the person to do, and say so on one line.
-    if (message.nextStep) output.line(message.nextStep);
+    if (message.nextStep) lines.push(message.nextStep);
   }
+  // A heading with nothing under it tells a person nothing, so it is not printed.
+  if (!lines.length) return;
+  output.line(`${label}: Needs attention.`);
+  for (const line of lines) output.line(line);
 }
 
 export function renderStatusSummaries(
   document: ReadinessDocument & {
     cliCredential?: Awaited<ReturnType<typeof cliCredentialStatus>>;
     launcher?: LauncherStatus;
+    conditions?: readonly ReadinessCondition[];
   },
   output: Pick<Output, 'line'>,
   options: { diagnostics?: boolean } = {}
@@ -459,8 +468,12 @@ export function renderStatusSummaries(
   }
   const rendered = new Set<string>();
   if (document.installation.state === 'READY') output.line('Mnemonik is installed and working.');
-  else renderAttention('Installation', document.installation, output, rendered);
-  const connected = document.scanner?.roots?.map((root) => basename(root)) ?? [];
+  else
+    renderAttention('Installation', document.installation, output, rendered, document.conditions);
+  // One folder per project, in the order a person would read them.
+  const connected = [...new Set(document.scanner?.roots?.map((root) => basename(root)) ?? [])].sort(
+    (left, right) => left.toLocaleLowerCase().localeCompare(right.toLocaleLowerCase())
+  );
   if (connected.length) {
     const shown = connected.slice(0, 8).join(', ');
     output.line(
@@ -470,7 +483,7 @@ export function renderStatusSummaries(
   const project = document.projects?.[0];
   if (project) {
     if (project.summary.state === 'READY') output.line('This project: Done.');
-    else renderAttention('This project', project.summary, output, rendered);
+    else renderAttention('This project', project.summary, output, rendered, document.conditions);
   }
 }
 
@@ -604,11 +617,18 @@ export async function collectStatusDocument(input: CollectStatusInput): Promise<
     ...(input.preflight.status === 'ready'
       ? []
       : [
-          {
-            kind: 'host_trust_pending' as const,
-            reason: 'Preflight needs attention before installation can continue.',
-            action: 'Resolve the preflight checks and run mnemonik doctor again.',
-          },
+          // Name the check that failed, because the person can only fix that one.
+          input.preflight.node.supported
+            ? {
+                kind: 'host_trust_pending' as const,
+                reason: 'Mnemonik could not be reached from this machine.',
+                action: 'Check the internet connection on this computer, then try again.',
+              }
+            : {
+                kind: 'host_trust_pending' as const,
+                reason: `Node ${input.preflight.node.version} is installed. Mnemonik needs Node 24 or newer.`,
+                action: 'Install Node 24 from https://nodejs.org/en/download, then try again.',
+              },
         ]),
     ...(scannerStatus?.repositories
       .filter((repository) => !repository.selected)
@@ -663,10 +683,21 @@ export async function collectStatusDocument(input: CollectStatusInput): Promise<
   }
   const owned = await readOwnership(statusStateDir);
   const details = { ...input.details };
-  const projectStatus = input.preflight.project.root ? await readProjectStatus(input) : undefined;
-  const pending = await pendingProjectSetup(projectStatus?.resolvedRoot ?? input.cwd).catch(
-    () => []
-  );
+  // A plain folder holding no project file has no project to report. A repository,
+  // or a folder the scanner watches, still has one even before it is connected.
+  const resolved = input.preflight.project.root ? await readProjectStatus(input) : undefined;
+  const candidate =
+    !!resolved &&
+    (resolved.identity !== 'absent' ||
+      (await stat(join(resolved.resolvedRoot, '.git')).then(
+        () => true,
+        () => false
+      )) ||
+      (scannerStatus?.roots ?? []).some((root) => contains(root, resolved.resolvedRoot)));
+  const projectStatus = candidate ? resolved : undefined;
+  const pending = projectStatus
+    ? await pendingProjectSetup(projectStatus.resolvedRoot).catch(() => [])
+    : [];
   const setupConditions: ReadinessCondition[] = pending.map((diagnostic) => ({
     kind: 'project_identity_choice_pending',
     reason: 'A local hook reports pending project setup.',
@@ -689,6 +720,7 @@ export async function collectStatusDocument(input: CollectStatusInput): Promise<
     projectStatus,
     scannerStatus,
     scannerHeartbeat,
+    scannerReported: typeof receipt?.snapshot.heartbeat.lastSuccess === 'number',
     projectHookConditions: hookConditions,
     configuredHosts: input.configuredHosts,
     details,

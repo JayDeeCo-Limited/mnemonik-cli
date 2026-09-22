@@ -6,8 +6,11 @@ export declare const CODEX_TRUST_MESSAGE: {
     sentence: string;
     nextStep: string;
 };
-export declare const genericReadinessMessage: ReadinessMessage;
-export declare function messageFor(reason: string, actions?: readonly string[]): ReadinessMessage;
+/**
+ * The words for one condition. A reason with no table entry keeps its own
+ * sentence and its own step, so nothing reaches a person as a reason code.
+ */
+export declare function messageFor(reason: string, actions?: readonly string[], action?: string): ReadinessMessage;
 /** Keep internal diagnostics in JSON and logs; human errors use the approved status copy. */
 export declare function humanReason(reason: string): string;
 export declare const bootstrapFailureMessage = "Installation stopped.\nRun npx -y @mnemonik/cli@latest install to try again.";

@@ -106,7 +106,7 @@ export function renderPreflight(result, output) {
     output.line();
     const hosts = result.hosts.map((host) => `${host.name}${host.supported ? '' : ' (not supported yet)'}`);
     output.line(`  Found      ${hosts.length ? hosts.join(', ') : 'No supported editors'}`);
-    output.line(`  Project    ${result.project.root ?? 'No project found'}`);
+    output.line(`  Project    ${result.project.resolution === 'absent' ? 'No project found' : result.project.root}`);
     output.line(`  Node       ${result.node.version}, ${result.os}`);
     // A check that never ran says nothing; a server that answered was reached.
     if (!result.network.reachable && !result.network.skipped)

@@ -298,16 +298,17 @@ describe('command router', () => {
     vi.unstubAllGlobals();
   });
 
-  it('labels installation and current-project summaries, and omits an ineligible project', async () => {
+  it('labels the installation summary and omits a folder that is not a project', async () => {
     const current = fixture();
     expect(await runCli(['status'], current.deps)).not.toBe(2);
     expect(current.stdout.text).toContain('Installation: ');
-    expect(current.stdout.text).toContain('This project: ');
+    // The fixture folder holds no project file, so status says nothing about one.
+    expect(current.stdout.text).not.toContain('This project: ');
 
     const doctor = fixture();
     expect(await runCli(['doctor'], doctor.deps)).toBe(3);
     expect(doctor.stdout.text).toContain('Installation: ');
-    expect(doctor.stdout.text).toContain('This project: ');
+    expect(doctor.stdout.text).not.toContain('This project: ');
 
     const omitted = fixture();
     omitted.deps.preflight!.resolveIdentity = async () => ({
@@ -510,6 +511,188 @@ it('forced install reopen reports an active session without starting authorizati
   expect(deps.grantFetch).toHaveBeenCalledOnce();
 });
 
+/** A stand-in for the editor's own login command: it prints one authorize URL and listens. */
+async function fakeEditor(
+  state: string,
+  options: { origin?: string; exitOnCallback?: boolean } = {}
+) {
+  const { createServer } = await import('node:http');
+  const { PassThrough } = await import('node:stream');
+  const { EventEmitter } = await import('node:events');
+  const received: string[] = [];
+  const stdout = new PassThrough();
+  const child = Object.assign(new EventEmitter(), {
+    stdout,
+    stderr: new PassThrough(),
+    kill: () => true,
+  });
+  const server = createServer((request, response) => {
+    received.push(request.url ?? '');
+    response.writeHead(204);
+    response.end(() => {
+      if (options.exitOnCallback !== false) child.emit('close', 0);
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
+  const port = (server.address() as { port: number }).port;
+  const authorizeUrl = `${options.origin ?? 'https://auth.mnemonik.ai'}/oauth/authorize?client_id=codex&state=${state}`;
+  return {
+    received,
+    authorizeUrl,
+    callbackUrl: `http://127.0.0.1:${port}/callback?code=editor-code&state=${state}`,
+    close: () => new Promise<void>((resolve) => server.close(() => resolve())),
+    spawn: (() => {
+      stdout.write(`Open this URL to sign in:\n${authorizeUrl}\n`);
+      return child;
+    }) as unknown as NonNullable<CliDependencies['editorLogin']>['spawn'],
+  };
+}
+
+async function readyCodexHome(deps: CliDependencies) {
+  const { mkdir, writeFile } = await import('node:fs/promises');
+  const { join } = await import('node:path');
+  await mkdir(join(deps.home as string, '.codex'), { recursive: true });
+  await writeFile(
+    join(deps.home as string, '.codex/config.toml'),
+    '[mcp_servers.mnemonik]\nenabled = true\n'
+  );
+}
+
+it('connect signs codex in on a machine the browser cannot reach', async () => {
+  const { deps, stdout } = fixture();
+  await readyCodexHome(deps);
+  const state = 'state-connect-signs-in';
+  const editor = await fakeEditor(state);
+  try {
+    deps.editorLogin = {
+      spawn: editor.spawn,
+      sleep: async () => undefined,
+      fetch: (async (input: unknown, init?: { headers?: Record<string, string> }) => {
+        const url = String(input);
+        if (!url.includes('/api/v1/auth/editor-callback/')) return globalThis.fetch(url);
+        expect(url).toContain(state);
+        expect(init?.headers?.authorization).toBe('Bearer access-token');
+        return Response.json({ url: editor.callbackUrl });
+      }) as typeof fetch,
+    };
+    expect(await runCli(['connect', 'codex'], deps)).toBe(0);
+    expect(stdout.text).toBe(
+      'Open this link to sign in:\n' +
+        `${editor.authorizeUrl}\n` +
+        'Codex is signed in to Mnemonik.\n'
+    );
+    expect(editor.received).toEqual([`/callback?code=editor-code&state=${state}`]);
+  } finally {
+    await editor.close();
+  }
+});
+
+it('connect reports an unapproved sign-in and how to try again', async () => {
+  const { deps, stdout } = fixture();
+  await readyCodexHome(deps);
+  const state = 'state-connect-never-approved';
+  const editor = await fakeEditor(state);
+  try {
+    deps.editorLogin = {
+      spawn: editor.spawn,
+      sleep: async () => undefined,
+      timeoutMs: 0,
+      fetch: (async () => new Response('{}', { status: 404 })) as typeof fetch,
+    };
+    expect(await runCli(['connect', 'codex'], deps)).toBe(1);
+    expect(stdout.text).toBe(
+      'Open this link to sign in:\n' +
+        `${editor.authorizeUrl}\n` +
+        'Sign-in timed out. Run mnemonik connect codex to try again.\n'
+    );
+    expect(editor.received).toEqual([]);
+  } finally {
+    await editor.close();
+  }
+});
+
+const CODEX_INSTRUCTIONS =
+  'Finish signing in to Mnemonik in the editor.\n' +
+  'Codex CLI        run codex mcp login mnemonik\n' +
+  'Codex Desktop    open Settings, Plugins, MCPs, then Authenticate\n';
+
+it('connect stops waiting when the editor keeps running after its callback', async () => {
+  const { deps, stdout } = fixture();
+  await readyCodexHome(deps);
+  const state = 'state-connect-editor-lingers';
+  const editor = await fakeEditor(state, { exitOnCallback: false });
+  try {
+    deps.editorLogin = {
+      spawn: editor.spawn,
+      sleep: async () => undefined,
+      timeoutMs: 1500,
+      fetch: (async (input: unknown) => {
+        const url = String(input);
+        if (!url.includes('/api/v1/auth/editor-callback/')) return globalThis.fetch(url);
+        return Response.json({ url: editor.callbackUrl });
+      }) as typeof fetch,
+    };
+    expect(await runCli(['connect', 'codex'], deps)).toBe(3);
+    expect(editor.received).toHaveLength(1);
+    expect(stdout.text).toBe(
+      `Open this link to sign in:\n${editor.authorizeUrl}\n${CODEX_INSTRUCTIONS}`
+    );
+  } finally {
+    await editor.close();
+  }
+});
+
+it('connect ignores an authorize URL that is not this server', async () => {
+  const { deps, stdout } = fixture();
+  await readyCodexHome(deps);
+  const editor = await fakeEditor('state-connect-foreign-origin', {
+    origin: 'https://auth.mnemonik.ai.evil.example',
+  });
+  try {
+    deps.editorLogin = {
+      spawn: editor.spawn,
+      sleep: async () => undefined,
+      fetch: (() => {
+        throw new Error('the CLI must not poll for a foreign authorize URL');
+      }) as typeof fetch,
+    };
+    expect(await runCli(['connect', 'codex'], deps)).toBe(3);
+    expect(stdout.text).toBe(CODEX_INSTRUCTIONS);
+  } finally {
+    await editor.close();
+  }
+});
+
+it('connect refuses to deliver a callback that is not a loopback address', async () => {
+  const { deps, stdout } = fixture();
+  await readyCodexHome(deps);
+  const state = 'state-connect-offsite-callback';
+  const editor = await fakeEditor(state);
+  const requested: string[] = [];
+  try {
+    deps.editorLogin = {
+      spawn: editor.spawn,
+      sleep: async () => undefined,
+      timeoutMs: 1500,
+      fetch: (async (input: unknown) => {
+        requested.push(String(input));
+        return requested.length > 1
+          ? new Response(null, { status: 204 })
+          : Response.json({ url: `https://evil.example/callback?code=stolen&state=${state}` });
+      }) as typeof fetch,
+    };
+    expect(await runCli(['connect', 'codex'], deps)).toBe(3);
+    // The offsite callback is never requested at all.
+    expect(requested).toHaveLength(1);
+    expect(editor.received).toEqual([]);
+    expect(stdout.text).toBe(
+      `Open this link to sign in:\n${editor.authorizeUrl}\n${CODEX_INSTRUCTIONS}`
+    );
+  } finally {
+    await editor.close();
+  }
+});
+
 it('connect reports local editor setup consistently in plain text and JSON', async () => {
   const { mkdir, mkdtemp, readFile, writeFile, rm } = await import('node:fs/promises');
   const { tmpdir } = await import('node:os');
@@ -519,6 +702,15 @@ it('connect reports local editor setup consistently in plain text and JSON', asy
   try {
     const { deps, stdout } = fixture();
     deps.home = home;
+    const { EventEmitter } = await import('node:events');
+    // An editor with no login command on this machine keeps its own instructions.
+    deps.editorLogin = {
+      spawn: (() => {
+        const child = Object.assign(new EventEmitter(), { kill: () => true });
+        setTimeout(() => child.emit('error', new Error('ENOENT')), 0);
+        return child;
+      }) as unknown as NonNullable<CliDependencies['editorLogin']>['spawn'],
+    };
     expect(await runCli(['connect', 'codex'], deps)).toBe(3);
     expect(stdout.text).toBe(
       'Codex connection is missing.\nRun mnemonik install to set it up again.\n'

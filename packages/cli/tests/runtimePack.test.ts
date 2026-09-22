@@ -95,7 +95,7 @@ it('refuses a changed installed dependency before the first runtime import', asy
   ).rejects.toMatchObject({
     code: 1,
     stderr:
-      'This machine needs attention before Mnemonik can work fully.\nRun mnemonik doctor on this machine and follow the first repair step.\n',
+      'The installed Mnemonik files do not match what Mnemonik published.\nRun npx -y @mnemonik/cli@latest install to replace them.\n',
     stdout: '',
   });
 }, 120_000);
@@ -154,7 +154,7 @@ it('executes the packed CLI from an npm prefix, hands off, and runs after the pr
   ).rejects.toMatchObject({
     code: 1,
     stderr:
-      'This machine needs attention before Mnemonik can work fully.\nRun mnemonik doctor on this machine and follow the first repair step.\n',
+      'This copy of Mnemonik is not the one npm installed.\nRun npx -y @mnemonik/cli@latest install to install it again.\n',
     stdout: '',
   });
   await rm(copied, { recursive: true });
@@ -191,7 +191,7 @@ it('executes the packed CLI from an npm prefix, hands off, and runs after the pr
   await expect(exec(process.execPath, [bin, '--version'], { env })).rejects.toMatchObject({
     code: 1,
     stderr:
-      'This machine needs attention before Mnemonik can work fully.\nRun mnemonik doctor on this machine and follow the first repair step.\n',
+      'This copy of Mnemonik is not the one npm installed.\nRun npx -y @mnemonik/cli@latest install to install it again.\n',
     stdout: '',
   });
   await writeFile(store.pointerPath('cli'), pointer);
@@ -234,7 +234,7 @@ it('executes the packed CLI from an npm prefix, hands off, and runs after the pr
   await expect(exec(process.execPath, [launcher, '--version'], { env })).rejects.toMatchObject({
     code: 1,
     stderr:
-      'This machine needs attention before Mnemonik can work fully.\nRun mnemonik doctor on this machine and follow the first repair step.\n',
+      'The installed Mnemonik files do not match what Mnemonik published.\nRun npx -y @mnemonik/cli@latest install to replace them.\n',
     stdout: '',
   });
 }, 120_000);

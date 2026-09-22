@@ -110,7 +110,7 @@ it('reports LIMITED after one minute without heartbeat and offers retry or skip'
   await expect(service.start()).rejects.toMatchObject({
     status: 'LIMITED',
     reason: 'heartbeat_timeout',
-    action: 'Wait a minute, then run mnemonik status.',
+    action: 'Wait a minute, then check again.',
   });
   expect(time).toBe(1060000);
   expect(timeout).toHaveBeenCalledWith('heartbeat');

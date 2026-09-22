@@ -54,10 +54,11 @@ import {
   serializeReadiness as baseReadiness,
   type ProjectReadinessInput,
   type ReadinessCondition,
-  type resolveProjectIdentity,
+  resolveProjectIdentity,
 } from '@mnemonik/shared';
 import { grantTransport, grantHost } from './auth/status.js';
 import { createCliAuth } from './auth/index.js';
+import { runEditorLogin, type EditorLoginOverrides } from './auth/pkce.js';
 import { currentInstallSession, ensureInstallSession } from './auth/installSession.js';
 import { runIdentityMigration } from './identity/migrate.js';
 import { renderScannerStatus, type ScannerPickerResult } from './scanner/picker.js';
@@ -93,6 +94,16 @@ export const connectedFolderLine = (name: string): string => `  ✓ Connected ${
 export const alreadyConnectedFolderLine = (name: string): string =>
   `  ✓ ${name} is already connected and watched.`;
 export const removedFolderLine = (name: string): string => `  ✓ ${name} is no longer connected.`;
+export const projectDeletionWarning = (name: string): string =>
+  `Deleting ${name} removes its memories, code index and summaries for everyone. This cannot be undone.`;
+export const projectDeletedLine = (name: string): string => `Deleted ${name}.`;
+export const stillWatchedLine = (root: string): string =>
+  `The folder is still being indexed. Run mnemonik remove ${root} to stop that.`;
+export const identityFileKeptLine =
+  "This folder's .mnemonik.json still points at the deleted project. Connecting the folder again creates a new project.";
+export const CODEX_SIGNED_IN_MESSAGE = 'Codex is signed in to Mnemonik.';
+export const CONNECT_NOT_APPROVED_MESSAGE =
+  'Sign-in timed out. Run mnemonik connect codex to try again.';
 
 export function maintenanceExitCode(results: readonly Pick<HostResult, 'status'>[]): number {
   if (results.some((result) => result.status === 'FAILED')) return 1;
@@ -158,7 +169,7 @@ Commands:
   install
   status
   connect <${hostOrder.join('|')}>
-  project <init|setup|status|link|ensure>
+  project <init|setup|status|link|ensure|delete>
   add <folder>
   remove <folder>
   data delete --project <id>
@@ -184,6 +195,10 @@ interface Parsed {
 function parse(args: string[]): Parsed {
   const positionals: string[] = [];
   const flags = new Map<string, string | true>();
+  // Only `mnemonik project delete` takes a project name after --confirm.
+  // Everywhere else the flag stands alone and the next word is that command's
+  // own argument.
+  const namedConfirm = args[0] === 'project' && args[1] === 'delete';
   for (let index = 0; index < args.length; index++) {
     const argument = args[index] ?? '';
     if (!argument.startsWith('--')) {
@@ -197,8 +212,17 @@ function parse(args: string[]): Parsed {
       continue;
     }
     if (booleans.has(name)) {
-      if (inline !== undefined) return { positionals, flags, error: `Unknown flag: ${argument}` };
-      flags.set(name === 'accept-scanner' ? 'accept-indexing' : name, true);
+      const takesName = name === 'confirm' && namedConfirm;
+      if (inline !== undefined && !takesName)
+        return { positionals, flags, error: `Unknown flag: ${argument}` };
+      const next = args[index + 1];
+      let value: string | true = true;
+      if (takesName && inline !== undefined) value = inline;
+      else if (takesName && next !== undefined && !next.startsWith('--')) {
+        value = next;
+        index++;
+      }
+      flags.set(name === 'accept-scanner' ? 'accept-indexing' : name, value);
       continue;
     }
     if (values.has(name)) {
@@ -275,6 +299,7 @@ export interface CliDependencies {
   interruptedProjectSetup?: boolean;
   installSession?: InstallSessionTransport;
   grantFetch?: typeof fetch;
+  editorLogin?: EditorLoginOverrides;
   cliAuth?: {
     signIn(): Promise<unknown>;
     getCliBearer(): Promise<string | { status: string; reason: string }>;
@@ -638,8 +663,24 @@ async function runHostCommand(
         ...(remaining ? { remaining } : {}),
       });
     else if (command === 'update') {
-      if (failed || hostsFailed) output.error(updateFailureMessage);
-      else if (codexTrustPending) {
+      if (failed || hostsFailed) {
+        // A part that updated is said so, and only the part that did not gets a step.
+        if (cli?.status === 'UPDATED') output.line('The mnemonik command updated.');
+        if (result.reports.length > 0 && !hostsFailed) output.line('Your editors updated.');
+        if (scanner?.status === 'UPDATED') output.line('The scanner updated.');
+        if (cli?.status === 'FAILED') {
+          output.error('The mnemonik command could not update.');
+          output.error('Run npx -y @mnemonik/cli@latest install to update it.');
+        }
+        if (hostsFailed) {
+          output.error('Your editors could not update.');
+          output.error('Run mnemonik repair, then start a new session in each editor.');
+        }
+        if (scanner?.status === 'FAILED') {
+          output.error(scannerRecovery?.message ?? 'The scanner could not update.');
+          output.error(scannerRecovery?.action ?? SCANNER_RETRY_MESSAGE);
+        }
+      } else if (codexTrustPending) {
         output.line('Mnemonik updated.');
         output.line(CODEX_TRUST_MESSAGE.sentence);
         output.line(CODEX_TRUST_MESSAGE.nextStep);
@@ -650,10 +691,6 @@ async function runHostCommand(
       )
         output.line('Mnemonik updated.');
       else output.line('Mnemonik is up to date.');
-      if (scannerRecovery) {
-        output.error(scannerRecovery.message);
-        if (scannerRecovery.action) output.error(scannerRecovery.action);
-      }
     } else {
       for (const target of result.results)
         output.line(target.status === 'READY' ? 'Done.' : humanReason(target.reason));
@@ -1014,6 +1051,114 @@ async function reportCurrentInstallation(
   ).catch(() => {
     /* An unreachable server says nothing about this machine. */
   });
+}
+
+/**
+ * Delete a project, from the folder it belongs to or by id or name. The server
+ * takes the name back as the confirmation, so the person types it either at the
+ * prompt or in --confirm; nothing is sent until it matches.
+ */
+async function deleteProjectCommand(
+  parsed: Parsed,
+  rest: string[],
+  deps: CliDependencies,
+  output: Output
+): Promise<number> {
+  const json = parsed.flags.has('json');
+  const cwd = deps.cwd ?? process.cwd();
+  const resolve = deps.projectResolver?.resolveProjectIdentity ?? resolveProjectIdentity;
+  const here = await resolve(cwd, { allowNestedInherit: false });
+  const hereId = here.kind === 'ok' ? here.identity.projectId : undefined;
+  const root = 'root' in here ? here.root : cwd;
+  const target = rest[0] ?? hereId;
+  if (!target) {
+    output.error(
+      'This folder is not connected to a project. Run mnemonik project delete <name> instead.'
+    );
+    return 3;
+  }
+  const bearer = await ensureCliAuth(deps, output, parsed.flags.has('no-browser'), false);
+  const send = deps.grantFetch ?? fetch;
+  const listed = await send(`${apiOrigin()}/api/v1/users/me/projects?days=0&limit=200`, {
+    headers: { Authorization: `Bearer ${bearer}` },
+  });
+  if (!listed.ok) {
+    output.error('Mnemonik could not be reached from this machine.');
+    return 3;
+  }
+  const listing = await listed.json().catch(() => []);
+  const projects = (Array.isArray(listing) ? listing : []) as { id: string; name: string }[];
+  const project = projects.find(
+    (candidate) => candidate.id === target || candidate.name?.toLowerCase() === target.toLowerCase()
+  );
+  if (!project) {
+    output.error(`There is no project called ${target} in your account.`);
+    return 3;
+  }
+  const supplied = parsed.flags.get('confirm');
+  let typed = typeof supplied === 'string' ? supplied : '';
+  if (typeof supplied !== 'string') {
+    if (parsed.flags.has('non-interactive') || json) {
+      output.error(
+        `To skip this check, run mnemonik project delete ${project.name} --confirm "${project.name}".`
+      );
+      return 3;
+    }
+    output.line(projectDeletionWarning(project.name));
+    output.line('Type the project name to confirm.');
+    const readline = createInterface({ input: deps.input ?? process.stdin, terminal: false });
+    typed = String((await readline[Symbol.asyncIterator]().next()).value ?? '').trim();
+    readline.close();
+    if (typed.toLowerCase() !== project.name.toLowerCase()) {
+      output.line('Nothing was deleted.');
+      return 130;
+    }
+  }
+  if (typed.toLowerCase() !== project.name.toLowerCase()) {
+    output.error('That is not the project name. Nothing was deleted.');
+    return 3;
+  }
+  const response = await send(`${apiOrigin()}/api/v1/projects/${encodeURIComponent(project.id)}`, {
+    method: 'DELETE',
+    headers: { Authorization: `Bearer ${bearer}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ confirmProjectName: typed }),
+  });
+  if (!response.ok) {
+    output.error(
+      response.status === 403
+        ? `Only the owner of ${project.name} can delete it.`
+        : response.status === 404
+          ? `There is no project called ${target} in your account.`
+          : `${project.name} could not be deleted. Try again in a moment.`
+    );
+    return 3;
+  }
+  const result = await response.json().catch(() => ({ success: true }));
+  const stateDir = deps.installStateDir ?? stateDirectory(process.platform, process.env, deps.home);
+  const saved = JSON.parse(
+    await readFile(`${stateDir}/scanner/state.json`, 'utf8').catch(() => 'null')
+  ) as { config: { roots: string[] } } | null;
+  let stillWatched = false;
+  if (hereId === project.id && saved?.config.roots.includes(root)) {
+    // The project is already gone, so a watched list that will not update is
+    // reported rather than thrown: the person is told the one command that
+    // clears it.
+    const update = await updateScannerRoots({
+      stateDir,
+      bearer,
+      add: [],
+      remove: [root],
+      fetch: deps.grantFetch,
+    }).catch(() => undefined);
+    stillWatched = update?.status !== 'updated';
+  }
+  if (json) output.json(result);
+  else {
+    output.line(projectDeletedLine(project.name));
+    if (stillWatched) output.line(stillWatchedLine(root));
+    if (hereId === project.id) output.line(identityFileKeptLine);
+  }
+  return 0;
 }
 
 export async function runCli(args: string[], deps: CliDependencies = {}): Promise<number> {
@@ -1436,6 +1581,27 @@ export async function runCli(args: string[], deps: CliDependencies = {}): Promis
     const editor = (await localEditorStatus(deps.home ?? homedir())).find(
       (candidate) => candidate.host === host
     );
+    // Only Codex has a headless login command, so only Codex can be signed in
+    // from here; the others print their own instructions as before.
+    if (host === 'codex' && editor?.mcp === 'ready' && !parsed.flags.has('json')) {
+      const bearer = await auth(deps, output, false)
+        .getCliBearer()
+        .catch(() => undefined);
+      if (typeof bearer === 'string') {
+        const outcome = await runEditorLogin({
+          command: ['codex', 'mcp', 'login', 'mnemonik'],
+          apiOrigin: apiOrigin(),
+          issuer: process.env.MNEMONIK_OAUTH_ISSUER ?? 'https://auth.mnemonik.ai',
+          bearer: () => Promise.resolve(bearer),
+          print: (line) => void output.line(line),
+          fetch: deps.grantFetch,
+          ...deps.editorLogin,
+        });
+        if (outcome === 'signed_in') return (output.line(CODEX_SIGNED_IN_MESSAGE), 0);
+        if (outcome === 'not_approved') return (output.line(CONNECT_NOT_APPROVED_MESSAGE), 1);
+      }
+      // An editor that could not be started at all still has its own instructions.
+    }
     const reason =
       editor?.mcp === 'disabled'
         ? `${editor.name} connection is turned off.`
@@ -1458,8 +1624,20 @@ export async function runCli(args: string[], deps: CliDependencies = {}): Promis
     return 3;
   }
   if (command === 'project') {
-    if (!subcommand || !['init', 'setup', 'status', 'link', 'ensure'].includes(subcommand))
-      return (output.error('Usage: mnemonik project <init|setup|status|link|ensure>'), 2);
+    if (
+      !subcommand ||
+      !['init', 'setup', 'status', 'link', 'ensure', 'delete'].includes(subcommand)
+    )
+      return (output.error('Usage: mnemonik project <init|setup|status|link|ensure|delete>'), 2);
+    if (subcommand === 'delete') {
+      const unknown = allowed(parsed, ['confirm']);
+      if (unknown || rest.length > 1)
+        return (
+          output.error(unknown ?? 'Usage: mnemonik project delete [<project id or name>]'),
+          2
+        );
+      return deleteProjectCommand(parsed, rest, deps, output);
+    }
     const invalid = allowed(
       parsed,
       subcommand === 'ensure'

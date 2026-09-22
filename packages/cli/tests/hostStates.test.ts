@@ -979,6 +979,40 @@ describe('host state matrix', () => {
     expect(f.deps.credentialFetch).toHaveBeenCalledOnce();
   }, 300_000);
 
+  it('records the editor that already holds a grant, so the install stops asking it', async () => {
+    const f = await fixture();
+    const imports = f.deps.imports ?? hostPackageImports;
+    const host = f.selections[0]!.host;
+    f.deps.imports = {
+      ...imports,
+      [host]: async (runtime: Verified) => {
+        const module = await imports[host as keyof HostPackageImports](runtime);
+        return {
+          createHostAdapter(deps?: AdapterDependencies) {
+            const adapter = module.createHostAdapter(deps);
+            return {
+              ...adapter,
+              verify: async (target?: Parameters<typeof adapter.verify>[0]) => ({
+                ...(await adapter.verify(target)),
+                grant: { id: 'grant-1', account: 'owner', scopes: ['mcp:use'] },
+              }),
+            };
+          },
+        };
+      },
+    } as HostPackageImports;
+
+    const result = await runHosts(
+      'install',
+      f.selections.map((selection) => ({ ...selection, component: 'mcp' as const })),
+      f.deps
+    );
+
+    expect(
+      result.results.filter((row) => row.signedIn).map((row) => row.target.split(':')[0])
+    ).toEqual([host]);
+  }, 60_000);
+
   it('maintenance verifies declarations without login, grant polling, or waiting', async () => {
     const f = await fixture();
     const selections = f.selections;

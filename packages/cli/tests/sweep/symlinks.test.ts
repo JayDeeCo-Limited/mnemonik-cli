@@ -39,7 +39,7 @@ describe.runIf(process.platform !== 'win32')('symlink refusal and canonicalisati
     await symlink(target, join(f.root, '.mnemonik.json'));
 
     expect(await f.run()).toBe(1);
-    expect(f.stdout.text).toContain('This machine needs attention before Mnemonik can work fully.');
+    expect(f.stdout.text).toContain('A file Mnemonik needs to write is a link to somewhere else.');
     expect(f.stdout.text).not.toContain('target_symlink');
     expect(await readFile(target, 'utf8')).toBe('outside identity\n');
     for (const path of Object.values(f.hostPaths)) expect(await readFile(path)).toEqual(f.original);
@@ -59,7 +59,7 @@ describe.runIf(process.platform !== 'win32')('symlink refusal and canonicalisati
     await symlink(target, f.hostPaths['claude-code']);
 
     expect(await f.run()).toBe(1);
-    expect(f.stdout.text).toContain('This machine needs attention before Mnemonik can work fully.');
+    expect(f.stdout.text).toContain('A file Mnemonik needs to write is a link to somewhere else.');
     expect(f.stdout.text).not.toContain('target_symlink');
     expect(await readFile(target, 'utf8')).toBe('outside host\n');
 
@@ -77,7 +77,7 @@ describe.runIf(process.platform !== 'win32')('symlink refusal and canonicalisati
     await symlink(outside, f.stateDir, 'dir');
 
     expect(await f.run()).toBe(1);
-    expect(f.stderr.text).toContain('This machine needs attention before Mnemonik can work fully.');
+    expect(f.stderr.text).toContain('A file Mnemonik needs to write is a link to somewhere else.');
     expect(f.stderr.text).not.toContain('state_directory_symlink');
     expect(await readdir(outside)).toEqual([]);
 

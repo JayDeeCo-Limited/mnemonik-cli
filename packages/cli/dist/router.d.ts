@@ -8,7 +8,8 @@ import { type Writable } from './output.js';
 import { type PreflightDependencies } from './preflight.js';
 import { type InstallSessionTransport } from './installSession.js';
 import { type ProjectExecutor, type ProjectReadTransport } from './project.js';
-import { type ReadinessCondition, type resolveProjectIdentity } from '@mnemonik/shared';
+import { type ReadinessCondition, resolveProjectIdentity } from '@mnemonik/shared';
+import { type EditorLoginOverrides } from './auth/pkce.js';
 import { type ScannerPickerResult } from './scanner/picker.js';
 import { type InstallDependencies } from './install/transaction.js';
 import { type StatusDocumentInput } from './status.js';
@@ -18,6 +19,12 @@ export declare const removeFolderPrompt: (name: string) => string;
 export declare const connectedFolderLine: (name: string) => string;
 export declare const alreadyConnectedFolderLine: (name: string) => string;
 export declare const removedFolderLine: (name: string) => string;
+export declare const projectDeletionWarning: (name: string) => string;
+export declare const projectDeletedLine: (name: string) => string;
+export declare const stillWatchedLine: (root: string) => string;
+export declare const identityFileKeptLine = "This folder's .mnemonik.json still points at the deleted project. Connecting the folder again creates a new project.";
+export declare const CODEX_SIGNED_IN_MESSAGE = "Codex is signed in to Mnemonik.";
+export declare const CONNECT_NOT_APPROVED_MESSAGE = "Sign-in timed out. Run mnemonik connect codex to try again.";
 export declare function maintenanceExitCode(results: readonly Pick<HostResult, 'status'>[]): number;
 export declare const help: string;
 export interface CliDependencies {
@@ -43,6 +50,7 @@ export interface CliDependencies {
     interruptedProjectSetup?: boolean;
     installSession?: InstallSessionTransport;
     grantFetch?: typeof fetch;
+    editorLogin?: EditorLoginOverrides;
     cliAuth?: {
         signIn(): Promise<unknown>;
         getCliBearer(): Promise<string | {

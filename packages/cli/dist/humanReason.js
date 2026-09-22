@@ -43,24 +43,24 @@ const readinessMessages = [
         },
     ],
     [
-        /project_identity_choice_pending|project_setup_required|project identity|pending project setup/iu,
+        /project_identity_choice_pending|project_setup_required|pending project setup/iu,
         {
             sentence: 'A project on this machine still needs to be connected.',
-            nextStep: 'Run mnemonik status in the project and follow the project setup step.',
+            nextStep: 'Open that project folder and run mnemonik add there.',
         },
     ],
     [
         /scanner_not_verified|background_indexing_not_verified|scanner_paused|dev_release_source/iu,
         {
             sentence: 'The scanner has not checked in yet.',
-            nextStep: 'Run mnemonik status on this machine after the scanner starts.',
+            nextStep: 'Wait a minute for indexing to start.',
         },
     ],
     [
         /hook_not_verified|hooks? (?:still )?needs? verification|could not be inspected/iu,
         {
             sentence: 'Mnemonik has not received context from an editor hook yet.',
-            nextStep: 'Start a new editor session, then run mnemonik status.',
+            nextStep: 'Start a new session in that editor.',
         },
     ],
     [
@@ -113,62 +113,113 @@ const readinessMessages = [
         },
     ],
     [
+        /unknown_version/u,
+        {
+            sentence: 'This project file was written by a newer Mnemonik.',
+            nextStep: 'Run npx -y @mnemonik/cli@latest install to update Mnemonik, then try again.',
+        },
+    ],
+    [
+        /weak_permissions/u,
+        {
+            sentence: 'A Mnemonik credential file can be read by other users on this computer.',
+            nextStep: 'Set that file to owner-only access, then run mnemonik install again.',
+        },
+    ],
+    [
+        /target_symlink|state_directory_symlink/u,
+        {
+            sentence: 'A file Mnemonik needs to write is a link to somewhere else.',
+            nextStep: 'Replace that link with a real file or folder, then run mnemonik install again.',
+        },
+    ],
+    [
+        /journal_/u,
+        {
+            sentence: 'The record of the last installation cannot be trusted.',
+            nextStep: 'Run npx -y @mnemonik/cli@latest install to start a clean installation.',
+        },
+    ],
+    [
+        // The bootstrap's word for a copy it cannot trust: a link, a checkout, or a
+        // file npm did not put there.
+        /^permission$/u,
+        {
+            sentence: 'This copy of Mnemonik is not the one npm installed.',
+            nextStep: 'Run npx -y @mnemonik/cli@latest install to install it again.',
+        },
+    ],
+    [
+        /permission_denied/u,
+        {
+            sentence: 'Mnemonik does not have permission to write a file it needs.',
+            nextStep: 'Give yourself write access to that file, then run mnemonik install again.',
+        },
+    ],
+    [
+        /target_read_only/u,
+        {
+            sentence: 'An editor settings file cannot be written.',
+            nextStep: 'Give yourself write access to that file, then run mnemonik install again.',
+        },
+    ],
+    [
+        /digest_mismatch|unsigned/u,
+        {
+            sentence: 'The installed Mnemonik files do not match what Mnemonik published.',
+            nextStep: 'Run npx -y @mnemonik/cli@latest install to replace them.',
+        },
+    ],
+    [
+        /manifest_missing/u,
+        {
+            sentence: 'Mnemonik could not find the files for this version.',
+            nextStep: 'Run npx -y @mnemonik/cli@latest install to fetch them again.',
+        },
+    ],
+    [
         /post_commit_upload_failed|status could not be uploaded/iu,
         {
             sentence: 'Setup finished on this machine, but its status did not reach Mnemonik.',
-            nextStep: 'Run mnemonik doctor, then run mnemonik status again.',
+            nextStep: 'Run mnemonik repair to send it again.',
         },
     ],
     [
         /indexing_failed|indexing failed/iu,
         {
             sentence: 'The scanner could not index one or more projects.',
-            nextStep: 'Run mnemonik doctor on this machine and follow the scanner repair step.',
+            nextStep: 'Run mnemonik install to set indexing up again.',
         },
     ],
     [
         /indexing_stalled|not_reporting|indexing stalled/iu,
         {
             sentence: 'The scanner stopped making progress.',
-            nextStep: 'Run mnemonik doctor on this machine and restart the scanner when prompted.',
-        },
-    ],
-    [
-        /selected_component_failed|failed|unreachable/iu,
-        {
-            sentence: 'Part of Mnemonik did not finish setting up.',
-            nextStep: 'Run mnemonik doctor on this machine and follow the first repair step.',
-        },
-    ],
-    [
-        /login_pending|sign.?in|grants? could not be verified|access has not been verified/iu,
-        {
-            sentence: 'A Mnemonik sign-in has not finished on this machine.',
-            nextStep: 'Finish signing in from the editor, then run mnemonik status.',
+            nextStep: 'Run mnemonik install to start it again.',
         },
     ],
 ];
-export const genericReadinessMessage = {
-    sentence: 'This machine needs attention before Mnemonik can work fully.',
-    nextStep: 'Run mnemonik doctor on this machine and follow the first repair step.',
+/** A condition's own action, said as a step rather than as a command on its own. */
+const stepFrom = (action) => !action ? '' : /^[A-Z].*[.!?]$/u.test(action) ? action : `Run ${action}.`;
+/** A code with no words still stopped something, so the failure is said plainly. */
+const unnamedFailure = {
+    sentence: 'Mnemonik stopped before it finished.',
+    nextStep: 'Run mnemonik repair.',
 };
-export function messageFor(reason, actions = []) {
-    if (/^(?:The mnemonik command|No editor connections|.+ (?:hooks|connection)) .+\.$/u.test(reason)) {
-        const prefix = reason.startsWith('The mnemonik command')
-            ? 'Run npx '
-            : reason.startsWith('Claude Code connection is turned off')
-                ? 'In Claude Code'
-                : reason.startsWith('Codex connection is turned off')
-                    ? 'Open ~/.codex'
-                    : reason.startsWith('Cursor connection is turned off')
-                        ? 'Open Cursor '
-                        : 'Run mnemonik install ';
-        return {
-            sentence: reason,
-            nextStep: actions.find((action) => action.startsWith(prefix)) ?? genericReadinessMessage.nextStep,
-        };
-    }
-    return (readinessMessages.find(([pattern]) => pattern.test(reason))?.[1] ?? genericReadinessMessage);
+/** A reason the code wrote for a person already reads as a sentence. */
+const writtenForPeople = (reason) => /\s/u.test(reason) && /\.$/u.test(reason);
+/**
+ * The words for one condition. A reason with no table entry keeps its own
+ * sentence and its own step, so nothing reaches a person as a reason code.
+ */
+export function messageFor(reason, actions = [], action) {
+    const matched = readinessMessages.find(([pattern]) => pattern.test(reason))?.[1];
+    if (matched)
+        return matched;
+    // Older summaries carry reasons and actions apart; one action belongs to one reason.
+    return writtenForPeople(reason)
+        ? { sentence: reason, nextStep: stepFrom(action ?? (actions.length === 1 ? actions[0] : '')) }
+        : unnamedFailure;
 }
 /** Keep internal diagnostics in JSON and logs; human errors use the approved status copy. */
 export function humanReason(reason) {
@@ -177,7 +228,7 @@ export function humanReason(reason) {
     if (/^(?:filesystem_root|home_directory|temporary_directory|mnemonik_state_directory|user_data_directory|host_config_directory|broad_workspace_parent)$/u.test(reason))
         return 'That folder cannot be used. Choose another folder.';
     const message = messageFor(reason);
-    return `${message.sentence}\n${message.nextStep}`;
+    return message.nextStep ? `${message.sentence}\n${message.nextStep}` : message.sentence;
 }
 // Owner-approved 2026-09-21: stop and retry, with the npm command usable before installation.
 export const bootstrapFailureMessage = 'Installation stopped.\nRun npx -y @mnemonik/cli@latest install to try again.';
