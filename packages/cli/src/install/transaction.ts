@@ -99,11 +99,10 @@ export const consentMatches = (a: Consent | undefined, b: Consent): boolean =>
   a.disclosureVersion === b.disclosureVersion &&
   JSON.stringify([...a.roots].sort()) === JSON.stringify([...b.roots].sort()) &&
   JSON.stringify([...a.exclusions].sort()) === JSON.stringify([...b.exclusions].sort());
-const projectOptions = (project: { root: string; nonGitSelected?: true }) => ({
+const projectOptions = (project: { root: string }) => ({
   cwd: project.root,
   allowCreate: true,
   allowNestedInherit: false,
-  ...(project.nonGitSelected ? { nonGitSelected: true as const } : {}),
 });
 const report = (journal: Journal, text: string) => {
   if (!journal.data.reports.includes(text)) journal.data.reports.push(text);
@@ -332,10 +331,7 @@ export async function runInstall(deps: InstallDependencies, resume?: Journal) {
           }
           for (const repository of picked.repositories.filter((r) => r.selected)) {
             if (!journal.data.projects.some((p) => p.root === repository.path))
-              journal.data.projects.push({
-                root: repository.path,
-                nonGitSelected: repository.nonGitSelected,
-              });
+              journal.data.projects.push({ root: repository.path });
             await journal.plan(join(repository.path, '.mnemonik.json'), null, { kind: 'project' });
           }
           await event('project_stage_intent');

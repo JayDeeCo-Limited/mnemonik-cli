@@ -204,8 +204,10 @@ export async function resolveProjectIdentity(
   cwd: string,
   options: { allowNestedInherit?: boolean; selectedRoot?: boolean } = {}
 ): Promise<ProjectIdentityResolution> {
-  const repository = await resolveRepositoryRoot(cwd);
-  if (repository.kind === 'git_unavailable') return repository;
+  const resolved = await resolveRepositoryRoot(cwd);
+  // Git is optional. When the git command cannot answer, the folder is still a folder.
+  const repository: ResolvedRepository =
+    resolved.kind === 'git_unavailable' ? { kind: 'plain', root: resolve(cwd) } : resolved;
 
   if (repository.kind === 'plain') {
     const { root, result } = options.selectedRoot

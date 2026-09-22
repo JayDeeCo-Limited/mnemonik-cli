@@ -97,9 +97,7 @@ describe.runIf(process.platform !== 'win32')('symlink refusal and canonicalisati
       picked: {
         roots: [aliasRoot],
         exclusions: [],
-        repositories: [
-          { path: aliasRoot, state: 'not_set_up', selected: true, nonGitSelected: true },
-        ],
+        repositories: [{ path: aliasRoot, state: 'not_set_up', selected: true }],
       },
     });
 

@@ -55,7 +55,6 @@ export interface EnsureOptions {
     owner?: Owner;
     allowCreate: boolean;
     allowNestedInherit: boolean;
-    nonGitSelected?: true;
     intent?: {
         action: 'link';
         projectId: string;

@@ -296,7 +296,7 @@ export async function prepareScanner<T>(
       for (const root of picked.roots) {
         const decision = await evaluateRoot(
           { kind: 'absent', root, repository: await repositoryAt(root), nested: [] },
-          { cwd: root, nonGitSelected: true }
+          { cwd: root }
         );
         if (!decision.allowed) {
           options.output.error(`${root}: That folder cannot be used. Choose another folder.`);

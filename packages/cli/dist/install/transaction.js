@@ -38,7 +38,6 @@ const projectOptions = (project) => ({
     cwd: project.root,
     allowCreate: true,
     allowNestedInherit: false,
-    ...(project.nonGitSelected ? { nonGitSelected: true } : {}),
 });
 const report = (journal, text) => {
     if (!journal.data.reports.includes(text))
@@ -258,10 +257,7 @@ export async function runInstall(deps, resume) {
                 }
                 for (const repository of picked.repositories.filter((r) => r.selected)) {
                     if (!journal.data.projects.some((p) => p.root === repository.path))
-                        journal.data.projects.push({
-                            root: repository.path,
-                            nonGitSelected: repository.nonGitSelected,
-                        });
+                        journal.data.projects.push({ root: repository.path });
                     await journal.plan(join(repository.path, '.mnemonik.json'), null, { kind: 'project' });
                 }
                 await event('project_stage_intent');

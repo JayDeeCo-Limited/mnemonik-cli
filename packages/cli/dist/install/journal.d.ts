@@ -62,7 +62,6 @@ export interface JournalData {
         uuid?: string;
         effect?: 'created' | 'restored';
         empty?: boolean;
-        nonGitSelected?: true;
     }>;
     services: Array<{
         id: string;

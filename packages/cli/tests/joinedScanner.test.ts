@@ -192,7 +192,6 @@ it.each([
     mocks.classify.mockImplementation(async (path) => ({
       path,
       state: path === unresolved ? 'existing_project' : 'not_set_up',
-      ...(path === home ? { nonGitSelected: true } : {}),
     }));
     mocks.discover.mockResolvedValue({
       repositories:
@@ -426,7 +425,6 @@ it('connects all three ticked repositories when two owned identities already exi
   mocks.classify.mockImplementation(async (path) => ({
     path,
     state: projectIds.has(path) ? 'existing_project' : 'not_set_up',
-    nonGitSelected: true,
   }));
   mocks.prepare.mockImplementation(async (_options, work) =>
     work({
@@ -654,7 +652,6 @@ it.each([
   mocks.classify.mockImplementation(async (path) => ({
     path,
     state: 'existing_project',
-    ...(nonGit && path === join(home, nonGit) ? { nonGitSelected: true } : {}),
   }));
   mocks.fingerprint.mockImplementation(async (path) =>
     matchingFingerprint && path === join(home, matchingFingerprint)
@@ -824,7 +821,6 @@ it('keeps earlier projects and reports the skipped count when the plan limit is 
   mocks.classify.mockImplementation(async (path) => ({
     path,
     state: 'not_set_up',
-    nonGitSelected: true,
   }));
   mocks.prepare.mockImplementation(async (options, work) =>
     work({

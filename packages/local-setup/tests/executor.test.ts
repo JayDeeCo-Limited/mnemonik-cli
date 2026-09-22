@@ -111,7 +111,6 @@ async function fixture() {
     cwd: root,
     allowCreate: true,
     allowNestedInherit: false,
-    nonGitSelected: true as const,
   };
   const deps = {
     resolver,
@@ -228,23 +227,16 @@ async function realGitFixture(remote?: string) {
     resolver: { resolveProjectIdentity },
     bindContext,
   };
-  const options = { ...f.options, nonGitSelected: undefined };
-  return { ...f, deps, options };
+  return { ...f, deps };
 }
 
 describe('durable local setup', () => {
-  it('requires and then remembers explicit non-git selection', async () => {
+  it('sets up a folder that is not a Git repository without asking anything extra', async () => {
     const f = await fixture();
-    const { nonGitSelected: _selection, ...withoutSelection } = f.options;
-    expect(await createProjectSetupExecutor(f.deps).ensureProject(withoutSelection)).toMatchObject({
-      status: 'ACTION_REQUIRED',
-      state: 'non_git_selection_required',
-      manualAction: 'mnemonik project init <path>',
+    expect(await createProjectSetupExecutor(f.deps).stage(f.options)).toMatchObject({
+      status: 'staged',
     });
-    expect(await readdir(f.stateDir).catch(() => [])).toEqual([]);
-    await createProjectSetupExecutor(f.deps).stage(f.options);
-    expect((await f.record()).nonGitSelected).toBe(true);
-    expect(await createProjectSetupExecutor(f.deps).apply(withoutSelection)).toMatchObject({
+    expect(await createProjectSetupExecutor(f.deps).apply(f.options)).toMatchObject({
       status: 'done',
     });
   });

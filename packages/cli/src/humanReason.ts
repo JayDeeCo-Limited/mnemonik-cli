@@ -187,7 +187,7 @@ export function humanReason(reason: string): string {
   if (reason === 'lock_held')
     return 'Another mnemonik command holds the state lock; retry in a moment.';
   if (
-    /^(?:filesystem_root|home_directory|temporary_directory|mnemonik_state_directory|user_data_directory|host_config_directory|broad_workspace_parent|non_git_selection_required)$/u.test(
+    /^(?:filesystem_root|home_directory|temporary_directory|mnemonik_state_directory|user_data_directory|host_config_directory|broad_workspace_parent)$/u.test(
       reason
     )
   )
@@ -231,7 +231,18 @@ const projectActionLabels: Record<string, string> = {
   use_parent_identity: 'Use the parent project identity',
   initialize_nested_separately: 'Set up the nested project separately',
   select_main_or_worktree_identity: 'Choose the main checkout or worktree identity',
-  select_non_git: 'Confirm this folder is not a Git repository',
+  link: 'Connect this folder to the project its file names',
+  create: 'Create a new project for this folder',
+  restore: 'Restore the archived project',
+  upgrade: 'Upgrade your plan in the Mnemonik web console',
+  ignore: 'Leave this folder out on this machine',
+  switch_account: 'Sign in to the account that owns that project',
+  ask_owner: "Ask the project's owner to add you",
+  account_action: 'Sort the account out in the Mnemonik web console',
+  administrator_recovery: 'Ask a Mnemonik administrator to recover that project',
+  recover_identity: 'Write a new project file for this folder',
+  replace: 'Replace the project this folder names',
+  provide_owner: 'Choose a personal or team account',
   rerun_with_apply: 'Run the command again with --apply',
   provide_project_uuid: 'Supply the project ID from the Mnemonik web console',
   confirm_mismatch: 'Confirm the repository mismatch with --confirm-mismatch',
@@ -239,6 +250,11 @@ const projectActionLabels: Record<string, string> = {
 
 export function humanProjectAction(action: string): string {
   return projectActionLabels[action] ?? (action.includes('_') ? humanReason(action) : action);
+}
+
+/** The sentence for an action, or nothing when Mnemonik has no plain words for it. */
+export function projectActionSentence(action: string): string | undefined {
+  return projectActionLabels[action];
 }
 
 export function humanIdentityState(state: string): string {

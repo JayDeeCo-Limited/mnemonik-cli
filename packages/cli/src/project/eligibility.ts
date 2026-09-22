@@ -46,13 +46,19 @@ export async function repositoryAt(
     : { kind: 'plain', root: candidate };
 }
 
+/** A folder that holds two or more projects, by either marker, is a parent of projects. */
 async function broadWorkspace(root: string): Promise<boolean> {
-  let repositories = 0;
+  let projects = 0;
   for (const entry of await readdir(root, { withFileTypes: true }).catch(() => [])) {
     if (!entry.isDirectory()) continue;
-    const marker = await lstat(join(root, entry.name, '.git')).catch(() => undefined);
-    if (marker?.isDirectory() || marker?.isFile()) repositories += 1;
-    if (repositories >= 2) return true;
+    for (const name of ['.git', '.mnemonik.json']) {
+      const marker = await lstat(join(root, entry.name, name)).catch(() => undefined);
+      if (marker?.isDirectory() || marker?.isFile()) {
+        projects += 1;
+        break;
+      }
+    }
+    if (projects >= 2) return true;
   }
   return false;
 }
@@ -62,7 +68,6 @@ export async function evaluateRoot(
   options: {
     cwd: string;
     home?: string;
-    nonGitSelected?: boolean;
     platform?: NodeJS.Platform;
     env?: NodeJS.ProcessEnv;
   }
@@ -96,8 +101,6 @@ export async function evaluateRoot(
   const nonGit = 'repository' in resolution && resolution.repository.kind === 'plain';
   if (nonGit && (await broadWorkspace(root)))
     return { allowed: false, root, reason: 'broad_workspace_parent' };
-  if (nonGit && !options.nonGitSelected)
-    return { allowed: false, root, reason: 'non_git_selection_required' };
   return {
     allowed: true,
     root,

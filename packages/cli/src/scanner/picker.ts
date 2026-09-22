@@ -25,7 +25,6 @@ export interface PickerRepository {
   path: string;
   state: RepositoryState;
   selected: boolean;
-  nonGitSelected?: true;
 }
 
 export interface ScannerPickerResult {
@@ -41,7 +40,6 @@ export type ScannerPickerRunResult =
   | {
       status: 'cancelled';
       reason:
-        | 'non_git_not_confirmed'
         | 'selection_limit_back'
         | 'protected_path'
         | 'protected_exclusion_limit'
@@ -143,7 +141,6 @@ export async function runScannerBoundaryPicker(
           home: options.home,
           platform: options.platform,
           env: options.env,
-          nonGitSelected: true,
         }
       );
       if (!decision.allowed && decision.reason !== 'broad_workspace_parent') {
@@ -163,7 +160,7 @@ export async function runScannerBoundaryPicker(
       const candidates = found.repositories.map((repository) => ({
         path: repository.path,
         name: repositoryName(found.root, repository.path),
-        kind: repository.nonGitSelected ? ('folder' as const) : ('git' as const),
+        kind: repository.kind ?? 'git',
       }));
       if (!candidates.length) {
         options.output.line('No repositories were found there. Choose another folder.');
@@ -183,11 +180,10 @@ export async function runScannerBoundaryPicker(
         exclusions,
         boundary: found.root,
         candidates,
-        repositories: found.repositories.map(({ path, state, nonGitSelected }) => ({
+        repositories: found.repositories.map(({ path, state }) => ({
           path,
           state,
-          selected: !nonGitSelected,
-          ...(nonGitSelected ? { nonGitSelected } : {}),
+          selected: true,
         })),
       };
     }
@@ -237,12 +233,7 @@ function writeSummary(
 }
 
 const pickRows = (repositories: DiscoveredRepository[]): PickerRepository[] =>
-  repositories.map(({ path, state, nonGitSelected }) => ({
-    path,
-    state,
-    selected: true,
-    ...(nonGitSelected ? { nonGitSelected } : {}),
-  }));
+  repositories.map(({ path, state }) => ({ path, state, selected: true }));
 
 function exclude(answer: string, rows: PickerRepository[]): void {
   const indexes = new Set(
@@ -283,7 +274,6 @@ export async function runScannerPicker(options: PickerOptions): Promise<ScannerP
         home: options.home,
         platform: options.platform,
         env: options.env,
-        nonGitSelected: true,
       }
     );
     if (!decision.allowed) {
@@ -327,16 +317,6 @@ export async function runScannerPicker(options: PickerOptions): Promise<ScannerP
       truncated: found.truncated,
     };
   };
-  const confirmNonGit = async (displayPath: string, canonicalRoot: string) => {
-    const rootRow = await classify(canonicalRoot, { canonicalizePath: canonicalize });
-    if (rootRow.nonGitSelected) {
-      options.output.line(
-        `  ${displayPath} is not a Git repository. Index this folder anyway? [yes/no]`
-      );
-      if ((await next()).toLowerCase() !== 'yes') return undefined;
-    }
-    return rootRow;
-  };
   try {
     writeChoices(options.output, options.currentFolder);
     const choice = (await next()) || '2';
@@ -361,11 +341,8 @@ export async function runScannerPicker(options: PickerOptions): Promise<ScannerP
       const loaded = await loadFolder(displayRoot);
       if ('status' in loaded) return loaded;
       ({ root, rows, autoExclusions, truncated } = loaded);
-      if (choice === '3') {
-        const rootRow = await confirmNonGit(displayRoot, root);
-        if (!rootRow) return { status: 'cancelled', reason: 'non_git_not_confirmed' };
-        if (rows.length === 0) rows = pickRows([rootRow]);
-      }
+      if (choice === '3' && rows.length === 0)
+        rows = pickRows([await classify(root, { canonicalizePath: canonicalize })]);
     }
 
     while (true) {
@@ -404,9 +381,8 @@ export async function runScannerPicker(options: PickerOptions): Promise<ScannerP
       const loaded = await loadFolder(displayRoot);
       if ('status' in loaded) return loaded;
       ({ root, rows, autoExclusions, truncated } = loaded);
-      const rootRow = await confirmNonGit(displayRoot, root);
-      if (!rootRow) return { status: 'cancelled', reason: 'non_git_not_confirmed' };
-      if (rows.length === 0) rows = pickRows([rootRow]);
+      if (rows.length === 0)
+        rows = pickRows([await classify(root, { canonicalizePath: canonicalize })]);
     }
   } finally {
     readline.close();
@@ -447,7 +423,6 @@ export async function reviewScannerProjects(
       cwd: repository.path,
       allowCreate: true,
       allowNestedInherit: false,
-      ...(repository.nonGitSelected ? { nonGitSelected: true } : {}),
     });
     if (result.status === 'staged') handoff.staged.push({ path: repository.path, result });
     else handoff.actionRequired.push({ path: repository.path, result });

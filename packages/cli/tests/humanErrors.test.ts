@@ -129,8 +129,10 @@ it('uses a folder instruction when a project is refused', async () => {
     ensureProject: unused,
   };
   expect(await runCli(['project', 'init'], f.deps)).toBe(3);
-  expect(f.stderr.text).not.toContain('home_directory');
-  expect(f.stderr.text).toContain('That folder cannot be used. Choose another folder.');
+  const said = `${f.stdout.text}${f.stderr.text}`;
+  expect(said).not.toContain('home_directory');
+  expect(said).toContain('was not connected. Mnemonik does not index your whole home folder.');
+  expect(said).toContain('Choose a single project folder and run mnemonik add on that folder.');
 });
 
 it('keeps detailed reasons out of preflight prose', async () => {

@@ -277,11 +277,7 @@ async function runJourney(
       complete: vi.fn(),
     } as unknown as PreparedScanner);
   });
-  mocks.classify.mockImplementation(async (path) => ({
-    path,
-    state: 'not_set_up',
-    nonGitSelected: true,
-  }));
+  mocks.classify.mockImplementation(async (path) => ({ path, state: 'not_set_up' }));
   mocks.status.mockResolvedValue({
     ...serializeReadiness({ installation: { conditions: [] } }),
     cliCredential: { present: true, diagnostics: [] },

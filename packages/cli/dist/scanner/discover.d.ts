@@ -7,7 +7,8 @@ export type RepositoryState = 'existing_project' | 'remote_setup' | 'not_set_up'
 export interface DiscoveredRepository {
     path: string;
     state: RepositoryState;
-    nonGitSelected?: true;
+    /** What is on disk, for display only. Git history is optional, never a condition. */
+    kind?: 'git' | 'folder';
     fingerprint?: RepositoryFingerprint;
     reason?: Exclude<ProjectIdentityResolution['kind'], 'ok' | 'absent'>;
 }

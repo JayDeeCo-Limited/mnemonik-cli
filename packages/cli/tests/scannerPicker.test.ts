@@ -83,7 +83,7 @@ afterEach(async () => {
 });
 
 describe('repository discovery', () => {
-  it('selects Git and resolved identity folders by default while skipping hidden folders', async () => {
+  it('selects Git folders and plain project folders alike while skipping hidden folders', async () => {
     const home = await temporaryDirectory();
     const cwd = join(home, 'empty');
     const boundary = join(home, 'Projects');
@@ -99,7 +99,7 @@ describe('repository discovery', () => {
     const discovered = await scannerCandidates(boundary);
     expect(discovered.candidates).toEqual([
       { path: app, name: 'app', kind: 'git' },
-      { path: notes, name: 'notes', kind: 'git' },
+      { path: notes, name: 'notes', kind: 'folder' },
     ]);
 
     const stream = capture();
@@ -715,39 +715,36 @@ describe('scanner picker and consent', () => {
     expect(stream.text).toContain('3. Back');
   });
 
-  it('requires explicit confirmation for another non-git path', async () => {
+  it('takes another folder that is not a Git repository without an extra question', async () => {
     const current = await temporaryDirectory();
     const plain = await temporaryDirectory();
-    const refused = await runScannerPicker({
-      input: Readable.from(`3\n${plain}\nno\n`),
-      output: new Output(capture()),
-      currentProject: current,
-      currentFolder: dirname(current),
-    });
-    expect(refused).toMatchObject({ status: 'cancelled', reason: 'non_git_not_confirmed' });
-
+    const stream = capture();
     const accepted = await runScannerPicker({
-      input: Readable.from(`3\n${plain}\nyes\n\n`),
-      output: new Output(capture()),
+      input: Readable.from(`3\n${plain}\n\n`),
+      output: new Output(stream),
       currentProject: current,
       currentFolder: dirname(current),
     });
     if ('status' in accepted) throw new Error('expected selected roots');
     expect(accepted).toMatchObject({ roots: [plain] });
     expect(accepted.repositories[0]).toMatchObject({ state: 'not_set_up', selected: true });
+    expect(stream.text).not.toContain('is not a Git repository');
   });
 
-  it('still confirms a non-git root when it contains a Git repository', async () => {
+  it('takes a folder that holds one Git repository and lists that repository', async () => {
     const current = await temporaryDirectory();
     const plain = await temporaryDirectory();
-    await git(join(plain, 'child'));
+    const child = join(plain, 'child');
+    await git(child);
     const result = await runScannerPicker({
-      input: Readable.from(`3\n${plain}\nno\n`),
+      input: Readable.from(`3\n${plain}\n\n`),
       output: new Output(capture()),
       currentProject: current,
       currentFolder: dirname(current),
     });
-    expect(result).toEqual({ status: 'cancelled', reason: 'non_git_not_confirmed' });
+    if ('status' in result) throw new Error('expected selected roots');
+    expect(result).toMatchObject({ roots: [plain] });
+    expect(result.repositories).toEqual([expect.objectContaining({ path: child, selected: true })]);
   });
 
   it('keeps a Windows path as typed on screen while using its canonical path', async () => {

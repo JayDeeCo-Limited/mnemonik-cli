@@ -22,7 +22,7 @@ import { SCANNER_RESTART_MESSAGE } from './scanner/service.js';
 import { SCANNER_FAILURE_MESSAGE, SCANNER_RETRY_MESSAGE } from './screens/journey.js';
 import { renderPreflight, runPreflight } from './preflight.js';
 import { postCurrentReadiness } from './installSession.js';
-import { createRealProjectRuntime, ensureProjectRoot, ensureProjectForAgent, projectLimitMessage, runProjectCommand, } from './project.js';
+import { createRealProjectRuntime, ensureProjectRoot, ensureProjectForAgent, folderRefusalMessage, projectLimitMessage, runProjectCommand, } from './project.js';
 import { evaluateRoot } from './project/eligibility.js';
 import { apiOrigin, describeReadiness, serializeReadiness as baseReadiness, } from '@mnemonik/shared';
 import { grantTransport, grantHost } from './auth/status.js';
@@ -826,7 +826,8 @@ export async function runCli(args, deps = {}) {
     if (command === 'roots' || command === 'add' || command === 'remove') {
         const action = command === 'roots' ? subcommand : command;
         const actionArguments = command === 'roots' ? rest : [subcommand, ...rest].filter(Boolean);
-        const invalid = allowed(parsed, ['accept-indexing', 'apply', 'no-browser']);
+        // `--non-git` is accepted and ignored: a folder is a project with or without Git.
+        const invalid = allowed(parsed, ['accept-indexing', 'apply', 'no-browser', 'non-git']);
         if (invalid ||
             !['add', 'remove', 'list'].includes(action ?? '') ||
             actionArguments.length !== (action === 'list' ? 0 : 1))
@@ -872,13 +873,14 @@ export async function runCli(args, deps = {}) {
                     fetch: deps.grantFetch,
                 })).executor;
             const resolution = await executor.resolveProjectIdentity(requested);
-            const decision = await evaluateRoot(resolution, {
-                cwd: requested,
-                home: deps.home,
-                nonGitSelected: true,
-            });
-            if (!decision.allowed)
-                return actionRequired(output, parsed.flags.has('json'), decision.reason);
+            const decision = await evaluateRoot(resolution, { cwd: requested, home: deps.home });
+            if (!decision.allowed) {
+                if (parsed.flags.has('json'))
+                    return actionRequired(output, true, decision.reason);
+                for (const line of folderRefusalMessage(decision.reason, decision.root))
+                    output.line(line);
+                return 3;
+            }
             const project = await ensureProjectRoot(requested, executor);
             const limit = projectLimitMessage(project, requested);
             if (limit) {
@@ -894,7 +896,12 @@ export async function runCli(args, deps = {}) {
                 return 3;
             }
             if (project.status !== 'done') {
-                output.error(humanReason('project_setup_required'));
+                const state = 'state' in project ? String(project.state) : project.status;
+                if (parsed.flags.has('json'))
+                    output.json({ status: 'ACTION_REQUIRED', state });
+                else
+                    for (const line of folderRefusalMessage(state, requested))
+                        output.line(line);
                 return 3;
             }
         }
@@ -1220,7 +1227,6 @@ export async function runCli(args, deps = {}) {
             json: parsed.flags.has('json'),
             nonInteractive: parsed.flags.has('non-interactive'),
             apply: parsed.flags.has('apply'),
-            nonGit: parsed.flags.has('non-git'),
             confirmMismatch: parsed.flags.has('confirm-mismatch'),
             replace: parsed.flags.has('replace'),
             owner: typeof parsed.flags.get('owner') === 'string'

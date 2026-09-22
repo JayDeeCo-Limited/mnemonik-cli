@@ -114,14 +114,7 @@ export async function makeSweepFixture(): Promise<SweepFixture> {
         picked: {
           roots: [root],
           exclusions: [],
-          repositories: [
-            {
-              path: root,
-              state: 'not_set_up',
-              selected: true,
-              nonGitSelected: true,
-            },
-          ],
+          repositories: [{ path: root, state: 'not_set_up', selected: true }],
         },
       }),
       consent: async () => true,

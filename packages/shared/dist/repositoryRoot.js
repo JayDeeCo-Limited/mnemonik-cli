@@ -160,9 +160,9 @@ function withBase(repository, root, nested) {
     return { root, repository, nested };
 }
 export async function resolveProjectIdentity(cwd, options = {}) {
-    const repository = await resolveRepositoryRoot(cwd);
-    if (repository.kind === 'git_unavailable')
-        return repository;
+    const resolved = await resolveRepositoryRoot(cwd);
+    // Git is optional. When the git command cannot answer, the folder is still a folder.
+    const repository = resolved.kind === 'git_unavailable' ? { kind: 'plain', root: resolve(cwd) } : resolved;
     if (repository.kind === 'plain') {
         const { root, result } = options.selectedRoot
             ? { root: repository.root, result: await readIdentityFile(repository.root, options) }

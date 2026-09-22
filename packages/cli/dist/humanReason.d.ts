@@ -14,6 +14,8 @@ export declare const bootstrapFailureMessage = "Installation stopped.\nRun npx -
 /** Older journals mix sentences and reason codes. Preserve their sentences and actionable paths. */
 export declare function humanReport(report: string): string;
 export declare function humanProjectAction(action: string): string;
+/** The sentence for an action, or nothing when Mnemonik has no plain words for it. */
+export declare function projectActionSentence(action: string): string | undefined;
 export declare function humanIdentityState(state: string): string;
 export {};
 //# sourceMappingURL=humanReason.d.ts.map

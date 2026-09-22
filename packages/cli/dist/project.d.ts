@@ -11,6 +11,10 @@ export interface ProjectExecutor {
     rollback(options: EnsureOptions): Promise<SetupResult>;
 }
 export declare function ensureProjectRoot(root: string, executor: ProjectExecutor): Promise<SetupResult>;
+/** Does Mnemonik have plain words for this state? */
+export declare const hasRefusalWords: (reason: string) => boolean;
+/** No bare line: name the folder, say why in plain words, give the one command. */
+export declare function folderRefusalMessage(reason: string, root: string): string[];
 export declare function projectLimitMessage(result: SetupResult, roots: string | readonly string[]): string[] | undefined;
 export declare const connectedProjectsMessage: (roots: string[]) => string;
 export declare const projectExecutor: (dependencies: ExecutorDependencies) => ProjectExecutor;
@@ -112,7 +116,6 @@ export interface ProjectCommandInput {
     json: boolean;
     nonInteractive: boolean;
     apply: boolean;
-    nonGit: boolean;
     confirmMismatch: boolean;
     replace: boolean;
     owner?: string;

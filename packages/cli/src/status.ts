@@ -491,7 +491,6 @@ export async function readProjectStatus(
       json: true,
       nonInteractive: true,
       apply: false,
-      nonGit: false,
       confirmMismatch: false,
       replace: false,
     },

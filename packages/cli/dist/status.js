@@ -347,7 +347,6 @@ export async function readProjectStatus(input) {
         json: true,
         nonInteractive: true,
         apply: false,
-        nonGit: false,
         confirmMismatch: false,
         replace: false,
     }, { ...input, output: new Output(writer) });

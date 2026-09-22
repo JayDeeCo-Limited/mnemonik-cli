@@ -1,4 +1,4 @@
-import { humanReason, humanProjectAction } from './humanReason.js';
+import { humanReason, projectActionSentence } from './humanReason.js';
 import { createCliCredentials } from './auth/credentials.js';
 import { createInterface } from 'node:readline';
 import { execFile } from 'node:child_process';
@@ -10,15 +10,83 @@ import { createServerTransport, ServerActionRequiredError, } from './transport/s
 import { evaluateRoot } from './project/eligibility.js';
 import { identityHash, ownerLabel, readExecutorState, saveCommandRecord, } from './project/records.js';
 export async function ensureProjectRoot(root, executor) {
-    const resolution = await executor.resolveProjectIdentity(root);
-    return executor.ensureProject({
-        cwd: root,
-        allowCreate: true,
-        allowNestedInherit: false,
-        ...(resolution.kind !== 'git_unavailable' && resolution.repository.kind === 'plain'
-            ? { nonGitSelected: true }
-            : {}),
-    });
+    return executor.ensureProject({ cwd: root, allowCreate: true, allowNestedInherit: false });
+}
+const refusalReasons = {
+    filesystem_root: 'Mnemonik does not index a whole disk.',
+    home_directory: 'Mnemonik does not index your whole home folder.',
+    temporary_directory: 'Mnemonik does not index the temporary folder.',
+    mnemonik_state_directory: 'That folder holds Mnemonik settings.',
+    user_data_directory: 'That folder holds program settings.',
+    host_config_directory: 'That folder holds editor settings.',
+    broad_workspace_parent: 'It holds several projects, and Mnemonik would index all of them.',
+    not_found: 'Its project file names a project this account cannot open.',
+    project_access_denied: 'Its project file names a project this account cannot open.',
+    archived: 'Its project is archived.',
+    blocked: 'Its project belongs to an account that is on hold.',
+    deleted: 'Its project was deleted.',
+    fingerprint_mismatch: 'Its Git remote does not match the repository this project was set up with.',
+    confirmation_required: 'Mnemonik has not seen this folder on this machine before.',
+    nested: 'It sits inside another project.',
+    conflict: 'It holds project files that disagree.',
+    invalid_identity: 'Its project file cannot be read.',
+    malformed: 'Its project file cannot be read.',
+    unknown_version: 'Its project file was written by a newer version of Mnemonik.',
+    identity_too_large: 'Its project file is too large to keep a copy of.',
+    identity_changed: 'Its project file changed while Mnemonik was working.',
+    operation_context_changed: 'Another Mnemonik command is part-way through connecting it.',
+    rollback_in_progress: 'An undo of an earlier setup is still running for that folder.',
+    operation_rolled_back: 'An earlier setup of that folder was undone.',
+    record_invalid: 'Mnemonik cannot read its own notes about that folder.',
+    record_missing: 'Mnemonik has no notes about that folder to finish.',
+    not_staged: 'Nothing was prepared for that folder yet.',
+    invalid_server_result: 'Mnemonik got an answer it could not use.',
+    identity_exists: 'It is already connected to a different project.',
+};
+const AGAIN = 'Run the command again.';
+const CHOOSE_ONE = 'Choose a single project folder and run mnemonik add on that folder.';
+const SIGN_IN = 'Sign in to the account that owns that project, then run the command again.';
+const FRESH_FILE = 'Delete the .mnemonik.json file in that folder, then run the command again.';
+const refusalSteps = {
+    filesystem_root: CHOOSE_ONE,
+    home_directory: CHOOSE_ONE,
+    temporary_directory: CHOOSE_ONE,
+    mnemonik_state_directory: CHOOSE_ONE,
+    user_data_directory: CHOOSE_ONE,
+    host_config_directory: CHOOSE_ONE,
+    broad_workspace_parent: CHOOSE_ONE,
+    not_found: SIGN_IN,
+    project_access_denied: SIGN_IN,
+    blocked: SIGN_IN,
+    archived: 'Restore the project in the Mnemonik web console, then run the command again.',
+    deleted: FRESH_FILE,
+    invalid_identity: FRESH_FILE,
+    malformed: FRESH_FILE,
+    unknown_version: 'Update Mnemonik on this machine, then run the command again.',
+    identity_too_large: FRESH_FILE,
+    fingerprint_mismatch: 'Run mnemonik project setup --confirm-mismatch in that folder to connect it anyway.',
+    confirmation_required: 'Run mnemonik project setup in that folder to confirm it.',
+    nested: 'Run mnemonik project setup in that folder and choose which project it belongs to.',
+    conflict: 'Run mnemonik project setup in that folder and choose which project it belongs to.',
+    identity_changed: AGAIN,
+    operation_context_changed: 'Run mnemonik project setup in that folder to finish that command.',
+    rollback_in_progress: 'Wait for it to finish, then run the command again.',
+    operation_rolled_back: 'Run mnemonik project setup in that folder to set it up again.',
+    not_staged: AGAIN,
+    invalid_server_result: AGAIN,
+    record_invalid: 'Run mnemonik doctor on this machine, then run the command again.',
+    record_missing: 'Run mnemonik project setup in that folder.',
+    identity_exists: 'Run mnemonik project link <project id> --replace in that folder.',
+};
+/** Does Mnemonik have plain words for this state? */
+export const hasRefusalWords = (reason) => reason in refusalReasons;
+/** No bare line: name the folder, say why in plain words, give the one command. */
+export function folderRefusalMessage(reason, root) {
+    const name = basename(root);
+    return [
+        `${name} was not connected. ${refusalReasons[reason] ?? 'Mnemonik could not finish connecting it.'}`,
+        refusalSteps[reason] ?? `Run mnemonik status in ${name} and follow the first step.`,
+    ];
 }
 export function projectLimitMessage(result, roots) {
     if (!('state' in result) || result.state !== 'project_limit_reached')
@@ -147,14 +215,24 @@ export async function createRealProjectRuntime(options = {}) {
     };
 }
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+/**
+ * Sentences, not a list of internal action names. Cancelling is always available,
+ * and an action with no sentence of its own is left out rather than shown raw.
+ */
+const choiceLines = (actions) => actions.flatMap((action) => {
+    const label = projectActionSentence(action);
+    return label ? [`  You can ${label.replace(/^[A-Z]/u, (c) => c.toLowerCase())}.`] : [];
+});
 function actionRequired(output, json, state, details = {}) {
-    const result = { status: 'ACTION_REQUIRED', state, ...details };
+    const { quiet, ...rest } = details;
+    const result = { status: 'ACTION_REQUIRED', state, ...rest };
     if (json)
         output.json(result);
-    else {
+    else if (!quiet) {
         output.error(humanReason(state));
         if (Array.isArray(details.allowedActions))
-            output.line(`  Allowed actions: ${details.allowedActions.map((action) => humanProjectAction(String(action))).join('; ')}`);
+            for (const line of choiceLines(details.allowedActions.map(String)))
+                output.line(line);
     }
     return 3;
 }
@@ -220,14 +298,20 @@ function showResult(output, json, result, root, owner, record) {
             owner: ownerLabel(owner),
         });
     else {
-        output.error(humanReason('state' in result ? result.state : result.status));
+        const state = 'state' in result ? result.state : result.status;
+        if (hasRefusalWords(state))
+            for (const line of folderRefusalMessage(state, root))
+                output.line(line);
+        else
+            output.error(humanReason(state));
         if ('candidates' in result && Array.isArray(result.candidates))
             for (const candidate of result.candidates)
                 output.line(`  ${candidate.displayName} (${candidate.projectId})`);
         if ('used' in result && 'limit' in result)
             output.line(`  Projects: ${result.used} used, limit ${result.limit}`);
         if ('allowedActions' in result)
-            output.line(`  Allowed actions: ${result.allowedActions.map(humanProjectAction).join('; ')}`);
+            for (const line of choiceLines(result.allowedActions))
+                output.line(line);
     }
 }
 async function finish(deps, input, result, root, reason, owner, beforeHash) {
@@ -348,34 +432,23 @@ async function runProjectCommandInner(input, deps, prompts) {
             'cancel',
         ], { identityLocation });
     }
-    let selectedNonGit = input.nonGit || input.command === 'link';
-    let decision = await evaluateRoot(resolution, {
-        cwd,
-        home: deps.home,
-        nonGitSelected: selectedNonGit,
-    });
-    if (!decision.allowed &&
-        decision.reason === 'non_git_selection_required' &&
-        !input.nonInteractive &&
-        !input.json &&
-        (await prompts.confirm(`Use non-git folder ${decision.root}?`))) {
-        selectedNonGit = true;
-        decision = await evaluateRoot(resolution, { cwd, home: deps.home, nonGitSelected: true });
-    }
-    if (!decision.allowed)
+    const decision = await evaluateRoot(resolution, { cwd, home: deps.home });
+    if (!decision.allowed) {
+        if (!input.json)
+            for (const line of folderRefusalMessage(decision.reason, decision.root))
+                deps.output.line(line);
         return actionRequired(deps.output, input.json, decision.reason, {
             root: decision.root,
-            allowedActions: decision.reason === 'non_git_selection_required'
-                ? ['select_non_git', 'cancel']
-                : ['cancel'],
+            allowedActions: ['cancel'],
+            quiet: true,
         });
+    }
     deps.output.setContext({ home: deps.home, projectRoot: decision.root });
     const base = {
         cwd,
         owner,
         allowCreate: input.command !== 'link',
         allowNestedInherit: false,
-        ...(selectedNonGit ? { nonGitSelected: true } : {}),
     };
     if (input.command === 'setup') {
         if ((input.nonInteractive || input.json) && !input.apply) {

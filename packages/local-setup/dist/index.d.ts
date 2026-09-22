@@ -17,7 +17,6 @@ export interface SetupRecord {
     root: string;
     scopeKey: string;
     owner?: Owner;
-    nonGitSelected?: true;
     intent?: EnsureOptions['intent'];
     ignored?: {
         identityHash: string | null;

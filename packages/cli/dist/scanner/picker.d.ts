@@ -6,7 +6,6 @@ export interface PickerRepository {
     path: string;
     state: RepositoryState;
     selected: boolean;
-    nonGitSelected?: true;
 }
 export interface ScannerPickerResult {
     roots: string[];
@@ -17,7 +16,7 @@ export interface ScannerPickerResult {
 }
 export type ScannerPickerRunResult = ScannerPickerResult | {
     status: 'cancelled';
-    reason: 'non_git_not_confirmed' | 'selection_limit_back' | 'protected_path' | 'protected_exclusion_limit' | 'filesystem_root' | 'home_directory' | 'temporary_directory' | 'mnemonik_state_directory' | 'user_data_directory' | 'host_config_directory' | 'broad_workspace_parent';
+    reason: 'selection_limit_back' | 'protected_path' | 'protected_exclusion_limit' | 'filesystem_root' | 'home_directory' | 'temporary_directory' | 'mnemonik_state_directory' | 'user_data_directory' | 'host_config_directory' | 'broad_workspace_parent';
 };
 export interface ScannerConsentDraft {
     roots: string[];

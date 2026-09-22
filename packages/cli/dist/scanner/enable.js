@@ -203,7 +203,7 @@ export async function prepareScanner(options, work) {
             picked.roots = await Promise.all(picked.roots.map((root) => realpath(root)));
             picked.exclusions = await Promise.all(picked.exclusions.map((root) => realpath(root)));
             for (const root of picked.roots) {
-                const decision = await evaluateRoot({ kind: 'absent', root, repository: await repositoryAt(root), nested: [] }, { cwd: root, nonGitSelected: true });
+                const decision = await evaluateRoot({ kind: 'absent', root, repository: await repositoryAt(root), nested: [] }, { cwd: root });
                 if (!decision.allowed) {
                     options.output.error(`${root}: That folder cannot be used. Choose another folder.`);
                     throw new Error(decision.reason);

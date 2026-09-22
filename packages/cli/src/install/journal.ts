@@ -138,7 +138,6 @@ export interface JournalData {
     uuid?: string;
     effect?: 'created' | 'restored';
     empty?: boolean;
-    nonGitSelected?: true;
   }>;
   services: Array<{ id: string; before: string; started?: boolean; managed?: true }>;
   mutations: Array<{ sequence: number; event: string; target?: string }>;

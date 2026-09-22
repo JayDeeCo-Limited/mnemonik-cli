@@ -130,7 +130,6 @@ describe('native Windows project root eligibility', () => {
       LOCALAPPDATA: `${home}\\AppData\\Local`,
       APPDATA: `${home}\\AppData\\Roaming`,
     },
-    nonGitSelected: true,
   };
 
   it.each([
@@ -154,7 +153,6 @@ describe('project init', () => {
     ['temporary_directory', 'temp'],
     ['host_config_directory', 'host'],
     ['broad_workspace_parent', 'broad'],
-    ['non_git_selection_required', 'plain'],
   ])('refuses %s without writing', async (reason, kind) => {
     const f = await baseFixture();
     if (kind === 'home') f.root = f.home;
@@ -185,7 +183,7 @@ describe('project init', () => {
     expect(await readdir(f.stateDir).catch(() => [])).toEqual([]);
   });
 
-  it('records explicit non-git selection and proceeds', async () => {
+  it('sets up a folder without Git, with or without the old --non-git flag', async () => {
     const f = await baseFixture();
     const deps = commandDeps(f, {
       resolution: {
@@ -202,7 +200,8 @@ describe('project init', () => {
     const journal = JSON.parse(
       await readFile(join(f.stateDir, 'project-setup', setupScope), 'utf8')
     );
-    expect(journal.nonGitSelected).toBe(true);
+    expect(journal.root).toBe(f.root);
+    expect(journal.nonGitSelected).toBeUndefined();
     expect(await commandRecords(f.stateDir)).toHaveLength(1);
   });
 
@@ -296,9 +295,10 @@ describe('project init', () => {
       expect(await runCli(['project', 'init'], deps)).toBe(3);
       expect(f.stdout.text).toContain(`Root: ${resolution.root}`);
       expect(f.stdout.text).toContain(`Identity: ${join(resolution.root, '.mnemonik.json')}`);
-      expect(f.stdout.text).toContain(
-        'Use the parent project identity; Set up the nested project separately; Choose the main checkout or worktree identity; cancel'
-      );
+      expect(f.stdout.text).toContain('You can use the parent project identity.');
+      expect(f.stdout.text).toContain('You can set up the nested project separately.');
+      expect(f.stdout.text).toContain('You can choose the main checkout or worktree identity.');
+      expect(f.stdout.text).not.toContain('Allowed actions');
       expect(ensure).not.toHaveBeenCalled();
       expect(await readFile(join(f.root, '.mnemonik.json')).catch(() => null)).toBeNull();
     }
@@ -504,7 +504,7 @@ describe('project link and setup', () => {
     expect(await commandRecords(f.stateDir)).toHaveLength(1);
   });
 
-  it('asks separately for a non-git folder and the setup plan', async () => {
+  it('asks only about the setup plan for a folder without Git', async () => {
     const f = await baseFixture();
     const resolution = {
       kind: 'absent' as const,
@@ -512,9 +512,9 @@ describe('project link and setup', () => {
       repository: { kind: 'plain' as const, root: f.root },
       nested: [],
     };
-    const deps = commandDeps(f, { resolution, input: 'yes\nyes\n' });
+    const deps = commandDeps(f, { resolution, input: 'yes\n' });
     expect(await runCli(['project', 'setup'], deps)).toBe(0);
-    expect(f.stdout.text).toContain('Use non-git folder');
+    expect(f.stdout.text).not.toContain('Use non-git folder');
     expect(f.stdout.text).toContain('Project plan');
     expect(f.stdout.text).toContain('Apply?');
   });
@@ -602,7 +602,7 @@ describe('project status and command records', () => {
     expect(JSON.parse(f.stdout.text)).toMatchObject({
       resolvedRoot: f.root,
       projectId: null,
-      identity: 'git_unavailable',
+      identity: 'absent',
       reachability: 'unreachable',
       executorState: 'unreachable',
     });

@@ -22,7 +22,6 @@ export declare function repositoryAt(candidate: string): Promise<Extract<Reposit
 export declare function evaluateRoot(resolution: ProjectIdentityResolution, options: {
     cwd: string;
     home?: string;
-    nonGitSelected?: boolean;
     platform?: NodeJS.Platform;
     env?: NodeJS.ProcessEnv;
 }): Promise<RootDecision>;

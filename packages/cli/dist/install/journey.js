@@ -5,7 +5,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { apiOrigin, remainingReadinessCount, serializeReadiness, } from '@mnemonik/shared';
 import { atomicWrite, recordPath, stateDirectory } from '@mnemonik/local-setup';
 import { nodeVersionHelp, runPreflight } from '../preflight.js';
-import { createRealProjectRuntime, projectLimitMessage, repositoryFingerprint, } from '../project.js';
+import { createRealProjectRuntime, folderRefusalMessage, projectLimitMessage, repositoryFingerprint, } from '../project.js';
 import { classifyRepository } from '../scanner/discover.js';
 import { prepareScanner, restoreScannerInstall } from '../scanner/enable.js';
 import { ScannerServiceLimited } from '../scanner/service.js';
@@ -471,11 +471,13 @@ export async function joinedInstall(flags, deps, output, authorize, management) 
             const projectReadiness = [];
             const linkIntents = new Map();
             const leaveProjectForPerson = (root, identityFile, state, connectedRoot) => {
-                let action = `${basename(root)} was not connected.`;
+                let action;
                 if (state === 'duplicate_project_id' && connectedRoot)
-                    action += ` It belongs to the same project as ${basename(connectedRoot)}, which is already connected.`;
+                    action = `${basename(root)} was not connected. It belongs to the same project as ${basename(connectedRoot)}, which is already connected.`;
                 else if (state === 'fingerprint_mismatch')
-                    action += ' Its Git remote does not match the repository this project was set up with.';
+                    action = `${basename(root)} was not connected. Its Git remote does not match the repository this project was set up with.`;
+                else
+                    action = folderRefusalMessage(state, root).join(' ');
                 const condition = {
                     kind: 'project_identity_choice_pending',
                     reason: `project_setup_required: ${state}: ${root}`,
@@ -566,7 +568,6 @@ export async function joinedInstall(flags, deps, output, authorize, management) 
                             cwd: repo.path,
                             allowCreate: true,
                             allowNestedInherit: false,
-                            ...(repo.nonGitSelected ? { nonGitSelected: true } : {}),
                             ...(linkProjectId
                                 ? { intent: { action: 'link', projectId: linkProjectId } }
                                 : {}),
@@ -591,10 +592,7 @@ export async function joinedInstall(flags, deps, output, authorize, management) 
                             stagedRootByProject.set(linkProjectId, repo.path);
                         connectedRoots.push(repo.path);
                         if (!journal.data.projects.some((p) => p.root === repo.path))
-                            journal.data.projects.push({
-                                root: repo.path,
-                                nonGitSelected: repo.nonGitSelected,
-                            });
+                            journal.data.projects.push({ root: repo.path });
                         const record = JSON.parse(await readFile(recordPath(repo.path, deps.projectStateDir ?? stateDir), 'utf8'));
                         if (record.staged)
                             await journal.propose(target, Buffer.from(record.staged.content));
@@ -632,7 +630,6 @@ export async function joinedInstall(flags, deps, output, authorize, management) 
                         cwd: project.root,
                         allowCreate: true,
                         allowNestedInherit: false,
-                        ...(project.nonGitSelected ? { nonGitSelected: true } : {}),
                         ...(linkProjectId
                             ? { intent: { action: 'link', projectId: linkProjectId } }
                             : {}),

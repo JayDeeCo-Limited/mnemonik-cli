@@ -90,7 +90,7 @@ describe('project ensure --agent --json', () => {
     });
   });
 
-  it.each(['home', 'temp', 'host-config', 'broad-workspace', 'plain'])(
+  it.each(['home', 'temp', 'host-config', 'broad-workspace'])(
     'returns the exact init action without a create-capable request from %s',
     async (kind) => {
       const base = await mkdtemp(join(tmpdir(), 'mnemonik-cli-ensure-skip-'));
@@ -135,4 +135,43 @@ describe('project ensure --agent --json', () => {
       expect(ensureProject).not.toHaveBeenCalled();
     }
   );
+
+  it('sets up a folder that is not a Git repository like any other folder', async () => {
+    const base = await mkdtemp(join(tmpdir(), 'mnemonik-cli-ensure-plain-'));
+    dirs.push(base);
+    const root = join(base, 'plain');
+    await mkdir(root);
+    const projectId = randomUUID();
+    const ensureProject = vi.fn(async () => ({
+      status: 'done' as const,
+      operationId: 'operation',
+      root,
+      projectId,
+      permissionStatus: 'private' as const,
+    }));
+    const stdout = capture();
+
+    expect(
+      await runCli(['project', 'ensure', '--agent', '--json'], {
+        cwd: root,
+        stdout,
+        stderr: stdout,
+        projectExecutor: {
+          resolveProjectIdentity: async () => ({
+            kind: 'absent' as const,
+            root,
+            repository: { kind: 'plain' as const, root },
+            nested: [],
+          }),
+          ensureProject,
+          stage: vi.fn(),
+          apply: vi.fn(),
+          rollback: vi.fn(),
+        },
+      } as unknown as Parameters<typeof runCli>[1])
+    ).toBe(0);
+
+    expect(ensureProject).toHaveBeenCalledOnce();
+    expect(JSON.parse(stdout.text)).toMatchObject({ status: 'done', projectId });
+  });
 });

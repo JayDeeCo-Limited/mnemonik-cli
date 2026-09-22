@@ -274,7 +274,7 @@ it('sends boundary candidates and configures only the approved subset', async ()
       boundary,
       candidates: [
         { path: app, name: 'app', kind: 'git' },
-        { path: notes, name: 'notes', kind: 'git' },
+        { path: notes, name: 'notes', kind: 'folder' },
       ],
     },
     '11111111-1111-4111-8111-111111111111'

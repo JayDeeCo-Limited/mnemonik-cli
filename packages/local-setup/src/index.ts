@@ -48,7 +48,6 @@ export interface SetupRecord {
   root: string;
   scopeKey: string;
   owner?: Owner;
-  nonGitSelected?: true;
   intent?: EnsureOptions['intent'];
   ignored?: { identityHash: string | null; responseHash: string };
   evidence?: Evidence;
@@ -96,12 +95,6 @@ const step = (beforeHash: string | null): Step => ({
   beforeHash,
   afterHash: null,
 });
-const nonGitSelectionRequired = (): SetupResult => ({
-  status: 'ACTION_REQUIRED',
-  state: 'non_git_selection_required',
-  allowedActions: ['select_non_git', 'cancel'],
-  manualAction: 'mnemonik project init <path>',
-});
 const recordedCandidate = (
   remote: NonNullable<SetupRecord['remote']>,
   root: string,
@@ -128,16 +121,6 @@ export function createProjectSetupExecutor(deps: ExecutorDependencies) {
       return actionRequired(resolution.kind);
     const root = await realpath(resolution.root);
     const path = recordPath(root, deps.stateDir);
-    if (resolution.repository.kind === 'plain' && !options.nonGitSelected) {
-      const prior = await readBytes(path);
-      if (!prior) return nonGitSelectionRequired();
-      try {
-        if ((JSON.parse(prior.toString()) as SetupRecord).nonGitSelected !== true)
-          return nonGitSelectionRequired();
-      } catch {
-        return actionRequired('record_invalid');
-      }
-    }
     return withLock(path, deps.waitMs ?? 60_000, async (assertOwned) => {
       // The lock was acquired after resolving. Detect a changed identity/root before using it.
       const fresh = await deps.resolver.resolveProjectIdentity(options.cwd, options);
@@ -154,11 +137,6 @@ export function createProjectSetupExecutor(deps: ExecutorDependencies) {
         root,
         scopeKey: hash(deps.scopeKey),
         owner: options.owner,
-        ...(resolution.kind !== 'git_unavailable' &&
-        resolution.repository.kind === 'plain' &&
-        options.nonGitSelected
-          ? { nonGitSelected: true as const }
-          : {}),
         ...(options.intent ? { intent: options.intent } : {}),
         before: {
           base64: bytes && bytes.length <= MAX_ORIGINAL_BYTES ? bytes.toString('base64') : null,
@@ -191,7 +169,6 @@ export function createProjectSetupExecutor(deps: ExecutorDependencies) {
               (record.ignored.identityHash !== null &&
                 typeof record.ignored.identityHash !== 'string') ||
               typeof record.ignored.responseHash !== 'string')) ||
-          (record.nonGitSelected !== undefined && record.nonGitSelected !== true) ||
           (record.intent !== undefined &&
             (record.intent.action !== 'link' ||
               typeof record.intent.projectId !== 'string' ||
@@ -221,11 +198,20 @@ export function createProjectSetupExecutor(deps: ExecutorDependencies) {
           record = freshRecord();
           recordIsNew = true;
         }
+        // A finished operation on the project this folder already names is not a
+        // changed context: a later command may ask for the same folder without
+        // repeating how it was connected.
+        const settled =
+          record.steps.identity.complete &&
+          !record.steps.rollback.started &&
+          resolution.kind === 'ok' &&
+          resolution.identity.projectId === record.remote?.projectId &&
+          (!options.intent || options.intent.projectId === record.remote?.projectId);
         if (
           record.scopeKey !== hash(deps.scopeKey) ||
           (options.owner !== undefined &&
             JSON.stringify(record.owner) !== JSON.stringify(options.owner)) ||
-          JSON.stringify(record.intent) !== JSON.stringify(options.intent)
+          (!settled && JSON.stringify(record.intent) !== JSON.stringify(options.intent))
         ) {
           const replaceable =
             !record.remote &&
@@ -253,9 +239,6 @@ export function createProjectSetupExecutor(deps: ExecutorDependencies) {
       } else {
         if (mode === 'apply' || mode === 'rollback') return actionRequired('record_missing');
         record = freshRecord();
-      }
-      if (resolution.repository.kind === 'plain' && record.nonGitSelected !== true) {
-        return nonGitSelectionRequired();
       }
       if (
         options.intent &&
@@ -399,13 +382,12 @@ export function createProjectSetupExecutor(deps: ExecutorDependencies) {
         record.evidence = evidence;
         await save();
         const identity = resolution.kind === 'ok' ? resolution.identity : null;
+        // The identity file is the answer: a folder that already names a project
+        // is linked to it, without asking anyone to choose again.
+        const linkProjectId = options.intent?.projectId ?? identity?.projectId;
         const issued = await deps.transport.issueSetupRequest({
           ...evidence,
-          ...(options.intent
-            ? { projectId: options.intent.projectId }
-            : identity
-              ? { projectId: identity.projectId }
-              : {}),
+          ...(linkProjectId ? { projectId: linkProjectId } : {}),
         });
         if (issued.status !== 'complete') {
           const handled = await handleAccessResponse(issued);
@@ -415,7 +397,7 @@ export function createProjectSetupExecutor(deps: ExecutorDependencies) {
         let outcome: 'created' | 'linked' | 'restored' = 'linked';
         if (issued.status === 'complete') remote = issued;
         else if (
-          options.intent &&
+          linkProjectId &&
           issued.state === 'confirmation_required' &&
           issued.requestId &&
           issued.allowedActions.includes('link')
@@ -424,7 +406,7 @@ export function createProjectSetupExecutor(deps: ExecutorDependencies) {
             ...evidence,
             requestId: issued.requestId,
             action: 'link',
-            projectId: options.intent.projectId,
+            projectId: linkProjectId,
           });
           if (remote.status === 'ACTION_REQUIRED') return remote;
         } else {

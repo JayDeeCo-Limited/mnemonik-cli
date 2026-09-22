@@ -16,6 +16,7 @@ import type { Output } from '../output.js';
 import { nodeVersionHelp, runPreflight } from '../preflight.js';
 import {
   createRealProjectRuntime,
+  folderRefusalMessage,
   projectLimitMessage,
   repositoryFingerprint,
   type ProjectExecutor,
@@ -533,11 +534,12 @@ export async function joinedInstall(
         state: string,
         connectedRoot?: string
       ) => {
-        let action = `${basename(root)} was not connected.`;
+        let action: string;
         if (state === 'duplicate_project_id' && connectedRoot)
-          action += ` It belongs to the same project as ${basename(connectedRoot)}, which is already connected.`;
+          action = `${basename(root)} was not connected. It belongs to the same project as ${basename(connectedRoot)}, which is already connected.`;
         else if (state === 'fingerprint_mismatch')
-          action += ' Its Git remote does not match the repository this project was set up with.';
+          action = `${basename(root)} was not connected. Its Git remote does not match the repository this project was set up with.`;
+        else action = folderRefusalMessage(state, root).join(' ');
         const condition: ReadinessCondition = {
           kind: 'project_identity_choice_pending',
           reason: `project_setup_required: ${state}: ${root}`,
@@ -645,7 +647,6 @@ export async function joinedInstall(
               cwd: repo.path,
               allowCreate: true,
               allowNestedInherit: false,
-              ...(repo.nonGitSelected ? { nonGitSelected: true as const } : {}),
               ...(linkProjectId
                 ? { intent: { action: 'link' as const, projectId: linkProjectId } }
                 : {}),
@@ -673,10 +674,7 @@ export async function joinedInstall(
             if (linkProjectId) stagedRootByProject.set(linkProjectId, repo.path);
             connectedRoots.push(repo.path);
             if (!journal.data.projects.some((p) => p.root === repo.path))
-              journal.data.projects.push({
-                root: repo.path,
-                nonGitSelected: repo.nonGitSelected,
-              });
+              journal.data.projects.push({ root: repo.path });
             const record = JSON.parse(
               await readFile(recordPath(repo.path, deps.projectStateDir ?? stateDir), 'utf8')
             ) as SetupRecord;
@@ -712,7 +710,6 @@ export async function joinedInstall(
             cwd: project.root,
             allowCreate: true,
             allowNestedInherit: false,
-            ...(project.nonGitSelected ? { nonGitSelected: true as const } : {}),
             ...(linkProjectId
               ? { intent: { action: 'link' as const, projectId: linkProjectId } }
               : {}),

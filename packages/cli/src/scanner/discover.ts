@@ -20,7 +20,8 @@ export type RepositoryState =
 export interface DiscoveredRepository {
   path: string;
   state: RepositoryState;
-  nonGitSelected?: true;
+  /** What is on disk, for display only. Git history is optional, never a condition. */
+  kind?: 'git' | 'folder';
   fingerprint?: RepositoryFingerprint;
   reason?: Exclude<ProjectIdentityResolution['kind'], 'ok' | 'absent'>;
 }
@@ -105,15 +106,15 @@ export async function classifyRepository(
       : await (options.canonicalizePath ?? realpath)(
           resolution.repository.kind === 'git' ? resolution.repository.root : resolution.root
         );
+  const kind =
+    resolution.kind !== 'git_unavailable' && resolution.repository.kind === 'git'
+      ? ('git' as const)
+      : ('folder' as const);
   if (resolution.kind === 'ok') {
-    return { path: resolvedPath, state: 'existing_project' };
+    return { path: resolvedPath, state: 'existing_project', kind };
   }
-  const nonGit =
-    resolution.kind !== 'git_unavailable' && resolution.repository.kind === 'plain'
-      ? { nonGitSelected: true as const }
-      : {};
   if (resolution.kind !== 'absent') {
-    return { path: resolvedPath, state: 'action_required', reason: resolution.kind, ...nonGit };
+    return { path: resolvedPath, state: 'action_required', kind, reason: resolution.kind };
   }
   if (resolution.repository.kind === 'git') {
     const selection = selectRemote(await (options.readRemotes ?? repositoryRemotes)(resolvedPath));
@@ -121,6 +122,7 @@ export async function classifyRepository(
       return {
         path: resolvedPath,
         state: 'remote_setup',
+        kind,
         fingerprint: {
           algorithmVersion: selection.fingerprint.algorithmVersion,
           hash: selection.fingerprint.hash,
@@ -128,11 +130,7 @@ export async function classifyRepository(
       };
     }
   }
-  return {
-    path: resolvedPath,
-    state: 'not_set_up',
-    ...nonGit,
-  };
+  return { path: resolvedPath, state: 'not_set_up', kind };
 }
 
 export async function discoverRepositories(
@@ -230,7 +228,7 @@ export async function scannerCandidates(boundary: string): Promise<{
     candidates: discovered.repositories.map((repository) => ({
       path: repository.path,
       name: repositoryName(discovered.root, repository.path),
-      kind: repository.nonGitSelected ? 'folder' : 'git',
+      kind: repository.kind ?? 'git',
     })),
   };
 }

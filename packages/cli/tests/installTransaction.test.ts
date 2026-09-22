@@ -100,14 +100,7 @@ async function fixture() {
         picked: {
           roots: [root],
           exclusions: [],
-          repositories: [
-            {
-              path: root,
-              state: 'not_set_up' as const,
-              selected: true,
-              nonGitSelected: true as const,
-            },
-          ],
+          repositories: [{ path: root, state: 'not_set_up' as const, selected: true }],
         },
       })),
       consent: vi.fn(async () => true),
