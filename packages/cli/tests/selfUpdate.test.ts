@@ -7,9 +7,10 @@ import { afterAll, afterEach, beforeAll, beforeEach, expect, it, vi } from 'vite
 import packageJson from '../package.json' with { type: 'json' };
 import { ensureLauncher } from '../src/launcher.js';
 import { runCli } from '../src/router.js';
+import { installBootstrap } from '../src/runtime/bootstrap.js';
 import { cliUpdateHint, updateCli } from '../src/runtime/selfUpdate.js';
 import { npmReleaseSource } from '../src/runtime/releaseSource.js';
-import { RuntimeStore } from '../src/runtime/store.js';
+import { RuntimeStore, type RuntimeSource } from '../src/runtime/store.js';
 import * as runtimes from '../src/runtime/store.js';
 import * as hosts from '../src/install/hosts.js';
 import * as scanner from '../src/scanner/update.js';
@@ -22,12 +23,35 @@ const releaseKeyFixture = vi.hoisted(() => ({
   privateKey: 'MC4CAQAwBQYDK2VwBCIEIB468qShwQ6z/PXYa953aeiP4/2PcY6V1SGan7D5CMFR',
   keyId: 'UeCLkUYg5tM=',
 }));
+// Fails only the publish of a staged bootstrap copy, after the installed copy moved aside.
+const bootstrapFault = vi.hoisted(() => ({ publish: false }));
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const fs = await importOriginal<typeof import('node:fs/promises')>();
+  return {
+    ...fs,
+    rename: async (from: string, to: string) => {
+      if (bootstrapFault.publish && /[\\/]\.bootstrap-[^\\/]+$/.test(String(from)))
+        throw new Error('busy');
+      return fs.rename(from, to);
+    },
+  };
+});
 vi.mock('@mnemonik/shared/hook-runtime', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@mnemonik/shared/hook-runtime')>()),
   RELEASE_MINISIGN_PUBLIC_KEY: releaseKeyFixture.identity,
 }));
 
-let fixture: string, state: string, store: RuntimeStore;
+let fixture: string, state: string, store: RuntimeStore, installedSource: RuntimeSource;
+const bootstrapBin = (version: string) => `// bootstrap bin ${version}\n`;
+const bootstrapFiles = [
+  'dist/help.js',
+  'dist/humanReason.js',
+  'dist/runtime/bootstrap.js',
+  'dist/runtime/store.js',
+  'dist/runtime/signers.js',
+  'dist/vendor/shared/runtimeReader.js',
+  'dist/vendor/shared/runtimeSigners.js',
+];
 // `status` prints the version of the CLI that is running, which in this suite is
 // the workspace package; the release bot bumps that on every release.
 const running = packageJson.version;
@@ -141,6 +165,11 @@ beforeAll(async () => {
       })
     );
     await writeFile(join(dir, 'dist/router.js'), `export const runCli = () => '${version}';`);
+    await writeFile(join(dir, 'dist/bin.js'), bootstrapBin(version));
+    for (const name of bootstrapFiles) {
+      await mkdir(join(dir, name, '..'), { recursive: true });
+      await writeFile(join(dir, name), `// ${name}\n`);
+    }
     const [pack] = JSON.parse(
       execFileSync('npm', ['pack', '--ignore-scripts', '--json'], { cwd: dir, encoding: 'utf8' })
     );
@@ -155,16 +184,17 @@ beforeEach(async () => {
   latest = '1.0.0';
   corrupt = false;
   vi.stubGlobal('fetch', registry);
-  const source = await npmReleaseSource(registry, async () => ({
+  installedSource = await npmReleaseSource(registry, async () => ({
     version: latest,
     'dist.integrity': dist(latest).integrity,
     'dist.tarball': dist(latest).tarball,
   }));
-  await store.installRuntime('cli', latest, source);
+  await store.installRuntime('cli', latest, installedSource);
   latest = '1.1.0';
   registry.mockClear();
 });
 afterEach(() => {
+  bootstrapFault.publish = false;
   vi.unstubAllGlobals();
   vi.unstubAllEnvs();
   vi.restoreAllMocks();
@@ -378,6 +408,42 @@ it('standalone scanner enable retains the supervisor recovery action for an SSH 
   ).toBe(3);
   expect(errors).toContain(failure.action);
   expect(errors).not.toContain('mnemonik scanner enable');
+});
+async function bootstrapCopy() {
+  const root = join(state, 'runtimes/bootstrap');
+  const digests = JSON.parse(
+    await readFile(join(root, 'bootstrap-digests.json'), 'utf8')
+  ) as Record<string, string>;
+  for (const [name, digest] of Object.entries(digests))
+    expect(runtimes.hash(await readFile(join(root, name))), name).toBe(digest);
+  return { bin: await readFile(join(root, 'dist/bin.js'), 'utf8'), digests };
+}
+it('update refreshes the bootstrap copy from the release it installed', async () => {
+  await installBootstrap(store, installedSource);
+  expect((await bootstrapCopy()).bin).toBe(bootstrapBin('1.0.0'));
+  expect(await updateCli(store)).toMatchObject({
+    status: 'UPDATED',
+    oldVersion: '1.0.0',
+    newVersion: '1.1.0',
+  });
+  const copy = await bootstrapCopy();
+  expect(copy.bin).toBe(bootstrapBin('1.1.0'));
+  expect(copy.digests['dist/bin.js']).toBe(runtimes.hash(Buffer.from(bootstrapBin('1.1.0'))));
+});
+it('a failed bootstrap refresh after the runtime install keeps the previous copy and reports FAILED', async () => {
+  await installBootstrap(store, installedSource);
+  const before = await bootstrapCopy();
+  bootstrapFault.publish = true;
+  expect(await updateCli(store)).toMatchObject({
+    status: 'FAILED',
+    reason: 'busy',
+    oldVersion: '1.0.0',
+    newVersion: '1.1.0',
+  });
+  expect((await store.verifyRuntime('cli')).reference.version).toBe('1.1.0');
+  expect(await bootstrapCopy()).toEqual(before);
+  expect(before.bin).toBe(bootstrapBin('1.0.0'));
+  expect(await readdir(join(state, 'runtimes'))).not.toContain('bootstrap.previous');
 });
 it('bad tarball reports FAILED without changing the pointer or leaving a new directory', async () => {
   corrupt = true;

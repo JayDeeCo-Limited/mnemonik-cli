@@ -105,7 +105,7 @@ const refusalSteps: Record<string, string> = {
   unknown_version: 'Update Mnemonik on this machine, then run the command again.',
   identity_too_large: FRESH_FILE,
   fingerprint_mismatch:
-    'Run mnemonik project setup --confirm-mismatch in that folder to connect it anyway.',
+    'Run mnemonik project link <project id> --confirm-mismatch in that folder to connect it anyway.',
   confirmation_required: 'Run mnemonik project setup in that folder to confirm it.',
   nested: 'Run mnemonik project setup in that folder and choose which project it belongs to.',
   conflict: 'Run mnemonik project setup in that folder and choose which project it belongs to.',

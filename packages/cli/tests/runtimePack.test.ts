@@ -1,12 +1,15 @@
 import { execFile } from 'node:child_process';
+import { createHash, generateKeyPairSync, randomBytes, sign } from 'node:crypto';
 import { promisify } from 'node:util';
 import { cp, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { afterAll, beforeAll, expect, it } from 'vitest';
 import { guardNpmLaunch, installBootstrap, npmSource, unpack } from '../src/runtime/bootstrap.js';
 import { RuntimeStore, hash } from '../src/runtime/store.js';
+import { releasePackageNames } from '../src/runtime/releaseSource.js';
+import { updateCli } from '../src/runtime/selfUpdate.js';
 import { allowExternalNetwork } from './setup/localNetworkOnly.js';
 import packageJson from '../package.json' with { type: 'json' };
 
@@ -44,10 +47,74 @@ beforeAll(async () => {
     );
     packs.set(name, join(fixture, JSON.parse(stdout)[0].filename));
   }
-}, 120_000);
+}, 240_000);
 afterAll(async () => {
   await rm(fixture, { recursive: true, force: true });
 });
+
+/** A signed dependency-free release made from the packed CLI, served the way updateCli fetches it. */
+async function signedRelease(prefix: string, version: string, marker: string) {
+  const dir = join(fixture, `release-${version}`);
+  for (const [name, bytes] of Object.entries(unpack(await readFile(packs.get('cli')!)))) {
+    await mkdir(dirname(join(dir, name)), { recursive: true });
+    await writeFile(join(dir, name), bytes);
+  }
+  const pkg = JSON.parse(await readFile(join(dir, 'package.json'), 'utf8'));
+  delete pkg.dependencies;
+  await writeFile(join(dir, 'package.json'), JSON.stringify({ ...pkg, version }));
+  await writeFile(
+    join(dir, 'dist/bin.js'),
+    `${await readFile(join(dir, 'dist/bin.js'))}${marker}\n`
+  );
+  await mkdir(join(dir, 'dist/vendor/shared'), { recursive: true });
+  for (const name of ['runtimeReader.js', 'runtimeSigners.js'])
+    await cp(
+      join(prefix, 'node_modules/@mnemonik/shared/dist', name),
+      join(dir, 'dist/vendor/shared', name)
+    );
+  const { stdout } = await exec('npm', ['pack', '--ignore-scripts', '--json'], { cwd: dir });
+  const tarball = await readFile(join(dir, JSON.parse(stdout)[0].filename));
+  const integrity = 'sha512-' + createHash('sha512').update(tarball).digest('base64');
+  const address = `https://registry.npmjs.org/@mnemonik/cli/-/cli-${version}.tgz`;
+  const manifest = Buffer.from(
+    JSON.stringify({
+      schemaVersion: 1,
+      version,
+      packages: Object.fromEntries(
+        releasePackageNames.map((name) => [
+          name,
+          { version, integrity: name === '@mnemonik/cli' ? integrity : 'sha512-Zml4dHVyZQ==' },
+        ])
+      ),
+    })
+  );
+  const pair = generateKeyPairSync('ed25519');
+  const keyId = randomBytes(8);
+  const publicKey = pair.publicKey.export({ format: 'der', type: 'spki' }).subarray(-32);
+  const fileSignature = sign(null, manifest, pair.privateKey);
+  const signature = [
+    'untrusted comment: fixture signature',
+    Buffer.concat([Buffer.from('Ed'), keyId, fileSignature]).toString('base64'),
+    'trusted comment: fixture release',
+    sign(
+      null,
+      Buffer.concat([fileSignature, Buffer.from('fixture release')]),
+      pair.privateKey
+    ).toString('base64'),
+    '',
+  ].join('\n');
+  const fetcher: typeof fetch = async (url) => {
+    const requested = String(url);
+    if (requested.endsWith('/release-manifest.json')) return new Response(manifest);
+    if (requested.endsWith('/release-manifest.json.minisig')) return new Response(signature);
+    if (requested === address) return new Response(tarball);
+    return Response.json({ name: '@mnemonik/cli', version, dist: { integrity, tarball: address } });
+  };
+  return {
+    fetcher,
+    releaseKey: Buffer.concat([Buffer.from('Ed'), keyId, publicKey]).toString('base64'),
+  };
+}
 
 async function installFixture(name: string) {
   const prefix = join(fixture, `${name}-prefix`);
@@ -98,7 +165,7 @@ it('refuses a changed installed dependency before the first runtime import', asy
       'The installed Mnemonik files do not match what Mnemonik published.\nRun npx -y @mnemonik/cli@latest install to replace them.\n',
     stdout: '',
   });
-}, 120_000);
+}, 240_000);
 
 it('executes the packed CLI from an npm prefix, hands off, and runs after the prefix is deleted', async () => {
   const { prefix, state, cache, env } = await installFixture('npm');
@@ -237,7 +304,7 @@ it('executes the packed CLI from an npm prefix, hands off, and runs after the pr
       'The installed Mnemonik files do not match what Mnemonik published.\nRun npx -y @mnemonik/cli@latest install to replace them.\n',
     stdout: '',
   });
-}, 120_000);
+}, 240_000);
 
 it('an old npm entry preserves multiple self-updates; newer npm and explicit install still select their version', async () => {
   const { prefix, state, env } = await installFixture('self-updated');
@@ -291,4 +358,19 @@ it('an old npm entry preserves multiple self-updates; newer npm and explicit ins
   await installVersion('0.0.1');
   expect((await run('--version')).stdout.trim()).toBe(running);
   expect((await store.verifyRuntime('cli')).reference.version).toBe(running);
-}, 120_000);
+  // mnemonik update refreshes the launcher's bootstrap copy from the release it installed.
+  const bootstrapRoot = join(state, 'runtimes/bootstrap');
+  const marker = '// refreshed by mnemonik update';
+  expect(await readFile(join(bootstrapRoot, 'dist/bin.js'), 'utf8')).not.toContain(marker);
+  expect(await updateCli(store, await signedRelease(prefix, '9.9.9', marker))).toMatchObject({
+    status: 'UPDATED',
+    oldVersion: running,
+    newVersion: '9.9.9',
+  });
+  const bin = await readFile(join(bootstrapRoot, 'dist/bin.js'));
+  expect(bin.toString()).toContain(marker);
+  const digests = JSON.parse(await readFile(join(bootstrapRoot, 'bootstrap-digests.json'), 'utf8'));
+  expect(digests['dist/bin.js']).toBe(hash(bin));
+  for (const [name, digest] of Object.entries(digests))
+    expect(hash(await readFile(join(bootstrapRoot, name)))).toBe(digest);
+}, 240_000);

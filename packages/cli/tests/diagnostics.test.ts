@@ -168,7 +168,11 @@ describe('diagnostics commands', () => {
     };
     await Promise.all(roots.map(walk));
     const source = sources.join('\n');
-    expect(source.match(/uploadDiagnosticsBundle\(/gu)).toHaveLength(2);
-    expect(source).toMatch(/sendDiagnostics[\s\S]*uploadDiagnosticsBundle\(/u);
+    // Plain string searches: a [\s\S]* regex over every source file overflowed
+    // the stack on the CI runner once the tree grew past a few megabytes.
+    expect(source.split('uploadDiagnosticsBundle(').length - 1).toBe(2);
+    const sendIndex = source.indexOf('sendDiagnostics');
+    expect(sendIndex).toBeGreaterThan(-1);
+    expect(source.indexOf('uploadDiagnosticsBundle(', sendIndex)).toBeGreaterThan(-1);
   });
 });

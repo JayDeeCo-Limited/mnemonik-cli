@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { atomicWrite } from '@mnemonik/local-setup';
 import { RuntimeError, RuntimeStore } from './store.js';
 import { npmReleaseSource, releaseBytes, signedReleaseManifest } from './releaseSource.js';
-import { newerVersion } from './bootstrap.js';
+import { installBootstrap, newerVersion } from './bootstrap.js';
 
 const registry = 'https://registry.npmjs.org/%40mnemonik%2Fcli/';
 const validVersion = (value: unknown): value is string =>
@@ -67,7 +67,10 @@ export async function updateCli(
       'dist.integrity': signedCli.integrity,
       'dist.tarball': exact.dist.tarball,
     }));
+    // installRuntime returns only after the new pointer verifies; the launcher's bootstrap copy
+    // follows from the same release, and installBootstrap restores the previous copy on failure.
     await store.installRuntime('cli', newVersion, source);
+    await installBootstrap(store, source);
     return { status: 'UPDATED', oldVersion, newVersion, ...dev };
   } catch (error) {
     return { status: 'FAILED', oldVersion, newVersion, reason: (error as Error).message, ...dev };

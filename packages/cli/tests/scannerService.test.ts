@@ -304,7 +304,6 @@ it('plain uninstall removes an installed scanner when no host targets are record
 it.each([
   ['uninstall', '--non-interactive', '--json'],
   ['uninstall', '--host', 'codex', '--non-interactive', '--confirm', '--json'],
-  ['uninstall', '--scope', 'user', '--non-interactive', '--confirm', '--json'],
 ])('does not remove the scanner for unconfirmed or filtered uninstall: %s', async (...args) => {
   const f = fixture(true);
   const pointer = new RuntimeStore(stateDir).pointerPath('scanner');

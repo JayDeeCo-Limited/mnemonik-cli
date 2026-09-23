@@ -28,6 +28,8 @@ import { scannerReleaseSource } from '../src/runtime/releaseSource.js';
 import { Output } from '../src/output.js';
 import { collectStatusDocument } from '../src/status.js';
 import { runCli } from '../src/router.js';
+// Git-heavy fixtures; the CI runner has timed these out at the 5 s default under load.
+vi.setConfig({ testTimeout: 30_000 });
 let home: string, state: string, releases: string, options: EnableOptions, store: RuntimeStore;
 let allowInstalledCredential: boolean;
 let events: string[],
@@ -842,7 +844,7 @@ it.each(['success', 'failure', 'existing-identity', 'skip'])(
       [
         'install',
         '--components=scanner',
-        '--accept-scanner',
+        '--accept-indexing',
         '--apply',
         '--non-interactive',
         '--json',

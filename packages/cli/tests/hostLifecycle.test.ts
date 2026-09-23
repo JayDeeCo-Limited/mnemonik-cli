@@ -247,7 +247,7 @@ it('uninstalls only Cursor user hooks and preserves foreign entries and other ho
       .flatMap((t) => t.files)
       .map(async (t) => ({ ...t, bytes: await readFile(t.path) }))
   );
-  await runCli(['uninstall', '--host', 'cursor', '--scope', 'user'], {
+  await runCli(['uninstall', '--host', 'cursor'], {
     hostManagement: f.deps,
     stdout: { write() {} },
   });
@@ -428,7 +428,7 @@ it('mcp selection and ambiguous profiles stop with ACTION_REQUIRED', async () =>
   await writeFile(ownershipPath(f.deps.stateDir), bytes);
   output.splice(0);
   expect(
-    await runCli(['repair', '--host', 'codex', '--scope', 'user', '--non-interactive', '--json'], {
+    await runCli(['repair', '--host', 'codex', '--non-interactive', '--json'], {
       hostManagement: f.deps,
       stdout: {
         write: (s) => {

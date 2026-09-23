@@ -648,7 +648,7 @@ it('removes an interrupted install in a non-interactive run and says so in one l
     let text = '';
     const output = { write: (chunk: string) => void (text += chunk) };
     await runCli(
-      ['install', '--non-interactive', '--accept-scanner', '--apply', '--scan-roots=/repo'],
+      ['install', '--non-interactive', '--accept-indexing', '--apply', '--scan-roots=/repo'],
       { installStateDir: stateDir, stdout: output, stderr: output }
     );
     expect(text).toContain('An earlier installation did not finish and was removed.');

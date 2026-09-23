@@ -14,7 +14,7 @@ const paths: string[][] = [
   ['remove'],
   ['connect'],
   ['project'],
-  ...['status', 'init', 'link', 'delete', 'ensure'].map((command) => ['project', command]),
+  ...['status', 'init', 'link', 'setup', 'delete', 'ensure'].map((command) => ['project', command]),
   ['update'],
   ['repair'],
   ['doctor'],

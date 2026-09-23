@@ -129,7 +129,7 @@ describe('headless authentication fallback', () => {
     expect(await f.run(['install', '--non-interactive'])).toBe(3);
     expect(f.stderr.text).toContain('--accept-indexing');
     f.stderr.clear();
-    expect(await f.run(['install', '--non-interactive', '--accept-scanner'])).toBe(3);
+    expect(await f.run(['install', '--non-interactive', '--accept-indexing'])).toBe(3);
     expect(f.stderr.text).toContain('--apply');
   });
 });

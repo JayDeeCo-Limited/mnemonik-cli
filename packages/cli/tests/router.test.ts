@@ -135,7 +135,16 @@ describe('command router', () => {
     async (command) => {
       const f = fixture();
       expect(
-        await runCli([command, '--no-browser', '--non-interactive', '--json', '--confirm'], f.deps)
+        await runCli(
+          [
+            command,
+            '--no-browser',
+            '--non-interactive',
+            '--json',
+            ...(command === 'uninstall' ? ['--confirm'] : []),
+          ],
+          f.deps
+        )
       ).not.toBe(2);
       expect(f.stderr.text).not.toContain('Unknown flag');
     }
@@ -209,7 +218,7 @@ describe('command router', () => {
     expect(maintenanceExitCode([{ status: 'FAILED' }])).toBe(1);
   });
   it.each([
-    ['install', '--json', '--non-interactive', '--accept-scanner', '--apply'],
+    ['install', '--json', '--non-interactive', '--accept-indexing', '--apply'],
     ['connect', 'codex', '--json', '--non-interactive'],
     ['project', 'init', '--json', '--non-interactive', '--apply'],
     ['project', 'setup', '--json', '--non-interactive', '--apply'],
@@ -223,7 +232,7 @@ describe('command router', () => {
       '--apply',
     ],
     ['project', 'ensure', '--agent', '--json', '--non-interactive'],
-    ['scanner', 'enable', '--json', '--non-interactive', '--accept-scanner', '--apply'],
+    ['scanner', 'enable', '--json', '--non-interactive', '--accept-indexing', '--apply'],
     ['scanner', 'status', '--json', '--non-interactive'],
     ['status', '--json', '--non-interactive'],
     ['doctor', '--json', '--non-interactive'],
@@ -264,6 +273,32 @@ describe('command router', () => {
     const flag = fixture();
     expect(await runCli(['doctor', '--mystery'], flag.deps)).toBe(2);
     expect(flag.stderr.text).toBe('Unknown flag: --mystery\n');
+  });
+
+  it.each([
+    { args: ['install', '--accept-scanner', '--apply'], flag: 'accept-scanner' },
+    { args: ['roots', 'list', '--accept-indexing'], flag: 'accept-indexing' },
+    { args: ['roots', 'list', '--apply'], flag: 'apply' },
+    { args: ['repair', '--scope', 'user'], flag: 'scope' },
+    { args: ['repair', '--confirm'], flag: 'confirm' },
+    { args: ['update', '--scope', 'user'], flag: 'scope' },
+    { args: ['update', '--component', 'hooks'], flag: 'component' },
+    { args: ['update', '--confirm'], flag: 'confirm' },
+    { args: ['update', '--component', 'scanner', '--confirm'], flag: 'confirm' },
+    { args: ['update', '--apply'], flag: 'apply' },
+    { args: ['uninstall', '--scope', 'user'], flag: 'scope' },
+    { args: ['uninstall', '--apply'], flag: 'apply' },
+    { args: ['connect', 'codex', '--scope', 'user'], flag: 'scope' },
+    {
+      args: ['project', 'link', '11111111-1111-4111-8111-111111111111', '--owner', 'team:x'],
+      flag: 'owner',
+    },
+    { args: ['auth', 'login', '--confirm'], flag: 'confirm' },
+    { args: ['auth', 'status', '--confirm'], flag: 'confirm' },
+  ])('rejects the dropped flag in $args', async ({ args, flag }) => {
+    const f = fixture();
+    expect(await runCli(args, f.deps)).toBe(2);
+    expect(f.stderr.text).toBe(`Unknown flag: --${flag}\n`);
   });
 
   it.each([

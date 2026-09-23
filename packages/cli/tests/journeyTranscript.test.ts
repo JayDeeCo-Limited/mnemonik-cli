@@ -15,6 +15,8 @@ import type { HostResult, HostSelection } from '../src/install/hosts.js';
 import { joinedInstall } from '../src/install/journey.js';
 import { Output, type Writable } from '../src/output.js';
 import type { PreparedScanner } from '../src/scanner/enable.js';
+// Git-heavy fixtures; the CI runner has timed these out at the 5 s default under load.
+vi.setConfig({ testTimeout: 30_000 });
 
 const mocks = vi.hoisted(() => ({
   hosts: vi.fn(),

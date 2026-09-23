@@ -53,6 +53,8 @@ Usage: mnemonik install [options]
 Options
   --hosts <list>              Editors to connect: claude-code, codex, cursor.
                               Default: every editor found on this machine.
+  --components <list>         Set up only these parts: hooks, mcp, scanner.
+                              Default: all three.
   --scan-roots <list>         Project folders to index, comma separated.
   --exclusions <list>         Folders inside those to skip, comma separated.
   --without-scanner           Connect editors only; do not index anything.
@@ -117,6 +119,8 @@ Arguments
 Options
   --apply                     Stop without being asked. Required with
                               --non-interactive or --json.
+  --accept-indexing           Accept the updated indexing terms for the folders
+                              that stay. Only when remove asks for it.
 
 Example
   mnemonik remove ~/projects/old-site
@@ -149,6 +153,8 @@ Subcommands
   status [path]               Show which project this folder belongs to.
   init [path]                 Make this folder a new project in your account.
   link <project-id> [path]    Make this folder belong to an existing project.
+  setup [path]                Connect this folder, using a matching project
+                              or creating one.
   delete [id or name]         Delete a project and everything in it.
   ensure                      For agents: connect this folder, creating a
                               project if needed, and print the result.
@@ -216,6 +222,26 @@ Example
 `,
   ],
   [
+    'project setup',
+    `Show what connecting this folder to a project would do, then do it: use an
+existing project that matches, or create one. install and add run this for
+you; use it directly when a folder was never connected. Asks first.
+
+Usage: mnemonik project setup [path] [options]
+
+Arguments
+  [path]                      The folder. Default: the current folder.
+
+Options
+  --owner <team-or-user>      Create the project under this owner.
+  --apply                     Make the changes. Required with
+                              --non-interactive or --json.
+
+Example
+  mnemonik project setup ~/projects/app
+`,
+  ],
+  [
     'project delete',
     `Delete a project: its memories, code index and summaries, for everyone.
 This cannot be undone. Only the project's owner can delete it. The folder
@@ -257,6 +283,8 @@ its software changes. Safe to run while an editor is open.
 Usage: mnemonik update [options]
 
 Options
+  --host <editor>             Update one editor's hooks only: claude-code,
+                              codex, cursor.
   --component scanner         Update background indexing only.
   --automatic                 Print nothing. Used by scheduled updates.
 
@@ -266,15 +294,17 @@ Example
   ],
   [
     'repair',
-    `Re-apply the installation recorded on this machine: the mnemonik command,
-each editor's connection and hooks, and background indexing. Use it when
-status or doctor reports something missing.
+    `Re-apply the installation recorded on this machine: the mnemonik command and
+each editor's connection and hooks. Use it when status or doctor reports
+something missing.
 
 Usage: mnemonik repair [options]
 
 Options
   --host <editor>             Repair one editor only: claude-code, codex, cursor.
-  --component <name>          Repair one part only: hooks, mcp, scanner.
+  --component <name>          Repair one part only: hooks, mcp.
+  --apply                     Also switch Codex's hooks back on if Codex has
+                              them turned off. Only when repair asks for it.
 
 Example
   mnemonik repair
@@ -520,6 +550,10 @@ Subcommands
   remove <folder>             Same as mnemonik remove <folder>.
   list                        Show the folders being indexed. Changes nothing.
 
+Options
+  --accept-indexing           Accept the updated indexing terms for the folders
+                              that stay. Only when remove asks for it.
+
 Example
   mnemonik roots list
 `,
@@ -569,8 +603,9 @@ default and changes nothing; --backup saves copies; --apply rewrites them;
 Usage: mnemonik identity migrate [paths...] [options]
 
 Arguments
-  [paths...]                  Extra folders to check, on top of the
-                              projects your editors already know about.
+  [paths...]                  Extra folders to check, on top of the projects
+                              your editors already know about. Only with
+                              --report and --backup.
 
 Options
   --report                    List what would change. The default.

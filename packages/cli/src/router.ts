@@ -136,7 +136,6 @@ const booleans = new Set([
   'json',
   'non-interactive',
   'agent',
-  'accept-scanner',
   'accept-indexing',
   'accept-limited',
   'apply',
@@ -158,7 +157,6 @@ const values = new Set([
   'hosts',
   'scan-roots',
   'host',
-  'scope',
   'component',
   'owner',
   'rollback',
@@ -205,7 +203,7 @@ function parse(args: string[]): Parsed {
         value = next;
         index++;
       }
-      flags.set(name === 'accept-scanner' ? 'accept-indexing' : name, value);
+      flags.set(name, value);
       continue;
     }
     if (values.has(name)) {
@@ -397,16 +395,14 @@ async function runHostCommand(
     deps.hostManagement?.stateDir ??
     deps.installStateDir ??
     stateDirectory(process.platform, process.env, deps.home);
-  const scope = command === 'install' ? undefined : parsed.flags.get('scope');
   const host = parsed.flags.get('host');
   const component = parsed.flags.get('component');
-  const fullUninstall = command === 'uninstall' && !host && !scope && !component;
+  const fullUninstall = command === 'uninstall' && !host && !component;
   if (
-    (scope && !['user', 'project'].includes(String(scope))) ||
     (host && !hostOrder.includes(host as never)) ||
     (component && !['hooks', 'mcp'].includes(String(component)))
   )
-    return (output.error('Invalid host, scope or component'), 2);
+    return (output.error('Invalid host or component'), 2);
   if (command === 'uninstall') await abandonInterrupted(state);
   let selections: HostSelection[];
   if (command === 'install') {
@@ -435,7 +431,7 @@ async function runHostCommand(
     const resolved = await selectOwned(
       state,
       host ? String(host) : undefined,
-      scope ? String(scope) : undefined,
+      undefined,
       component ? String(component) : undefined
     );
     resolved.selected = resolved.selected.filter((target) =>
@@ -465,7 +461,7 @@ async function runHostCommand(
       return 3;
     }
     selections = resolved.selected;
-    if ((host || scope || component) && !selections.length && !(await interrupted(state)).length) {
+    if ((host || component) && !selections.length && !(await interrupted(state)).length) {
       if (json)
         output.json({
           status: 'ACTION_REQUIRED',
@@ -1191,7 +1187,12 @@ export async function runCli(args: string[], deps: CliDependencies = {}): Promis
     const action = command === 'roots' ? subcommand : command;
     const actionArguments = command === 'roots' ? rest : [subcommand, ...rest].filter(Boolean);
     // `--non-git` is accepted and ignored: a folder is a project with or without Git.
-    const invalid = allowed(parsed, ['accept-indexing', 'apply', 'no-browser', 'non-git']);
+    // `remove` keeps --accept-indexing: a disclosure change sends it through enable.
+    const invalid = allowed(parsed, [
+      'no-browser',
+      'non-git',
+      ...(action === 'list' ? [] : ['accept-indexing', 'apply']),
+    ]);
     if (
       invalid ||
       !['add', 'remove', 'list'].includes(action ?? '') ||
@@ -1372,7 +1373,7 @@ export async function runCli(args: string[], deps: CliDependencies = {}): Promis
     (command === 'update' || command === 'uninstall') &&
     parsed.flags.get('component') === 'scanner'
   ) {
-    const invalid = allowed(parsed, ['component', 'confirm']);
+    const invalid = allowed(parsed, ['component', ...(command === 'uninstall' ? ['confirm'] : [])]);
     if (invalid || subcommand) return invalid ? (output.error(invalid), 2) : usageError([command]);
     try {
       const options = {
@@ -1453,14 +1454,14 @@ export async function runCli(args: string[], deps: CliDependencies = {}): Promis
     }
   }
   if (command === 'repair' || command === 'update' || command === 'uninstall') {
-    const invalid = allowed(parsed, [
-      'host',
-      'scope',
-      'component',
-      'confirm',
-      'apply',
-      ...(command === 'update' ? ['automatic'] : []),
-    ]);
+    const invalid = allowed(
+      parsed,
+      command === 'repair'
+        ? ['host', 'component', 'apply']
+        : command === 'update'
+          ? ['host', 'automatic']
+          : ['host', 'component', 'confirm']
+    );
     if (invalid || subcommand) return invalid ? (output.error(invalid), 2) : usageError([command]);
     if (command === 'uninstall' && parsed.flags.has('non-interactive')) {
       const missing = requireConsent(parsed, output, ['confirm']);
@@ -1574,7 +1575,7 @@ export async function runCli(args: string[], deps: CliDependencies = {}): Promis
     return statusExitCode(document);
   }
   if (command === 'connect') {
-    const invalid = allowed(parsed, ['scope']);
+    const invalid = allowed(parsed, []);
     if (invalid) return (output.error(invalid), 2);
     if (!subcommand || rest.length || !hostOrder.includes(subcommand as never))
       return usageError(['connect']);
@@ -1643,7 +1644,7 @@ export async function runCli(args: string[], deps: CliDependencies = {}): Promis
         : subcommand === 'status'
           ? []
           : subcommand === 'link'
-            ? ['apply', 'non-git', 'confirm-mismatch', 'replace', 'owner']
+            ? ['apply', 'non-git', 'confirm-mismatch', 'replace']
             : ['apply', 'non-git', 'owner']
     );
     if (invalid) return (output.error(invalid), 2);
@@ -1930,7 +1931,12 @@ export async function runCli(args: string[], deps: CliDependencies = {}): Promis
     }
   }
   if (command === 'auth') {
-    const invalid = allowed(parsed, ['host', 'confirm', 'no-browser', 'reopen-install']);
+    const invalid = allowed(parsed, [
+      'host',
+      'no-browser',
+      'reopen-install',
+      ...(subcommand === 'logout' ? ['confirm'] : []),
+    ]);
     if (
       invalid ||
       rest.length ||
