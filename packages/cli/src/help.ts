@@ -333,7 +333,8 @@ Usage: mnemonik uninstall [options]
 
 Options
   --host <editor>             Disconnect one editor only.
-  --component scanner         Remove background indexing only.
+  --component scanner         Remove background indexing only, and withdraw
+                              your indexing consent for this machine. Asks first.
   --confirm                   Skip the question. Required with --non-interactive.
 
 Example
@@ -348,6 +349,7 @@ Usage: mnemonik auth <subcommand> [options]
 
 Subcommands
   login                       Sign this machine in to your account.
+  renew                       Sign this computer in again, even if it looks signed in.
   status [--host <editor>]    Show what is signed in and since when.
   logout [--host <editor>]    Sign out this machine, or one editor.
 
@@ -371,6 +373,23 @@ Options
 
 Example
   mnemonik auth login --no-browser
+`,
+  ],
+  [
+    'auth renew',
+    `Renew this computer's sign-in to Mnemonik: signs in again even if it looks signed in.
+Sign this machine in to your Mnemonik account. Prints a link and a code;
+approve in any browser.
+
+Usage: mnemonik auth renew [options]
+
+Options
+  --no-browser                Print the link instead of opening it.
+  --reopen-install            Continue an installation this account started
+                              and did not finish.
+
+Example
+  mnemonik auth renew --no-browser
 `,
   ],
   [
@@ -515,10 +534,15 @@ Example
   ],
   [
     'scanner uninstall',
-    `Stop background indexing and remove it from this machine. Your consent and
-cloud data are kept; run mnemonik scanner enable to set it up again.
+    `Stop background indexing and remove it from this machine, and withdraw your
+indexing consent for it. Asks first; with --non-interactive or --json pass
+--confirm. Run mnemonik scanner enable to set it up again.
 
-Usage: mnemonik scanner uninstall [--json]
+Usage: mnemonik scanner uninstall [--confirm] [--json]
+
+Options
+  --confirm                   Remove without being asked. Required with
+                              --non-interactive or --json.
 
 Example
   mnemonik scanner uninstall

@@ -49,6 +49,7 @@ import {
   type ProjectReadTransport,
 } from './project.js';
 import { evaluateRoot } from './project/eligibility.js';
+import { accountActions } from './transport/server.js';
 import {
   apiOrigin,
   describeReadiness,
@@ -57,7 +58,7 @@ import {
   type ReadinessCondition,
   resolveProjectIdentity,
 } from '@mnemonik/shared';
-import { grantTransport, grantHost } from './auth/status.js';
+import { grantTransport, grantHost, grantSummaryLines } from './auth/status.js';
 import { createCliAuth } from './auth/index.js';
 import { runEditorLogin, type EditorLoginOverrides } from './auth/pkce.js';
 import { currentInstallSession, ensureInstallSession } from './auth/installSession.js';
@@ -100,6 +101,84 @@ export const projectDeletionWarning = (name: string): string =>
   `Deleting ${name} removes its memories, code index and summaries for everyone. This cannot be undone.`;
 export const projectDeletedLine = (name: string): string => `Deleted ${name}.`;
 export const NOTHING_DELETED_LINE = 'Nothing was deleted.';
+export const NOTHING_REMOVED_LINE = 'Nothing was removed.';
+export const SCANNER_UNINSTALL_PROMPT =
+  'Uninstalling background indexing means your code on this machine is no longer\n' +
+  'indexed. Agents here lose code search and file context until you set it up\n' +
+  'again with mnemonik scanner enable. This also withdraws your indexing consent\n' +
+  'for this machine. Type yes to continue.';
+export const SCANNER_REMOVED_LINE = 'Background indexing removed from this machine.';
+
+/** Withdraw this machine's indexing consent: revoke its scanner credential. */
+async function revokeScannerCredential(
+  deps: CliDependencies,
+  output: Output,
+  stateDir: string,
+  saved?: { config: { credentialFamilyId: string } }
+): Promise<void> {
+  const state =
+    saved ??
+    (JSON.parse(await readFile(`${stateDir}/scanner/state.json`, 'utf8')) as {
+      config: { credentialFamilyId: string };
+    });
+  const bearer = await ensureCliAuth(deps, output, false);
+  const response = await (deps.grantFetch ?? fetch)(
+    `${apiOrigin()}/api/v1/component-credentials/${encodeURIComponent(state.config.credentialFamilyId)}/revoke`,
+    { method: 'POST', headers: { Authorization: `Bearer ${bearer}` } }
+  );
+  if (!response.ok) throw new Error(`revoke_failed_${response.status}`);
+}
+
+/**
+ * Uninstalling background indexing is an opt-out. Asks first unless --confirm;
+ * returns an exit code when the person did not agree, otherwise undefined.
+ */
+async function confirmScannerOptOut(
+  parsed: Parsed,
+  deps: CliDependencies,
+  output: Output
+): Promise<number | undefined> {
+  if (parsed.flags.has('confirm')) return undefined;
+  if (parsed.flags.has('json') || parsed.flags.has('non-interactive'))
+    return actionRequired(output, parsed.flags.has('json'), 'Rerun with --confirm', '--confirm');
+  output.line(SCANNER_UNINSTALL_PROMPT);
+  const readline = createInterface({ input: deps.input ?? process.stdin, terminal: false });
+  const answer = String((await readline[Symbol.asyncIterator]().next()).value ?? '').trim();
+  readline.close();
+  if (/^(?:y|yes)$/iu.test(answer)) return undefined;
+  output.line(NOTHING_REMOVED_LINE);
+  return 130;
+}
+
+/** Withdraw this machine's indexing consent, then remove the scanner service. */
+async function uninstallScannerOptOut(
+  deps: CliDependencies,
+  output: Output,
+  service: { uninstall(): Promise<void> },
+  json: boolean
+): Promise<number> {
+  // Read the credential before removal takes the local state with it.
+  const stateDir = deps.installStateDir ?? stateDirectory(process.platform, process.env, deps.home);
+  const saved = await readFile(`${stateDir}/scanner/state.json`, 'utf8').then(
+    (text) => JSON.parse(text) as { config: { credentialFamilyId: string } },
+    (error: NodeJS.ErrnoException) => {
+      if (error.code === 'ENOENT') return undefined;
+      throw error;
+    }
+  );
+  // Withdraw first: if the revoke fails, nothing is removed and the person can retry.
+  if (saved)
+    try {
+      await revokeScannerCredential(deps, output, stateDir, saved);
+    } catch (error) {
+      output.error(humanReason((error as Error).message));
+      return 3;
+    }
+  await service.uninstall();
+  if (json) output.json({ status: 'uninstalled', consent: saved ? 'withdrawn' : 'none' });
+  else output.line(SCANNER_REMOVED_LINE);
+  return 0;
+}
 export const dataDeletePrompt = (projectId: string): string =>
   `This deletes everything background indexing has sent for ${projectId} from your account. Type yes to continue.`;
 export const stillWatchedLine = (root: string): string =>
@@ -172,9 +251,15 @@ interface Parsed {
   positionals: string[];
   flags: Map<string, string | true>;
   error?: string;
+  /** --json anywhere in the arguments, even after a flag that stopped parsing. */
+  json?: boolean;
 }
 
 function parse(args: string[]): Parsed {
+  return { ...parseArguments(args), json: args.includes('--json') };
+}
+
+function parseArguments(args: string[]): Parsed {
   const positionals: string[] = [];
   const flags = new Map<string, string | true>();
   // Only `mnemonik project delete` takes a project name after --confirm.
@@ -217,6 +302,82 @@ function parse(args: string[]): Parsed {
     return { positionals, flags, error: `Unknown flag: ${argument}` };
   }
   return { positionals, flags };
+}
+
+type UsageReason =
+  | 'unknown_command'
+  | 'unknown_subcommand'
+  | 'missing_subcommand'
+  | 'missing_argument'
+  | 'invalid_flag'
+  | 'invalid_value';
+
+/** The words that name a help screen: `auth logout extra` is `auth logout`. */
+function commandPath(positionals: string[]): string[] {
+  for (let length = positionals.length; length > 0; length--)
+    if (helpScreen(positionals.slice(0, length))) return positionals.slice(0, length);
+  return [];
+}
+
+/**
+ * Every usage error leaves through here. With --json it is one JSON object on
+ * stdout and nothing else; without, the person gets the sentence, or the
+ * command's help screen when there is no sentence.
+ */
+function usageFailure(
+  output: Output,
+  parsed: Parsed,
+  failure: { reason: UsageReason; path?: string[]; detail?: string },
+  human: string | (() => void)
+): 2 {
+  if (parsed.json) {
+    const command =
+      failure.reason === 'unknown_command'
+        ? (parsed.positionals[0] ?? '')
+        : (failure.path ?? commandPath(parsed.positionals)).join(' ');
+    output.json({
+      status: 'usage_error',
+      reason: failure.reason,
+      command,
+      ...(failure.detail ? { detail: failure.detail } : {}),
+      action:
+        failure.reason === 'unknown_command' || !command
+          ? 'mnemonik --help'
+          : `mnemonik ${command} --help`,
+    });
+  } else if (typeof human === 'string') output.error(human);
+  else human();
+  return 2;
+}
+
+/** A flag the command does not take, or a flag given without its value. */
+function flagError(output: Output, parsed: Parsed, message: string): 2 {
+  const [, kind, detail] = /^(Unknown flag|Missing value for flag)(?: combination)?: (\S+)/u.exec(
+    message
+  ) ?? [undefined, 'Unknown flag'];
+  const reason = kind === 'Unknown flag' ? 'invalid_flag' : 'invalid_value';
+  return usageFailure(output, parsed, { reason, detail }, message);
+}
+
+/**
+ * The reason for a command's help screen shown as an error, from the words
+ * given against the words the screen names. Commands that take arguments say
+ * their own reason.
+ */
+function usageReason(
+  positionals: string[],
+  path: string[]
+): { reason: UsageReason; detail?: string } {
+  if (!path.length) return { reason: 'unknown_command' };
+  for (let index = 1; index < path.length; index++)
+    if (positionals[index] !== path[index])
+      return positionals[index] === undefined
+        ? { reason: index === 1 ? 'missing_subcommand' : 'missing_argument' }
+        : { reason: 'unknown_subcommand', detail: positionals[index] };
+  const extra = positionals[path.length];
+  if (extra !== undefined)
+    return { reason: path.length === 1 ? 'unknown_subcommand' : 'invalid_value', detail: extra };
+  return { reason: path.length === 1 ? 'missing_subcommand' : 'missing_argument' };
 }
 
 function allowed(parsed: Parsed, names: string[]): string | undefined {
@@ -316,14 +477,18 @@ async function ensureCliAuth(
   deps: CliDependencies,
   output: Output,
   noBrowser: boolean,
-  showIdentity = true
+  showIdentity = true,
+  fresh = false
 ) {
   const cliAuth = auth(deps, output, noBrowser);
-  let bearer = await cliAuth.getCliBearer().catch((error: unknown) => {
-    if (isCredentialSessionUnavailableError(error))
-      return { status: 'ACTION_REQUIRED', reason: error.reason };
-    throw error;
-  });
+  // A fresh sign-in never reads the stored token: the server already refused it.
+  let bearer = fresh
+    ? { status: 'ACTION_REQUIRED', reason: 'renew' }
+    : await cliAuth.getCliBearer().catch((error: unknown) => {
+        if (isCredentialSessionUnavailableError(error))
+          return { status: 'ACTION_REQUIRED', reason: error.reason };
+        throw error;
+      });
   if (typeof bearer !== 'string') {
     await cliAuth.signIn();
     bearer = await cliAuth.getCliBearer();
@@ -403,13 +568,27 @@ async function runHostCommand(
     (host && !hostOrder.includes(host as never)) ||
     (component && !['hooks', 'mcp'].includes(String(component)))
   )
-    return (output.error('Invalid host or component'), 2);
+    return usageFailure(
+      output,
+      parsed,
+      {
+        reason: 'invalid_value',
+        detail: String(host && !hostOrder.includes(host as never) ? host : component),
+      },
+      'Invalid host or component'
+    );
   if (command === 'uninstall') await abandonInterrupted(state);
   let selections: HostSelection[];
   if (command === 'install') {
     const names = String(parsed.flags.get('hosts') ?? hostOrder.join(',')).split(',');
-    if (names.some((name) => !hostOrder.includes(name as never)))
-      return (output.error('Invalid hosts'), 2);
+    const unknownHost = names.find((name) => !hostOrder.includes(name as never));
+    if (unknownHost !== undefined)
+      return usageFailure(
+        output,
+        parsed,
+        { reason: 'invalid_value', detail: unknownHost },
+        'Invalid hosts'
+      );
     const components = String(parsed.flags.get('components') ?? 'hooks,mcp').split(',');
     if (components.some((c) => !['hooks', 'mcp'].includes(c)))
       return placeholder(output, json, 'install scanner', 'scanner setup');
@@ -834,7 +1013,7 @@ async function installCommand(
     'no-browser',
     'dry-run',
   ]);
-  if (invalid) return (output.error(invalid), 2);
+  if (invalid) return flagError(output, parsed, invalid);
   if (!deps.install && !parsed.flags.has('dry-run')) {
     const { joinedInstall } = await import('./install/journey.js');
     const state =
@@ -915,7 +1094,7 @@ async function doctorCommand(
   output: Output
 ): Promise<number> {
   const invalid = allowed(parsed, []);
-  if (invalid) return (output.error(invalid), 2);
+  if (invalid) return flagError(output, parsed, invalid);
   const result = await runPreflight({ cwd: deps.cwd, home: deps.home, ...deps.preflight });
   output.setContext({ home: deps.home ?? homedir(), projectRoot: result.project.root });
   const document = await collectStatusDocument({
@@ -1071,9 +1250,16 @@ async function deleteProjectCommand(
   const send = deps.grantFetch ?? fetch;
   const listed = await send(`${apiOrigin()}/api/v1/users/me/projects?days=0&limit=200`, {
     headers: { Authorization: `Bearer ${bearer}` },
-  });
-  if (!listed.ok) {
-    output.error('Mnemonik could not be reached from this machine.');
+  }).catch(() => undefined);
+  if (!listed?.ok) {
+    // Only a request that got no answer means Mnemonik could not be reached.
+    const reason = !listed
+      ? 'unreachable'
+      : listed.status === 401 || listed.status === 403
+        ? 'renew'
+        : 'server_error';
+    if (json) output.json({ status: 'action_required', reason, action: accountActions[reason] });
+    else output.error(humanReason(reason));
     return 3;
   }
   const listing = await listed.json().catch(() => []);
@@ -1163,10 +1349,24 @@ export async function runCli(args: string[], deps: CliDependencies = {}): Promis
   const output = new Output(stdout, stderr, {
     home: deps.home ?? homedir(),
   });
-  const usageError = (positionals: string[]): 2 => {
-    stderr.write(helpScreen(positionals) ?? help);
-    return 2;
-  };
+  const usageError = (
+    positionals: string[],
+    failure: { reason: UsageReason; detail?: string; path?: string[] } = usageReason(
+      parsed.positionals,
+      positionals
+    )
+  ): 2 =>
+    usageFailure(output, parsed, { path: positionals, ...failure }, () =>
+      stderr.write(helpScreen(positionals) ?? help)
+    );
+  /** Too few or too many arguments after the command's words. */
+  const argumentError = (screen: string[], words: string[], given: string[], most: number): 2 =>
+    usageError(
+      screen,
+      given.length > most
+        ? { reason: 'invalid_value', detail: given[most], path: words }
+        : { reason: 'missing_argument', path: words }
+    );
   if (helpIndex !== -1) {
     const positionals = args.slice(0, helpIndex).filter((argument) => !argument.startsWith('--'));
     const screen = helpScreen(positionals);
@@ -1177,10 +1377,10 @@ export async function runCli(args: string[], deps: CliDependencies = {}): Promis
     stderr.write(
       'WARNING: MNEMONIK_DEV_RELEASE_DIR uses development artifacts; readiness remains LIMITED.\n'
     );
-  if (parsed.error) return (output.error(parsed.error), 2);
+  if (parsed.error) return flagError(output, parsed, parsed.error);
   if (parsed.flags.has('version')) {
     if (parsed.positionals.length || parsed.flags.size !== 1)
-      return (output.error('Unknown flag combination: --version'), 2);
+      return flagError(output, parsed, 'Unknown flag combination: --version');
     output.line(await packageVersion());
     return 0;
   }
@@ -1209,7 +1409,16 @@ export async function runCli(args: string[], deps: CliDependencies = {}): Promis
       !['add', 'remove', 'list'].includes(action ?? '') ||
       actionArguments.length !== (action === 'list' ? 0 : 1)
     )
-      return invalid ? (output.error(invalid), 2) : usageError([command]);
+      return invalid
+        ? flagError(output, parsed, invalid)
+        : !['add', 'remove', 'list'].includes(action ?? '')
+          ? usageError([command])
+          : argumentError(
+              [command],
+              command === 'roots' ? [command, action ?? ''] : [command],
+              actionArguments.map(String),
+              action === 'list' ? 0 : 1
+            );
     const stateDir =
       deps.installStateDir ?? stateDirectory(process.platform, process.env, deps.home);
     const saved = JSON.parse(
@@ -1314,19 +1523,13 @@ export async function runCli(args: string[], deps: CliDependencies = {}): Promis
   ) {
     const invalid = allowed(parsed, ['component']);
     if (invalid || rest.length)
-      return invalid ? (output.error(invalid), 2) : usageError(['auth', 'logout']);
+      return invalid ? flagError(output, parsed, invalid) : usageError(['auth', 'logout']);
     try {
-      const stateDir =
-        deps.installStateDir ?? stateDirectory(process.platform, process.env, deps.home);
-      const saved = JSON.parse(await readFile(`${stateDir}/scanner/state.json`, 'utf8')) as {
-        config: { credentialFamilyId: string };
-      };
-      const bearer = await ensureCliAuth(deps, output, false);
-      const response = await (deps.grantFetch ?? fetch)(
-        `${apiOrigin()}/api/v1/component-credentials/${encodeURIComponent(saved.config.credentialFamilyId)}/revoke`,
-        { method: 'POST', headers: { Authorization: `Bearer ${bearer}` } }
+      await revokeScannerCredential(
+        deps,
+        output,
+        deps.installStateDir ?? stateDirectory(process.platform, process.env, deps.home)
       );
-      if (!response.ok) throw new Error(`revoke_failed_${response.status}`);
       const result = {
         status: 'revoked',
         verbs: ['revoke access'],
@@ -1348,7 +1551,7 @@ export async function runCli(args: string[], deps: CliDependencies = {}): Promis
     const invalid = allowed(parsed, ['project', 'confirm']);
     const project = parsed.flags.get('project');
     if (invalid || subcommand !== 'delete' || rest.length || typeof project !== 'string')
-      return invalid ? (output.error(invalid), 2) : usageError(['data', 'delete']);
+      return invalid ? flagError(output, parsed, invalid) : usageError(['data', 'delete']);
     if (!parsed.flags.has('confirm')) {
       if (parsed.flags.has('non-interactive') || parsed.flags.has('json'))
         return actionRequired(
@@ -1385,7 +1588,13 @@ export async function runCli(args: string[], deps: CliDependencies = {}): Promis
     parsed.flags.get('component') === 'scanner'
   ) {
     const invalid = allowed(parsed, ['component', ...(command === 'uninstall' ? ['confirm'] : [])]);
-    if (invalid || subcommand) return invalid ? (output.error(invalid), 2) : usageError([command]);
+    if (invalid || subcommand)
+      return invalid ? flagError(output, parsed, invalid) : usageError([command]);
+    // The same act as mnemonik scanner uninstall: an opt-out.
+    if (command === 'uninstall') {
+      const declined = await confirmScannerOptOut(parsed, deps, output);
+      if (declined !== undefined) return declined;
+    }
     try {
       const options = {
         stateDir: deps.installStateDir ?? stateDirectory(process.platform, process.env, deps.home),
@@ -1419,19 +1628,13 @@ export async function runCli(args: string[], deps: CliDependencies = {}): Promis
           output.line(
             result.status === 'updated' ? 'Mnemonik updated.' : 'Mnemonik is up to date.'
           );
-      } else {
-        await scannerService(options).uninstall();
-        const result = {
-          status: 'uninstalled',
-          verbs: ['stop collection', 'remove local software'],
-          retained: ['credentials', 'cloud data', 'consent'],
-        };
-        if (parsed.flags.has('json')) output.json(result);
-        else
-          output.line(
-            'Stopped collection; removed local software. Credentials, cloud data and consent retained.'
-          );
-      }
+      } else
+        return await uninstallScannerOptOut(
+          deps,
+          output,
+          scannerService(options),
+          parsed.flags.has('json')
+        );
       return 0;
     } catch (error) {
       const failure = scannerFailure(error);
@@ -1473,7 +1676,8 @@ export async function runCli(args: string[], deps: CliDependencies = {}): Promis
           ? ['host', 'automatic']
           : ['host', 'component', 'confirm']
     );
-    if (invalid || subcommand) return invalid ? (output.error(invalid), 2) : usageError([command]);
+    if (invalid || subcommand)
+      return invalid ? flagError(output, parsed, invalid) : usageError([command]);
     if (command === 'uninstall' && parsed.flags.has('non-interactive')) {
       const missing = requireConsent(parsed, output, ['confirm']);
       if (missing !== undefined) return missing;
@@ -1483,7 +1687,8 @@ export async function runCli(args: string[], deps: CliDependencies = {}): Promis
   }
   if (command === 'update') {
     const invalid = allowed(parsed, ['automatic']);
-    if (invalid || subcommand) return invalid ? (output.error(invalid), 2) : usageError(['update']);
+    if (invalid || subcommand)
+      return invalid ? flagError(output, parsed, invalid) : usageError(['update']);
     const runtimeUpdate = deps.runtimeUpdate;
     if (!runtimeUpdate)
       return placeholder(
@@ -1521,7 +1726,16 @@ export async function runCli(args: string[], deps: CliDependencies = {}): Promis
       (subcommand === 'preview' && rest.length) ||
       (subcommand === 'send' && (rest.length !== 1 || !bundleId))
     )
-      return invalid ? (output.error(invalid), 2) : usageError(['diagnostics']);
+      return invalid
+        ? flagError(output, parsed, invalid)
+        : subcommand === 'preview' || subcommand === 'send'
+          ? argumentError(
+              ['diagnostics'],
+              ['diagnostics', subcommand],
+              rest,
+              subcommand === 'send' ? 1 : 0
+            )
+          : usageError(['diagnostics']);
     try {
       const result =
         subcommand === 'preview'
@@ -1569,7 +1783,8 @@ export async function runCli(args: string[], deps: CliDependencies = {}): Promis
   }
   if (command === 'status') {
     const invalid = allowed(parsed, []);
-    if (invalid || subcommand) return invalid ? (output.error(invalid), 2) : usageError(['status']);
+    if (invalid || subcommand)
+      return invalid ? flagError(output, parsed, invalid) : usageError(['status']);
     const document = await collectCurrentInstallation(deps, output);
     const version = await packageVersion();
     const store = new RuntimeStore(
@@ -1588,9 +1803,11 @@ export async function runCli(args: string[], deps: CliDependencies = {}): Promis
   }
   if (command === 'connect') {
     const invalid = allowed(parsed, []);
-    if (invalid) return (output.error(invalid), 2);
+    if (invalid) return flagError(output, parsed, invalid);
     if (!subcommand || rest.length || !hostOrder.includes(subcommand as never))
-      return usageError(['connect']);
+      return subcommand && !hostOrder.includes(subcommand as never)
+        ? usageError(['connect'], { reason: 'invalid_value', detail: subcommand })
+        : argumentError(['connect'], ['connect'], [subcommand ?? '', ...rest].filter(Boolean), 1);
     const host = subcommand as (typeof hostOrder)[number];
     const editor = (await localEditorStatus(deps.home ?? homedir())).find(
       (candidate) => candidate.host === host
@@ -1646,7 +1863,9 @@ export async function runCli(args: string[], deps: CliDependencies = {}): Promis
     if (subcommand === 'delete') {
       const unknown = allowed(parsed, ['confirm']);
       if (unknown || rest.length > 1)
-        return unknown ? (output.error(unknown), 2) : usageError(['project', 'delete']);
+        return unknown
+          ? flagError(output, parsed, unknown)
+          : argumentError(['project', 'delete'], ['project', 'delete'], rest, 1);
       return deleteProjectCommand(parsed, rest, deps, output);
     }
     const invalid = allowed(
@@ -1659,16 +1878,24 @@ export async function runCli(args: string[], deps: CliDependencies = {}): Promis
             ? ['apply', 'non-git', 'confirm-mismatch', 'replace']
             : ['apply', 'non-git', 'owner']
     );
-    if (invalid) return (output.error(invalid), 2);
+    if (invalid) return flagError(output, parsed, invalid);
     if (subcommand === 'ensure') {
-      // `--agent` and `--json` are accepted and ignored: older installed hooks
-      // still pass them, and the output is always JSON. It never asks.
+      // The output is always JSON, so `--json` changes nothing, and it never
+      // asks. `--agent` is the hook's: only then is a request id read from
+      // stdin, so an agent's shell with stdin left open does not wait forever.
       if (rest.length) return usageError(['project', 'ensure']);
       return ensureProjectForAgent({
         output,
         cwd: deps.cwd ?? process.cwd(),
         executor: deps.projectExecutor,
         input: deps.input ?? process.stdin,
+        handoff: parsed.flags.has('agent'),
+        // The same sign-in reader status and every other command use.
+        runtime: {
+          stateDir: deps.projectStateDir ?? deps.installStateDir,
+          fetch: deps.grantFetch,
+          getCliBearer: auth(deps, output, true).getCliBearer,
+        },
       });
     }
     if (subcommand !== 'status' && subcommand !== 'setup' && parsed.flags.has('non-interactive')) {
@@ -1679,7 +1906,12 @@ export async function runCli(args: string[], deps: CliDependencies = {}): Promis
       (subcommand === 'link' && (rest.length < 1 || rest.length > 2)) ||
       (subcommand !== 'link' && rest.length > 1)
     )
-      return usageError(['project', subcommand]);
+      return argumentError(
+        ['project', subcommand],
+        ['project', subcommand],
+        rest,
+        subcommand === 'link' ? 2 : 1
+      );
     return runProjectCommand(
       {
         command: subcommand as 'init' | 'setup' | 'status' | 'link',
@@ -1710,20 +1942,25 @@ export async function runCli(args: string[], deps: CliDependencies = {}): Promis
   if (command === 'identity') {
     if (subcommand !== 'migrate') return usageError(['identity', 'migrate']);
     const invalid = allowed(parsed, ['report', 'backup', 'apply', 'verify', 'rollback']);
-    if (invalid) return (output.error(invalid), 2);
+    if (invalid) return flagError(output, parsed, invalid);
     const selected = ['report', 'backup', 'apply', 'verify', 'rollback'].filter((flag) =>
       parsed.flags.has(flag)
     );
     if (selected.length > 1)
-      return (
-        output.error(
-          'Choose one migration phase: --report, --backup, --apply, --verify, or --rollback'
-        ),
-        2
+      return usageFailure(
+        output,
+        parsed,
+        { reason: 'invalid_flag', detail: `--${selected[1]}` },
+        'Choose one migration phase: --report, --backup, --apply, --verify, or --rollback'
       );
     const mode = (selected[0] ?? 'report') as 'report' | 'backup' | 'apply' | 'verify' | 'rollback';
     if (rest.length && mode !== 'report' && mode !== 'backup')
-      return (output.error('Paths are only accepted by --report and --backup'), 2);
+      return usageFailure(
+        output,
+        parsed,
+        { reason: 'invalid_value', detail: rest[0] },
+        'Paths are only accepted by --report and --backup'
+      );
     let result: Awaited<ReturnType<typeof runIdentityMigration>>;
     try {
       result = await runIdentityMigration({
@@ -1778,10 +2015,16 @@ export async function runCli(args: string[], deps: CliDependencies = {}): Promis
         ? ['accept-indexing', 'apply', 'scan-roots', 'exclusions', 'no-browser']
         : subcommand === 'export-preview'
           ? ['out']
-          : []
+          : subcommand === 'uninstall'
+            ? ['confirm']
+            : []
     );
-    if (invalid) return (output.error(invalid), 2);
+    if (invalid) return flagError(output, parsed, invalid);
     if (subcommand === 'enable') return enableCommand(parsed, deps, output);
+    if (subcommand === 'uninstall') {
+      const declined = await confirmScannerOptOut(parsed, deps, output);
+      if (declined !== undefined) return declined;
+    }
     if (subcommand === 'status' && deps.scannerStatus) {
       const status = await deps.scannerStatus();
       const omitted: ReadinessCondition[] = status.repositories
@@ -1894,11 +2137,15 @@ export async function runCli(args: string[], deps: CliDependencies = {}): Promis
         }
         await service.start();
       } else if (subcommand === 'stop') {
+        // Tell the server this stop was chosen, so it is not taken for a reboot.
+        // A scanner that is not running has nothing to announce.
+        await controlScanner('stop', options).catch(() => undefined);
         await service.stop();
         // The boot registration stays, so say what stopping does and does not do.
         if ((deps.scannerService?.platform ?? process.platform) === 'darwin')
           output.line('Background indexing will start again when this Mac restarts.');
-      } else if (subcommand === 'uninstall') await service.uninstall();
+      } else if (subcommand === 'uninstall')
+        return await uninstallScannerOptOut(deps, output, service, json);
       const includesStatus = ['status', 'pause', 'resume'].includes(subcommand);
       const supervisor = includesStatus ? await service.status() : undefined;
       const receipt = includesStatus ? await scannerReceipt(options.stateDir) : undefined;
@@ -1954,20 +2201,37 @@ export async function runCli(args: string[], deps: CliDependencies = {}): Promis
     if (
       invalid ||
       rest.length ||
-      !['login', 'status', 'logout'].includes(subcommand ?? '') ||
-      (parsed.flags.has('reopen-install') && subcommand !== 'login')
+      !['login', 'renew', 'status', 'logout'].includes(subcommand ?? '') ||
+      (parsed.flags.has('reopen-install') && subcommand !== 'login' && subcommand !== 'renew')
     )
       return invalid
-        ? (output.error(invalid), 2)
+        ? flagError(output, parsed, invalid)
         : usageError(
-            subcommand && helpScreen(['auth', subcommand]) ? ['auth', subcommand] : ['auth']
+            subcommand && helpScreen(['auth', subcommand]) ? ['auth', subcommand] : ['auth'],
+            !rest.length && ['login', 'renew', 'status', 'logout'].includes(subcommand ?? '')
+              ? { reason: 'invalid_flag', detail: '--reopen-install' }
+              : undefined
           );
     const host = parsed.flags.get('host');
-    if (host && !hostOrder.includes(host as never)) return (output.error('Invalid host'), 2);
-    if (subcommand === 'login') {
-      if (host) return (output.error('Use mnemonik connect <host> for a host login'), 2);
+    if (host && !hostOrder.includes(host as never))
+      return usageFailure(
+        output,
+        parsed,
+        { reason: 'invalid_value', detail: String(host) },
+        'Invalid host'
+      );
+    // `auth renew` is `auth login` that always signs in again, as on a machine
+    // with no sign-in: the renew action follows a token the server refused.
+    if (subcommand === 'login' || subcommand === 'renew') {
+      if (host)
+        return usageFailure(
+          output,
+          parsed,
+          { reason: 'invalid_flag', detail: '--host' },
+          'Use mnemonik connect <host> for a host login'
+        );
       const noBrowser = parsed.flags.has('no-browser');
-      const bearer = await ensureCliAuth(deps, output, noBrowser);
+      const bearer = await ensureCliAuth(deps, output, noBrowser, true, subcommand === 'renew');
       if (parsed.flags.has('reopen-install')) {
         const current = await currentInstallSession(bearer, deps.grantFetch);
         if (current) {
@@ -2038,11 +2302,19 @@ export async function runCli(args: string[], deps: CliDependencies = {}): Promis
         })
         .map((g) => ({ ...g, host: grantHost(g) ?? g.clientName ?? g.clientId }));
       if (parsed.flags.has('json')) output.json({ account: status.account, grants });
-      else
-        for (const g of grants)
-          output.line(
-            `${g.host}: ${g.id}; created ${g.createdAt}; last used ${g.lastUsedAt ?? 'never'}; scopes ${g.scopes.join(', ')}`
-          );
+      else if (!grants.length)
+        output.line(
+          host
+            ? `${launchHostLabels[host as keyof typeof launchHostLabels]} is not signed in.`
+            : humanReason('not_signed_in')
+        );
+      else {
+        output.signedInAs(status.email);
+        for (const line of grantSummaryLines(grants, launchHostLabels)) output.line(line);
+        output.line(
+          'Older sign-ins stay valid until `mnemonik auth logout`. `mnemonik auth status --json` lists every one.'
+        );
+      }
       return 0;
     }
     const confirmed =
@@ -2075,7 +2347,7 @@ export async function runCli(args: string[], deps: CliDependencies = {}): Promis
   if (command === 'logout') {
     if (subcommand) return usageError(['logout']);
     const invalid = allowed(parsed, []);
-    if (invalid) return (output.error(invalid), 2);
+    if (invalid) return flagError(output, parsed, invalid);
     await auth(deps, output, false).logout();
     if (parsed.flags.has('json')) output.json({ status: 'logged_out' });
     else output.line('Logged out.');

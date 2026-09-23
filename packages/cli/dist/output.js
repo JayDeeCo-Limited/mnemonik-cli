@@ -111,6 +111,11 @@ export class Output {
             throw new Error('account_identity_failed');
         this.stdout.write(`Signed in as ${email}\nRun mnemonik logout to switch account.\n`);
     }
+    /** The account line of plain `auth status`: the same deliberate display, or nothing. */
+    signedInAs(email) {
+        if (email && /^[^\s@]+@[^\s@]+\.[^\s@]+$/u.test(email))
+            this.stdout.write(`Signed in as ${email}.\n`);
+    }
     error(value, human = true) {
         const message = human && typeof value === 'string' && /^[a-z][a-z0-9_]*$/u.test(value)
             ? humanReason(value)

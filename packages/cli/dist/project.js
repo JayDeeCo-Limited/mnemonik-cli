@@ -6,7 +6,7 @@ import { lstat } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 import { createProjectSetupExecutor, } from '@mnemonik/local-setup';
 import { resolveProjectIdentity, selectRemote, } from '@mnemonik/shared';
-import { createServerTransport, ServerActionRequiredError, } from './transport/server.js';
+import { accountActions, createServerTransport, ServerActionRequiredError, signInFailureState, } from './transport/server.js';
 import { evaluateRoot } from './project/eligibility.js';
 import { identityHash, ownerLabel, readExecutorState, saveCommandRecord, } from './project/records.js';
 export async function ensureProjectRoot(root, executor) {
@@ -394,7 +394,7 @@ async function statusCommand(input, deps) {
             deps.output.line('Reachability: unreachable');
         if (server && server.state !== 'access')
             deps.output.line(humanReason(server.state));
-        if (executorState && executorState !== 'done')
+        if (executorState && executorState !== 'done' && executorState !== 'unreachable')
             deps.output.line(humanReason(executorState));
     }
     return 0;
@@ -559,11 +559,11 @@ export async function runProjectCommand(input, deps) {
             }
             catch (error) {
                 if (input.command !== 'status') {
-                    const state = error instanceof ServerActionRequiredError && error.result.state !== 'family_missing'
-                        ? error.result.state
-                        : 'not_signed_in';
+                    const state = accountFailure(error);
+                    if (!state)
+                        throw error;
                     return actionRequired(deps.output, input.json, state, {
-                        allowedActions: [state === 'not_signed_in' ? 'mnemonik install' : 'retry', 'cancel'],
+                        allowedActions: [accountActions[state] ?? 'retry', 'cancel'],
                     });
                 }
             }
@@ -583,54 +583,72 @@ export async function runProjectCommand(input, deps) {
         prompts.close();
     }
 }
+/**
+ * Why the account could not be reached, by name. A missing sign-in, an
+ * unreachable server, a server fault and a refused sign-in are different
+ * failures with different fixes; an error that is none of them is not one.
+ */
+function accountFailure(error) {
+    if (error instanceof ServerActionRequiredError)
+        return error.result.state;
+    if (error instanceof Error && error.message === 'invalid_request')
+        return 'invalid_request';
+    return undefined;
+}
+/**
+ * The hook hands its request id over on stdin and closes it. A person or an
+ * agent running the command hands over nothing, which is no request, not an
+ * error.
+ */
+async function handoffRequestId(input) {
+    if (input.isTTY)
+        return undefined;
+    let text = '';
+    for await (const chunk of input) {
+        text += String(chunk);
+        if (text.length > 4_096)
+            throw new Error('invalid_request');
+    }
+    if (!text.trim())
+        return undefined;
+    let value;
+    try {
+        value = JSON.parse(text);
+    }
+    catch {
+        throw new Error('invalid_request');
+    }
+    if (typeof value?.requestId !== 'string')
+        throw new Error('invalid_request');
+    return value.requestId;
+}
 export async function ensureProjectForAgent(options) {
     let executor = options.executor;
     if (!executor)
         try {
-            const credentials = createCliCredentials();
-            if (!(await credentials.readCliOAuth()))
+            const bearer = await options.runtime?.getCliBearer?.();
+            if (bearer !== undefined && typeof bearer !== 'string')
                 throw new ServerActionRequiredError({
                     status: 'ACTION_REQUIRED',
-                    state: 'family_missing',
-                    allowedActions: ['mnemonik install'],
+                    state: signInFailureState(bearer),
+                    allowedActions: [],
                 });
-            let requestId;
-            const input = options.input ?? process.stdin;
-            if (!input.isTTY) {
-                let text = '';
-                for await (const chunk of input) {
-                    text += String(chunk);
-                    if (text.length > 4_096)
-                        throw new Error('invalid_request');
-                }
-                const value = JSON.parse(text);
-                if (typeof value.requestId !== 'string')
-                    throw new Error('invalid_request');
-                requestId = value.requestId;
-            }
-            executor = (await createRealProjectRuntime({ credentials, requestId })).executor;
+            const requestId = options.handoff
+                ? await handoffRequestId(options.input ?? process.stdin)
+                : undefined;
+            executor = (await createRealProjectRuntime({ ...options.runtime, requestId })).executor;
         }
         catch (error) {
-            const reason = error instanceof ServerActionRequiredError && error.result.state !== 'family_missing'
-                ? error.result.state
-                : error instanceof Error && error.message === 'invalid_request'
-                    ? 'invalid_request'
-                    : 'not_signed_in';
+            const reason = accountFailure(error);
+            if (!reason)
+                throw error;
             options.output.json({
                 status: 'action_required',
                 reason,
-                action: reason === 'not_signed_in' ? 'mnemonik install' : 'mnemonik auth renew',
+                action: accountActions[reason] ?? 'retry',
             });
             return 3;
         }
-    if (!executor) {
-        options.output.json({
-            status: 'action_required',
-            reason: 'not_signed_in',
-            action: 'mnemonik install',
-        });
-        return 3;
-    }
     const resolution = await executor.resolveProjectIdentity(options.cwd);
     const decision = await evaluateRoot(resolution, { cwd: options.cwd });
     if (!decision.allowed || (resolution.kind !== 'ok' && resolution.kind !== 'absent')) {

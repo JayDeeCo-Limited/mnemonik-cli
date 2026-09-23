@@ -37,7 +37,10 @@ export async function scannerReceipt(stateDir: string): Promise<ScannerReceipt |
     await readFile(join(stateDir, 'scanner/status.json'), 'utf8').catch(() => 'null')
   ) as ScannerReceipt | null;
 }
-export async function controlScanner(action: 'pause' | 'resume', options: ScannerServiceOptions) {
+export async function controlScanner(
+  action: 'pause' | 'resume' | 'stop',
+  options: ScannerServiceOptions
+) {
   const supervisor = await scannerService(options).status();
   if (!supervisor.running || !supervisor.pid) throw new Error('scanner_not_running');
   return withLock(join(options.stateDir, 'scanner/control'), 5000, async () => {

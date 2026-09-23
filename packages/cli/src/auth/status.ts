@@ -17,6 +17,8 @@ export interface AccountGrant {
 export interface GrantStatus {
   deviceInstallationId?: string | null;
   account: string;
+  /** The account's email, sent with the grants; the CLI reads it for sign-in too. */
+  email?: string;
   grants: AccountGrant[];
 }
 // Display metadata is self-asserted. Account evidence comes only from the authenticated route.
@@ -38,6 +40,55 @@ export const grantHost = (grant: AccountGrant) =>
   ({ 'claude.ai': 'claude-code', 'chatgpt.com': 'codex' } as Record<string, HostName>)[
     URL.parse(grant.clientId)?.hostname ?? ''
   ];
+
+/** "just now", "5 minutes ago", "1 hour ago", "3 days ago", or "never". */
+export function relativeTime(time: number | null, now: number): string {
+  if (time === null) return 'never';
+  const minutes = Math.floor((now - time) / 60_000);
+  if (minutes < 1) return 'just now';
+  const [count, unit] =
+    minutes < 60
+      ? [minutes, 'minute']
+      : minutes < 1_440
+        ? [Math.floor(minutes / 60), 'hour']
+        : [Math.floor(minutes / 1_440), 'day'];
+  return `${count} ${unit}${count === 1 ? '' : 's'} ago`;
+}
+
+/**
+ * One line per host for plain `auth status`: editors first, then the rest,
+ * each by most recent use. Grant ids, dates and scopes are for --json.
+ */
+export function grantSummaryLines(
+  grants: readonly (AccountGrant & { host: string })[],
+  editors: Readonly<Record<string, string>>,
+  now = Date.now()
+): string[] {
+  const rows = new Map<
+    string,
+    { name: string; editor: boolean; last: number | null; count: number }
+  >();
+  for (const grant of grants) {
+    const row = rows.get(grant.host) ?? {
+      name: editors[grant.host] ?? grant.host,
+      editor: grant.host in editors,
+      last: null,
+      count: 0,
+    };
+    const used = grant.lastUsedAt ? Date.parse(grant.lastUsedAt) : null;
+    if (used !== null && (row.last === null || used > row.last)) row.last = used;
+    row.count += 1;
+    rows.set(grant.host, row);
+  }
+  const ordered = [...rows.values()].sort(
+    (a, b) => Number(b.editor) - Number(a.editor) || (b.last ?? 0) - (a.last ?? 0)
+  );
+  const width = Math.max(...ordered.map((row) => row.name.length)) + 2;
+  return ordered.map(
+    (row) =>
+      `${row.name.padEnd(width)}signed in, last used ${relativeTime(row.last, now)} (${row.count} sign-in${row.count === 1 ? '' : 's'})`
+  );
+}
 
 export function grantTransport(getBearer: () => Promise<string>, fetcher: typeof fetch = fetch) {
   const resource = apiOrigin();

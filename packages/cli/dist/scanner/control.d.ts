@@ -43,5 +43,5 @@ export interface ScannerReceipt {
     };
 }
 export declare function scannerReceipt(stateDir: string): Promise<ScannerReceipt | null>;
-export declare function controlScanner(action: 'pause' | 'resume', options: ScannerServiceOptions): Promise<ScannerReceipt>;
+export declare function controlScanner(action: 'pause' | 'resume' | 'stop', options: ScannerServiceOptions): Promise<ScannerReceipt>;
 //# sourceMappingURL=control.d.ts.map

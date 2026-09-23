@@ -27,7 +27,14 @@ afterEach(async () => {
   await Promise.all(created.splice(0).map((path) => rm(path, { recursive: true, force: true })));
 });
 
-async function fixture(options: { typed?: string; deleteStatus?: number; name?: string } = {}) {
+async function fixture(
+  options: {
+    typed?: string;
+    deleteStatus?: number;
+    name?: string;
+    listing?: number | 'network';
+  } = {}
+) {
   const name = options.name ?? 'Atlas';
   const home = await mkdtemp(join(tmpdir(), 'project-delete-'));
   created.push(home);
@@ -49,6 +56,9 @@ async function fixture(options: { typed?: string; deleteStatus?: number; name?: 
     async (url: string | URL, init?: { method?: string; body?: unknown }) => {
       const method = init?.method ?? 'GET';
       calls.push({ method, url: String(url), body: init?.body as string | undefined });
+      if (method === 'GET' && options.listing === 'network') throw new TypeError('fetch failed');
+      if (method === 'GET' && typeof options.listing === 'number')
+        return new Response(JSON.stringify({ error: 'refused' }), { status: options.listing });
       if (method === 'GET')
         return new Response(JSON.stringify([{ id: PROJECT_ID, name }]), { status: 200 });
       const status = options.deleteStatus ?? 200;
@@ -187,4 +197,44 @@ it('keeps a word after --confirm for the command that owns it', async () => {
   expect(
     await runCli(['uninstall', '--component', 'scanner', '--confirm', 'claude-code'], f.deps)
   ).toBe(2);
+});
+
+// The project list is read before anything is deleted. When that read fails,
+// the answer names why, and nothing is deleted.
+it.each([
+  [401, 'renew', 'mnemonik auth renew'],
+  [403, 'renew', 'mnemonik auth renew'],
+  ['network', 'unreachable', 'retry'],
+  [500, 'server_error', 'retry'],
+] as const)(
+  'a listing that fails with %s says %s and deletes nothing',
+  async (listing, reason, action) => {
+    const f = await fixture({ listing });
+
+    expect(
+      await runCli(
+        ['project', 'delete', '--non-interactive', '--json', '--confirm', 'Atlas'],
+        f.deps
+      )
+    ).toBe(3);
+
+    expect(JSON.parse(f.stdout.text)).toEqual({ status: 'action_required', reason, action });
+    expect(f.calls.map((call) => call.method)).toEqual(['GET']);
+  }
+);
+
+it('says in words why the listing failed, and only a lost connection is unreachable', async () => {
+  const refused = await fixture({ listing: 401 });
+  expect(
+    await runCli(['project', 'delete', '--non-interactive', '--confirm', 'Atlas'], refused.deps)
+  ).toBe(3);
+  expect(refused.stderr.text).toContain('Mnemonik no longer accepts the sign-in on this computer.');
+  expect(refused.stderr.text).not.toContain('could not be reached');
+
+  const lost = await fixture({ listing: 'network' });
+  expect(
+    await runCli(['project', 'delete', '--non-interactive', '--confirm', 'Atlas'], lost.deps)
+  ).toBe(3);
+  expect(lost.stderr.text).toContain('Mnemonik could not be reached.');
+  expect(lost.calls.some((call) => call.method === 'DELETE')).toBe(false);
 });

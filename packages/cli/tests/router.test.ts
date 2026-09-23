@@ -203,7 +203,7 @@ describe('command router', () => {
     };
 
     expect(await runCli(['auth', 'status', ...(json ? ['--json'] : [])], f.deps)).toBe(0);
-    expect(f.stdout.text).toContain('codex');
+    expect(f.stdout.text.toLowerCase()).toContain('codex');
     expect(f.stdout.text.toLowerCase()).not.toMatch(/grok|copilot/u);
     if (json)
       expect(JSON.parse(f.stdout.text).grants.map(({ id }: { id: string }) => id)).toEqual([
@@ -1006,5 +1006,126 @@ describe('files the server could not index', () => {
     const doctor = fixture();
     await runCli(['doctor'], doctor.deps);
     expect(f.stdout.text + doctor.stdout.text).not.toContain('could not be indexed');
+  });
+});
+
+describe('mnemonik scanner uninstall is an opt-out', () => {
+  async function uninstallFixture(answer = '') {
+    const { mkdir, writeFile } = await import('node:fs/promises');
+    const f = fixture();
+    const state = f.deps.installStateDir!;
+    await mkdir(join(state, 'scanner'), { recursive: true });
+    await writeFile(
+      join(state, 'scanner/state.json'),
+      JSON.stringify({ config: { credentialFamilyId: 'scanner-family' } })
+    );
+    const operations: string[] = [];
+    const revoked: string[] = [];
+    f.deps.input = Readable.from(`${answer}\n`);
+    f.deps.getCliBearer = async () => 'access-token';
+    f.deps.grantFetch = async (url) => {
+      revoked.push(String(url));
+      return new Response('{}', { status: 200 });
+    };
+    f.deps.scannerService = {
+      stateDir: state,
+      platform: 'win32',
+      command: async (operation) => {
+        operations.push(operation);
+        return {
+          status: 'ok',
+          supervisor: { installed: false, running: false, pid: null, kind: 'windows' },
+        } as never;
+      },
+    };
+    return { ...f, operations, revoked };
+  }
+
+  it('interactive: anything but yes removes nothing and keeps consent', async () => {
+    const f = await uninstallFixture('no');
+    expect(await runCli(['scanner', 'uninstall'], f.deps)).toBe(130);
+    expect(f.stdout.text).toContain(
+      'Uninstalling background indexing means your code on this machine is no longer\n' +
+        'indexed. Agents here lose code search and file context until you set it up\n' +
+        'again with mnemonik scanner enable. This also withdraws your indexing consent\n' +
+        'for this machine. Type yes to continue.'
+    );
+    expect(f.stdout.text).toContain('Nothing was removed.');
+    expect(f.operations).toEqual([]);
+    expect(f.revoked).toEqual([]);
+  });
+
+  it('--json without --confirm asks for it and removes nothing', async () => {
+    const f = await uninstallFixture();
+    expect(await runCli(['scanner', 'uninstall', '--json'], f.deps)).toBe(3);
+    expect(JSON.parse(f.stdout.text)).toMatchObject({
+      status: 'action_required',
+      flag: '--confirm',
+    });
+    expect(f.operations).toEqual([]);
+    expect(f.revoked).toEqual([]);
+  });
+
+  it('--confirm removes the service and withdraws consent', async () => {
+    const f = await uninstallFixture();
+    expect(await runCli(['scanner', 'uninstall', '--confirm'], f.deps)).toBe(0);
+    expect(f.operations).toEqual(['stop', 'uninstall']);
+    expect(f.revoked).toEqual([
+      expect.stringMatching(/\/api\/v1\/component-credentials\/scanner-family\/revoke$/),
+    ]);
+    expect(f.stdout.text).toContain('Background indexing removed from this machine.');
+  });
+
+  it('a refused revoke removes nothing', async () => {
+    const f = await uninstallFixture();
+    f.deps.grantFetch = async (url) => {
+      f.revoked.push(String(url));
+      return new Response('', { status: 500 });
+    };
+    expect(await runCli(['scanner', 'uninstall', '--confirm'], f.deps)).toBe(3);
+    expect(f.revoked).toHaveLength(1);
+    expect(f.operations).toEqual([]);
+    const { readFile } = await import('node:fs/promises');
+    expect(
+      JSON.parse(await readFile(join(f.deps.installStateDir!, 'scanner/state.json'), 'utf8'))
+    ).toEqual({ config: { credentialFamilyId: 'scanner-family' } });
+  });
+
+  it('uninstall --component scanner is the same opt-out', async () => {
+    const no = await uninstallFixture('no');
+    expect(await runCli(['uninstall', '--component', 'scanner'], no.deps)).toBe(130);
+    expect(no.stdout.text).toContain('This also withdraws your indexing consent');
+    expect(no.stdout.text).toContain('Nothing was removed.');
+    expect(no.operations).toEqual([]);
+    expect(no.revoked).toEqual([]);
+
+    const json = await uninstallFixture();
+    expect(await runCli(['uninstall', '--component', 'scanner', '--json'], json.deps)).toBe(3);
+    expect(JSON.parse(json.stdout.text)).toMatchObject({
+      status: 'action_required',
+      flag: '--confirm',
+    });
+    expect(json.operations).toEqual([]);
+    expect(json.revoked).toEqual([]);
+
+    const confirmed = await uninstallFixture();
+    expect(await runCli(['uninstall', '--component', 'scanner', '--confirm'], confirmed.deps)).toBe(
+      0
+    );
+    expect(confirmed.operations).toEqual(['stop', 'uninstall']);
+    expect(confirmed.revoked).toEqual([
+      expect.stringMatching(/\/api\/v1\/component-credentials\/scanner-family\/revoke$/),
+    ]);
+    expect(confirmed.stdout.text).toContain('Background indexing removed from this machine.');
+  });
+
+  it('interactive yes and --json --confirm do the same', async () => {
+    const yes = await uninstallFixture('yes');
+    expect(await runCli(['scanner', 'uninstall'], yes.deps)).toBe(0);
+    expect(yes.revoked).toHaveLength(1);
+    const json = await uninstallFixture();
+    expect(await runCli(['scanner', 'uninstall', '--json', '--confirm'], json.deps)).toBe(0);
+    expect(JSON.parse(json.stdout.text)).toEqual({ status: 'uninstalled', consent: 'withdrawn' });
+    expect(json.revoked).toHaveLength(1);
   });
 });

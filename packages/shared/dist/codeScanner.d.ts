@@ -42,6 +42,13 @@ export interface CodeChunk {
         symbolKind?: string;
         /** Immediate structural container. Never written into symbolName. */
         symbolContainer?: string;
+        /**
+         * Ordinal of this piece among the pieces one oversize chunk was split
+         * into (0, 1, 2, ...); absent for a chunk that was not split. Part of the
+         * chunk's identity on the server: a piece with no newline keeps its
+         * predecessor's line span, so the span alone does not tell them apart.
+         */
+        piece?: number;
     };
 }
 export interface ScanOptions {

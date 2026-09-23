@@ -15,6 +15,43 @@ const hosts = {
 export const grantHost = (grant) => hosts[grant.softwareId?.toLowerCase() ?? ''] ??
     hosts[grant.clientName?.toLowerCase() ?? ''] ??
     { 'claude.ai': 'claude-code', 'chatgpt.com': 'codex' }[URL.parse(grant.clientId)?.hostname ?? ''];
+/** "just now", "5 minutes ago", "1 hour ago", "3 days ago", or "never". */
+export function relativeTime(time, now) {
+    if (time === null)
+        return 'never';
+    const minutes = Math.floor((now - time) / 60_000);
+    if (minutes < 1)
+        return 'just now';
+    const [count, unit] = minutes < 60
+        ? [minutes, 'minute']
+        : minutes < 1_440
+            ? [Math.floor(minutes / 60), 'hour']
+            : [Math.floor(minutes / 1_440), 'day'];
+    return `${count} ${unit}${count === 1 ? '' : 's'} ago`;
+}
+/**
+ * One line per host for plain `auth status`: editors first, then the rest,
+ * each by most recent use. Grant ids, dates and scopes are for --json.
+ */
+export function grantSummaryLines(grants, editors, now = Date.now()) {
+    const rows = new Map();
+    for (const grant of grants) {
+        const row = rows.get(grant.host) ?? {
+            name: editors[grant.host] ?? grant.host,
+            editor: grant.host in editors,
+            last: null,
+            count: 0,
+        };
+        const used = grant.lastUsedAt ? Date.parse(grant.lastUsedAt) : null;
+        if (used !== null && (row.last === null || used > row.last))
+            row.last = used;
+        row.count += 1;
+        rows.set(grant.host, row);
+    }
+    const ordered = [...rows.values()].sort((a, b) => Number(b.editor) - Number(a.editor) || (b.last ?? 0) - (a.last ?? 0));
+    const width = Math.max(...ordered.map((row) => row.name.length)) + 2;
+    return ordered.map((row) => `${row.name.padEnd(width)}signed in, last used ${relativeTime(row.last, now)} (${row.count} sign-in${row.count === 1 ? '' : 's'})`);
+}
 export function grantTransport(getBearer, fetcher = fetch) {
     const resource = apiOrigin();
     async function request(path, method = 'GET') {

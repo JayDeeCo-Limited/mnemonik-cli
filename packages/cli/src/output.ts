@@ -137,6 +137,12 @@ export class Output {
     this.stdout.write(`Signed in as ${email}\nRun mnemonik logout to switch account.\n`);
   }
 
+  /** The account line of plain `auth status`: the same deliberate display, or nothing. */
+  signedInAs(email: string | undefined): void {
+    if (email && /^[^\s@]+@[^\s@]+\.[^\s@]+$/u.test(email))
+      this.stdout.write(`Signed in as ${email}.\n`);
+  }
+
   error(value: unknown, human = true): number {
     const message =
       human && typeof value === 'string' && /^[a-z][a-z0-9_]*$/u.test(value)

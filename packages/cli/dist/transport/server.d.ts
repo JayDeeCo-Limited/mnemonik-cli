@@ -28,6 +28,20 @@ type AccountContext = {
     deviceInstallationId: string;
 };
 type ProjectState = 'access' | 'archived' | 'deleted' | 'suspended' | 'not_found';
+/**
+ * What to do next when the account cannot be reached, by the reason's name.
+ * The hook that runs `mnemonik project ensure` relays `mnemonik auth renew`.
+ */
+export declare const accountActions: Record<string, string>;
+/**
+ * A sign-in that produced no bearer, named for what fixes it: there is none,
+ * the server could not be reached or failed while renewing it, or the server
+ * no longer accepts it.
+ */
+export declare function signInFailureState(failure: {
+    status?: string;
+    reason: string;
+}): string;
 export declare class ServerActionRequiredError extends Error {
     readonly result: ActionRequired;
     constructor(result: ActionRequired);

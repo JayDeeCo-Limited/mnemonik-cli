@@ -608,7 +608,7 @@ it('serializes consent updates with enable and preserves the enable state shape'
     consent,
   });
 });
-it('retains consent across refusal and uninstall, then reinstalls from retained state without a runtime pointer', async () => {
+it('retains consent across refusal, withdraws it on uninstall, then reinstalls from retained state without a runtime pointer', async () => {
   await enableScanner(options);
   const path = join(state, 'scanner/state.json');
   const before = JSON.parse(await readFile(path, 'utf8')).consent;
@@ -624,9 +624,20 @@ it('retains consent across refusal and uninstall, then reinstalls from retained 
   ).rejects.toThrow('declined');
   expect(JSON.parse(await readFile(path, 'utf8')).consent).toEqual(before);
   let report = '';
+  const revoked: string[] = [];
   expect(
-    await runCli(['uninstall', '--component', 'scanner', '--json'], {
+    await runCli(['uninstall', '--component', 'scanner', '--json', '--confirm'], {
       installStateDir: state,
+      cliAuth: {
+        signIn: async () => undefined,
+        getCliBearer: async () => 'cli-token',
+        logout: async () => undefined,
+      },
+      getCliBearer: async () => 'cli-token',
+      grantFetch: async (url) => {
+        revoked.push(String(url));
+        return new Response('{}', { status: 200 });
+      },
       scannerService: {
         stateDir: state,
         store,
@@ -659,10 +670,11 @@ it('retains consent across refusal and uninstall, then reinstalls from retained 
       },
     })
   ).toBe(0);
-  expect(JSON.parse(report)).toMatchObject({
-    verbs: ['stop collection', 'remove local software'],
-    retained: ['credentials', 'cloud data', 'consent'],
-  });
+  // Uninstalling is an opt-out: the scanner credential is revoked on the server.
+  expect(JSON.parse(report)).toEqual({ status: 'uninstalled', consent: 'withdrawn' });
+  expect(revoked).toEqual([
+    expect.stringMatching(/\/api\/v1\/component-credentials\/family-one\/revoke$/),
+  ]);
   await expect(readFile(store.pointerPath('scanner'))).rejects.toMatchObject({ code: 'ENOENT' });
   expect(JSON.parse(await readFile(path, 'utf8')).consent).toEqual(before);
   expect(await options.credentials!.readFamily('family-one')).not.toBeNull();

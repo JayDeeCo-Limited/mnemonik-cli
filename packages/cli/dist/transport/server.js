@@ -10,6 +10,33 @@ const action = (state, allowedActions = ['retry', 'cancel']) => ({
 const isAction = (value) => !!value &&
     typeof value === 'object' &&
     value.status === 'ACTION_REQUIRED';
+/**
+ * What to do next when the account cannot be reached, by the reason's name.
+ * The hook that runs `mnemonik project ensure` relays `mnemonik auth renew`.
+ */
+export const accountActions = {
+    not_signed_in: 'mnemonik install',
+    renew: 'mnemonik auth renew',
+    unreachable: 'retry',
+    server_error: 'retry',
+    invalid_request: 'retry',
+};
+/**
+ * A sign-in that produced no bearer, named for what fixes it: there is none,
+ * the server could not be reached or failed while renewing it, or the server
+ * no longer accepts it.
+ */
+export function signInFailureState(failure) {
+    if (failure.reason === 'family_missing')
+        return 'not_signed_in';
+    if (failure.reason === 'rotation_response_lost')
+        return 'unreachable';
+    return failure.status === 'RETRY_LATER' ? 'server_error' : 'renew';
+}
+const signInAction = (failure) => {
+    const state = signInFailureState(failure);
+    return action(state, [accountActions[state] ?? 'retry']);
+};
 export class ServerActionRequiredError extends Error {
     result;
     constructor(result) {
@@ -48,7 +75,7 @@ export function createServerTransport(options) {
     const request = async (method, path, payload, suppliedBearer) => {
         const firstBearer = suppliedBearer ?? (await getCliBearer());
         if (typeof firstBearer !== 'string')
-            return action(firstBearer.reason, ['mnemonik auth renew']);
+            return signInAction(firstBearer);
         const send = async (bearer) => {
             try {
                 const response = await fetchImpl(`${apiBase}${path}`, {
@@ -65,7 +92,7 @@ export function createServerTransport(options) {
                 };
             }
             catch {
-                return { status: 503, body: action('server_unavailable') };
+                return { status: 503, body: action('unreachable') };
             }
         };
         const first = await send(firstBearer);
@@ -73,9 +100,9 @@ export function createServerTransport(options) {
             return first;
         const refreshed = await credentials.rotateCli(rotation);
         if (!('accessToken' in refreshed))
-            return action(refreshed.reason, ['mnemonik auth renew']);
+            return signInAction(refreshed);
         const second = await send(refreshed.accessToken);
-        return second.status === 401 ? action('protected_unauthorized') : second;
+        return second.status === 401 ? signInAction({ reason: 'protected_unauthorized' }) : second;
     };
     const bodyOrAction = (response) => {
         if (isAction(response))
@@ -87,7 +114,7 @@ export function createServerTransport(options) {
         return action(typeof response.body.state === 'string'
             ? response.body.state
             : response.status >= 500
-                ? 'server_unavailable'
+                ? 'server_error'
                 : 'request_refused');
     };
     const setup = {

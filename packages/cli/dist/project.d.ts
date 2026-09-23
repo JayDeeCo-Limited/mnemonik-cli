@@ -126,6 +126,10 @@ export declare function ensureProjectForAgent(options: {
     cwd: string;
     executor?: ProjectExecutor;
     input?: Readable;
+    /** The sign-in and server the other commands use; tests pass fakes. */
+    runtime?: Pick<RealProjectRuntimeOptions, 'stateDir' | 'fetch' | 'getCliBearer'>;
+    /** The hook passes --agent and its request id on stdin; nobody else writes there. */
+    handoff?: boolean;
 }): Promise<number>;
 export declare function rollbackProjectIdentity(options: {
     output: Output;

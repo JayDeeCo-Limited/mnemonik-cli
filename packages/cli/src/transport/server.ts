@@ -55,6 +55,34 @@ const isAction = (value: unknown): value is ActionRequired =>
   typeof value === 'object' &&
   (value as { status?: unknown }).status === 'ACTION_REQUIRED';
 
+/**
+ * What to do next when the account cannot be reached, by the reason's name.
+ * The hook that runs `mnemonik project ensure` relays `mnemonik auth renew`.
+ */
+export const accountActions: Record<string, string> = {
+  not_signed_in: 'mnemonik install',
+  renew: 'mnemonik auth renew',
+  unreachable: 'retry',
+  server_error: 'retry',
+  invalid_request: 'retry',
+};
+
+/**
+ * A sign-in that produced no bearer, named for what fixes it: there is none,
+ * the server could not be reached or failed while renewing it, or the server
+ * no longer accepts it.
+ */
+export function signInFailureState(failure: { status?: string; reason: string }): string {
+  if (failure.reason === 'family_missing') return 'not_signed_in';
+  if (failure.reason === 'rotation_response_lost') return 'unreachable';
+  return failure.status === 'RETRY_LATER' ? 'server_error' : 'renew';
+}
+
+const signInAction = (failure: { status?: string; reason: string }): ActionRequired => {
+  const state = signInFailureState(failure);
+  return action(state, [accountActions[state] ?? 'retry']);
+};
+
 export class ServerActionRequiredError extends Error {
   constructor(readonly result: ActionRequired) {
     super(result.state);
@@ -98,7 +126,7 @@ export function createServerTransport(options: ServerTransportOptions) {
     suppliedBearer?: string
   ): Promise<HttpResult> => {
     const firstBearer = suppliedBearer ?? (await getCliBearer());
-    if (typeof firstBearer !== 'string') return action(firstBearer.reason, ['mnemonik auth renew']);
+    if (typeof firstBearer !== 'string') return signInAction(firstBearer);
     const send = async (bearer: string) => {
       try {
         const response = await fetchImpl(`${apiBase}${path}`, {
@@ -114,15 +142,15 @@ export function createServerTransport(options: ServerTransportOptions) {
           body: (await response.json().catch(() => ({}))) as Json,
         };
       } catch {
-        return { status: 503, body: action('server_unavailable') as unknown as Json };
+        return { status: 503, body: action('unreachable') as unknown as Json };
       }
     };
     const first = await send(firstBearer);
     if (first.status !== 401) return first;
     const refreshed = await credentials.rotateCli(rotation);
-    if (!('accessToken' in refreshed)) return action(refreshed.reason, ['mnemonik auth renew']);
+    if (!('accessToken' in refreshed)) return signInAction(refreshed);
     const second = await send(refreshed.accessToken);
-    return second.status === 401 ? action('protected_unauthorized') : second;
+    return second.status === 401 ? signInAction({ reason: 'protected_unauthorized' }) : second;
   };
 
   const bodyOrAction = (response: HttpResult): Json | ActionRequired => {
@@ -133,7 +161,7 @@ export function createServerTransport(options: ServerTransportOptions) {
       typeof response.body.state === 'string'
         ? response.body.state
         : response.status >= 500
-          ? 'server_unavailable'
+          ? 'server_error'
           : 'request_refused'
     );
   };

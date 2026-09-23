@@ -1032,14 +1032,23 @@ export class CodeScanner {
             }
             const pieces = [];
             let startLine = chunk.startLine;
-            for (let offset = 0; offset < scrubbed.length;) {
+            // Each piece carries its ordinal: pieces of one long line share the same
+            // line span, and the server keys a chunk on (path, span, piece).
+            for (let offset = 0, piece = 0; offset < scrubbed.length; piece++) {
                 let end = Math.min(offset + MAX_PUSH_CHUNK_CONTENT_LENGTH, scrubbed.length);
                 // Keep a UTF-16 surrogate pair together at a transport boundary.
                 if (end < scrubbed.length && /[\uD800-\uDBFF]/.test(scrubbed.charAt(end - 1)))
                     end--;
                 const content = scrubbed.slice(offset, end);
                 const endLine = startLine + (content.match(/\n/g)?.length ?? 0);
-                pieces.push({ ...chunk, content, startLine, endLine, contentHash: this.hash(content) });
+                pieces.push({
+                    ...chunk,
+                    content,
+                    startLine,
+                    endLine,
+                    contentHash: this.hash(content),
+                    metadata: { ...chunk.metadata, piece },
+                });
                 startLine = endLine;
                 offset = end;
             }
@@ -1812,6 +1821,9 @@ export class CodeScanner {
                     currentLines = [];
                     currentLen = 0;
                 }
+                // Every segment of one line has the same line span, so each carries
+                // its ordinal: the server keys a chunk on (path, span, piece).
+                let piece = 0;
                 for (let offset = 0; offset < line.length; offset += maxBytes) {
                     const segment = line.slice(offset, offset + maxBytes);
                     if (segment.length < minBytes)
@@ -1824,7 +1836,7 @@ export class CodeScanner {
                         endLine: i + 1,
                         chunkType: 'raw',
                         contentHash: this.hash(segment),
-                        metadata: { fileName, extension, size },
+                        metadata: { fileName, extension, size, piece: piece++ },
                     });
                 }
                 continue;

@@ -9,7 +9,7 @@ export const CODEX_TRUST_MESSAGE = {
 
 const readinessMessages: Array<[RegExp, ReadinessMessage]> = [
   [
-    /^discovery_failed$/u,
+    /^(?:discovery_failed|unreachable)$/u,
     {
       sentence: 'Mnemonik could not be reached.',
       nextStep: 'Check your internet connection, then try again.',
@@ -17,10 +17,25 @@ const readinessMessages: Array<[RegExp, ReadinessMessage]> = [
   ],
   [
     // The server answered, so the connection is fine and the fault is ours.
-    /^discovery_unavailable$/u,
+    /^(?:discovery_unavailable|server_error)$/u,
     {
       sentence: 'Mnemonik is not available right now.',
       nextStep: 'Try again in a few minutes.',
+    },
+  ],
+  [
+    /^not_signed_in$/u,
+    {
+      sentence: 'This computer is not signed in to Mnemonik.',
+      nextStep: 'Run mnemonik install to sign in.',
+    },
+  ],
+  [
+    // The server no longer accepts this computer's sign-in: expired or revoked.
+    /^renew$/u,
+    {
+      sentence: 'Mnemonik no longer accepts the sign-in on this computer.',
+      nextStep: 'Run mnemonik auth renew, then try again.',
     },
   ],
   [
