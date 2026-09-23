@@ -523,7 +523,7 @@ export async function joinedInstall(flags, deps, output, authorize, management) 
                 prepared = scannerPlan;
                 let limitMessage;
                 if (scannerPlan) {
-                    startProgress('Connecting your repositories');
+                    startProgress('Connecting your project folders');
                     if (!executor) {
                         const runtime = await createRealProjectRuntime({
                             selectedRoots: true,
@@ -648,7 +648,7 @@ export async function joinedInstall(flags, deps, output, authorize, management) 
                         break;
                     }
                     if (scannerPlan)
-                        startProgress('Connecting your repositories');
+                        startProgress('Connecting your project folders');
                 }
                 journal.data.phase = 'applying';
                 if (automatic)
@@ -692,7 +692,7 @@ export async function joinedInstall(flags, deps, output, authorize, management) 
                         await rm(indexingSkippedPath, { force: true });
                         if (!json) {
                             if (scannerPlan.roots.length) {
-                                completeProgress(`Connected ${scannerPlan.roots.length} ${scannerPlan.roots.length === 1 ? 'repository' : 'repositories'}.`);
+                                completeProgress(`Connected ${scannerPlan.roots.length} ${scannerPlan.roots.length === 1 ? 'project folder' : 'project folders'}.`);
                                 output.line(`  ${ADD_ANOTHER_FOLDER}`);
                             }
                             if (limitMessage)

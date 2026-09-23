@@ -84,8 +84,12 @@ export async function bindHookContext(input, familyId, hmac, post, options = {})
                 hash: selection.fingerprint.hash,
             }
             : null,
-        // Automatic hooks never select a non-git root for the user.
-        rootKind: identity.repository.kind === 'git' ? 'git' : 'ineligible',
+        // A plain folder with a valid .mnemonik.json is a project; Git plays no part.
+        rootKind: identity.repository.kind === 'git'
+            ? 'git'
+            : identity.kind === 'ok'
+                ? 'selected_non_git'
+                : 'ineligible',
         identityState: identity.kind === 'ok' ? 'valid' : identity.kind === 'absent' ? 'absent' : 'invalid',
         ...(identity.kind === 'ok' ? { projectId: identity.identity.projectId } : {}),
     };

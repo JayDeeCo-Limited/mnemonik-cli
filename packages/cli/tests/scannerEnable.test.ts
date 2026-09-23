@@ -316,7 +316,7 @@ it('uses the repository approval instruction in the joined installer', async () 
 
   await enableScanner(options);
 
-  expect(text).toContain('Please choose your repositories by opening the link below.');
+  expect(text).toContain('Open the link below to choose your project folders.');
   expect(text).not.toContain('Waiting for approval');
 });
 it('atomically adopts the current-consent root update', async () => {

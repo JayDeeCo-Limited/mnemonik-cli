@@ -4,16 +4,16 @@
   > 2. This folder and everything under it     <folder>
     3. Another path
 
-  3 repositories under <folder> will be indexed
+  3 project folders under <folder> will be indexed
     p/acme-api     Existing project
     p/acme-web     Set up from its Git remote
-    ...            1 more repository
+    ...            1 more project folder
 
-  Repositories up to 3 folders deep are included.
+  Project folders up to 3 levels deep are included.
   Review the list and choose the ones you want.
 
-  Repositories (all selected)
+  Project folders (all selected)
     1. [x] p/acme-api - Existing project
     2. [x] p/acme-web - Set up from its Git remote
     3. [x] p/third - Not set up yet
-  Enter repository numbers to exclude, separated by commas.
+  Enter the numbers of the folders to leave out, separated by commas.

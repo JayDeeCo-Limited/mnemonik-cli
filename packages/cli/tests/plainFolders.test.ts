@@ -215,7 +215,7 @@ it('connects twelve Git folders and five plain folders alike, and counts all sev
   const result = await install(f, roots);
 
   expect(result.connected).toEqual(roots);
-  expect(result.text).toContain('Connected 17 repositories.');
+  expect(result.text).toContain('Connected 17 project folders.');
   expect(result.text).not.toContain('was not connected');
   expect(await identityOf(roots[16]!)).toBe('11111110-1111-4111-8111-111111111110');
 }, 30_000);

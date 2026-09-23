@@ -154,7 +154,7 @@ export function projectLimitMessage(
 export const connectedProjectsMessage = (roots: string[]): string =>
   roots.length === 1
     ? `  ✓ Connected ${basename(roots[0] ?? '')}.`
-    : `  ✓ Connected ${roots.length} repositories.`;
+    : `  ✓ Connected ${roots.length} project folders.`;
 
 export const projectExecutor = (dependencies: ExecutorDependencies): ProjectExecutor => {
   const executor = createProjectSetupExecutor(dependencies);
@@ -481,7 +481,7 @@ async function finish(
   if (result.status === 'ignored') {
     if (input.json)
       deps.output.json({ ...record, status: result.status, root, owner: ownerLabel(owner) });
-    else deps.output.line(`Repository ignored on this device: ${root}`);
+    else deps.output.line(`Folder ignored on this machine: ${root}`);
     return 0;
   }
   if (result.status !== 'done') {
@@ -716,7 +716,9 @@ async function runProjectCommandInner(
         !input.confirmMismatch &&
         (input.nonInteractive ||
           input.json ||
-          !(await prompts.confirm('Repository fingerprint differs. Link anyway?')))
+          !(await prompts.confirm(
+            "This folder's Git remote differs from the project's. Link anyway?"
+          )))
       ) {
         return finishRequired(
           deps,
@@ -765,12 +767,12 @@ async function runProjectCommandInner(
     if (result.status === 'ignored') {
       deps.output.line(`Root: ${decision.root}`);
       deps.output.line(`Identity: ${join(decision.root, '.mnemonik.json')}`);
-      if (await prompts.confirm('Clear this repository ignore and continue?'))
+      if (await prompts.confirm('Stop ignoring this folder and continue?'))
         result = await executor.ensureProject({ ...base, clearIgnore: true });
     } else if (
       'allowedActions' in result &&
       result.allowedActions.includes('ignore') &&
-      (await prompts.confirm('Ignore this repository on this device?'))
+      (await prompts.confirm('Ignore this folder on this machine?'))
     )
       result = await executor.ensureProject({ ...base, ignore: true });
   }

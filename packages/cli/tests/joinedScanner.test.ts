@@ -95,7 +95,7 @@ it('does not show repository progress between the folder question and its answer
     text.indexOf('Where do your projects live?'),
     text.indexOf('FOLDER ANSWER RECEIVED')
   );
-  expect(between).not.toContain('Connecting your repositories');
+  expect(between).not.toContain('Connecting your project folders');
 });
 
 it.each([
@@ -505,7 +505,7 @@ it('connects all three ticked repositories when two owned identities already exi
   );
 
   expect(code).toBe(0);
-  expect(text).toContain('  ✓ Connected 3 repositories.');
+  expect(text).toContain('  ✓ Connected 3 project folders.');
   expect(text).not.toContain('mnemonik project init');
   expect(executor.apply).toHaveBeenCalledTimes(3);
 });
@@ -731,7 +731,7 @@ it.each([
   expect(executor.stage).toHaveBeenCalledWith(expect.objectContaining({ cwd: selectedRoot }));
   expect(executor.apply).toHaveBeenCalledTimes(1);
   expect(scannerApply).toHaveBeenCalledWith(expect.anything(), [selectedRoot]);
-  expect(text).toContain('  ✓ Connected 1 repository.');
+  expect(text).toContain('  ✓ Connected 1 project folder.');
   expect(text).not.toContain('mnemonik project init');
   expect(text).toContain(
     `${leftoverPath.split('/').at(-1)} was not connected. It belongs to the same project as ${expected.split('/').at(-1)}, which is already connected.`
@@ -911,7 +911,7 @@ it('keeps earlier projects and reports the skipped count when the plan limit is 
   expect(executor.apply).toHaveBeenCalledOnce();
   expect(await readFile(join(app, '.mnemonik.json'), 'utf8')).toContain('app');
   await expect(readFile(join(shop, '.mnemonik.json'))).rejects.toMatchObject({ code: 'ENOENT' });
-  expect(text).toContain('  ✓ Connected 1 repository.');
+  expect(text).toContain('  ✓ Connected 1 project folder.');
   expect(text).toContain('shop and 2 more were not connected. The Free plan includes one project.');
   expect(text).toContain(
     'To connect more projects, upgrade your plan via the Mnemonik web console.'

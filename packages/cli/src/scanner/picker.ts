@@ -63,7 +63,7 @@ export interface ScannerConsentDraft {
 
 export const SCANNER_SELECTION_LIMIT = 32;
 export const SCANNER_SELECTION_LIMIT_MESSAGE =
-  'You can leave out up to 32 repositories here. Choose a narrower folder, or watch only this project.';
+  'You can leave out up to 32 project folders here. Choose a narrower folder, or index only this project.';
 export const scannerBoundaryPrompt = (shown: string): string =>
   shown ? `Where do your projects live? [${shown}]` : 'Where do your projects live?';
 
@@ -163,11 +163,11 @@ export async function runScannerBoundaryPicker(
         kind: repository.kind ?? 'git',
       }));
       if (!candidates.length) {
-        options.output.line('No repositories were found there. Choose another folder.');
+        options.output.line('No project folders were found there. Choose another folder.');
         continue;
       }
       if (found.omitted) {
-        const noun = found.omitted === 1 ? 'repository was' : 'repositories were';
+        const noun = found.omitted === 1 ? 'project folder was' : 'project folders were';
         options.output.line(
           `${found.omitted} ${noun} left out and can be added later with mnemonik add <folder>.`
         );
@@ -208,7 +208,7 @@ function writeSummary(
   rows: PickerRepository[],
   truncated: boolean
 ): void {
-  output.line(`  ${rows.length} repositories under ${displayRoot} will be indexed`);
+  output.line(`  ${rows.length} project folders under ${displayRoot} will be indexed`);
   for (const row of rows.slice(0, 2)) {
     output.line(
       `    ${repositoryName(canonicalRoot, row.path).padEnd(15)}${repositoryStateLabel(row.state)}`
@@ -216,20 +216,22 @@ function writeSummary(
   }
   if (rows.length > 2) {
     const more = rows.length - 2;
-    output.line(`    ...            ${more} more ${more === 1 ? 'repository' : 'repositories'}`);
+    output.line(
+      `    ...            ${more} more ${more === 1 ? 'project folder' : 'project folders'}`
+    );
   }
   output.line();
-  output.line('  Repositories up to 3 folders deep are included.');
+  output.line('  Project folders up to 3 levels deep are included.');
   if (truncated) output.line('  32 shown; choose a narrower folder to see the rest');
   output.line('  Review the list and choose the ones you want.');
   output.line();
-  output.line('  Repositories (all selected)');
+  output.line('  Project folders (all selected)');
   rows.forEach((row, index) =>
     output.line(
       `    ${index + 1}. [x] ${repositoryName(canonicalRoot, row.path)} - ${repositoryStateLabel(row.state)}`
     )
   );
-  output.line('  Enter repository numbers to exclude, separated by commas.');
+  output.line('  Enter the numbers of the folders to leave out, separated by commas.');
 }
 
 const pickRows = (repositories: DiscoveredRepository[]): PickerRepository[] =>

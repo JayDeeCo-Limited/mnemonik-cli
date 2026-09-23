@@ -8,7 +8,7 @@ import { promisify } from 'node:util';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Owner, SetupTransport } from '@mnemonik/local-setup';
 import { resolveProjectIdentity, type ProjectIdentityResolution } from '@mnemonik/shared';
-import { projectExecutor } from '../src/project.js';
+import { connectedProjectsMessage, projectExecutor } from '../src/project.js';
 import { evaluateRoot } from '../src/project/eligibility.js';
 import { runCli, type CliDependencies } from '../src/router.js';
 
@@ -332,7 +332,8 @@ describe('project init', () => {
     const ignoredCode = await runCli(['project', 'init'], deps);
     expect(transport.issueSetupRequest).toHaveBeenCalledTimes(2);
     expect(ignoredCode, f.stdout.text).toBe(0);
-    expect(f.stdout.text).toContain('Repository ignored on this device');
+    expect(f.stdout.text).toContain('Ignore this folder on this machine?');
+    expect(f.stdout.text).toContain('Folder ignored on this machine');
 
     f.stdout.text = '';
     expect(await runCli(['project', 'status', '--json'], deps)).toBe(0);
@@ -356,7 +357,7 @@ describe('project init', () => {
     expect(await runCli(['project', 'init'], revisit)).toBe(0);
     expect(f.stdout.text).toContain(`Root: ${f.root}`);
     expect(f.stdout.text).toContain(`Identity: ${join(f.root, '.mnemonik.json')}`);
-    expect(f.stdout.text).toContain('Clear this repository ignore and continue?');
+    expect(f.stdout.text).toContain('Stop ignoring this folder and continue?');
 
     await writeFile(
       join(f.root, '.mnemonik.json'),
@@ -638,4 +639,10 @@ describe('project status and command records', () => {
     expect(f.stdout.text).toContain('sha256:');
     expect(f.stdout.text).not.toContain('secret-bearer');
   });
+});
+
+it('counts several connected folders as project folders', () => {
+  expect(connectedProjectsMessage(['/work/a', '/work/b', '/work/c'])).toBe(
+    '  ✓ Connected 3 project folders.'
+  );
 });

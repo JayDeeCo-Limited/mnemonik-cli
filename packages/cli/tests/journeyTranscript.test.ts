@@ -367,15 +367,15 @@ https://auth.mnemonik.ai/oauth/device?user_code=XCDM-KZGJ
 Step 3 of 5: Configure editors
   ✓ 3 editors configured
 
-Step 4 of 5: Connect repositories
+Step 4 of 5: Connect project folders
   Where do your projects live? [~/projects]
   ~/projects
-  Please choose your repositories by opening the link below.
+  Open the link below to choose your project folders.
 
 https://auth.mnemonik.ai/oauth/device?user_code=WKSG-ZKHW
 
   Approve only a request on a device you control.
-  ✓ Connected 15 repositories.
+  ✓ Connected 15 project folders.
   To connect a folder somewhere else, run mnemonik add <folder>.
 
 Step 5 of 5: Finish
@@ -394,7 +394,7 @@ Step 5 of 5: Finish
 it('leaves the finish menu still while waiting for the install decision', async () => {
   await runJourney(false, false, async (terminal) => {
     const waiting = terminal.text();
-    expect(waiting).not.toContain('Connecting your repositories');
+    expect(waiting).not.toContain('Connecting your project folders');
     expect(waiting).toContain('  > Install and upload\n    Back\n    Cancel');
     await new Promise((resolve) => setTimeout(resolve, 240));
     expect(terminal.text()).toBe(waiting);

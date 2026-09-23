@@ -99,7 +99,7 @@ export function renderJourney(screen: string, output: Output, v: JourneyValues =
       '',
     ],
     account: ['Step 2 of 5: Sign in', `  ${DEVICE_APPROVAL_INSTRUCTION}`],
-    scanner: ['Step 4 of 5: Connect repositories'],
+    scanner: ['Step 4 of 5: Connect project folders'],
     apply: [
       'Step 5 of 5: Finish',
       '  Use the Up/Down arrow keys and Enter.',

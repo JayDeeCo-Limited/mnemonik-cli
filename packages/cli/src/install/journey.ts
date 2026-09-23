@@ -593,7 +593,7 @@ export async function joinedInstall(
         prepared = scannerPlan;
         let limitMessage: string | undefined;
         if (scannerPlan) {
-          startProgress('Connecting your repositories');
+          startProgress('Connecting your project folders');
           if (!executor) {
             const runtime = await createRealProjectRuntime({
               selectedRoots: true,
@@ -735,7 +735,7 @@ export async function joinedInstall(
             if (choice !== 'Install and upload') throw new Error('install_cancelled');
             break;
           }
-          if (scannerPlan) startProgress('Connecting your repositories');
+          if (scannerPlan) startProgress('Connecting your project folders');
         }
         journal.data.phase = 'applying';
         if (automatic) startProgress('Finishing installation');
@@ -778,7 +778,7 @@ export async function joinedInstall(
             if (!json) {
               if (scannerPlan.roots.length) {
                 completeProgress(
-                  `Connected ${scannerPlan.roots.length} ${scannerPlan.roots.length === 1 ? 'repository' : 'repositories'}.`
+                  `Connected ${scannerPlan.roots.length} ${scannerPlan.roots.length === 1 ? 'project folder' : 'project folders'}.`
                 );
                 output.line(`  ${ADD_ANOTHER_FOLDER}`);
               }

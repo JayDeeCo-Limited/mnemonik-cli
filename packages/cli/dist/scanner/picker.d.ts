@@ -25,7 +25,7 @@ export interface ScannerConsentDraft {
     boundary?: string;
 }
 export declare const SCANNER_SELECTION_LIMIT = 32;
-export declare const SCANNER_SELECTION_LIMIT_MESSAGE = "You can leave out up to 32 repositories here. Choose a narrower folder, or watch only this project.";
+export declare const SCANNER_SELECTION_LIMIT_MESSAGE = "You can leave out up to 32 project folders here. Choose a narrower folder, or index only this project.";
 export declare const scannerBoundaryPrompt: (shown: string) => string;
 interface PickerOptions {
     input: Readable;

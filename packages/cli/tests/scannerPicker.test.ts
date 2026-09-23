@@ -190,7 +190,7 @@ describe('repository discovery', () => {
 
     expect(picked).toMatchObject({ boundary });
     expect(stream.text).toContain('That folder does not exist. Choose another folder.\n');
-    expect(stream.text).toContain('No repositories were found there. Choose another folder.\n');
+    expect(stream.text).toContain('No project folders were found there. Choose another folder.\n');
     expect(stream.text.match(/Where do your projects live\?/gu)).toHaveLength(3);
   });
 
@@ -387,7 +387,7 @@ describe('repository discovery', () => {
     });
 
     expect(stream.text).toContain(
-      '1 repository was left out and can be added later with mnemonik add <folder>.\n'
+      '1 project folder was left out and can be added later with mnemonik add <folder>.\n'
     );
   });
 
@@ -709,6 +709,9 @@ describe('scanner picker and consent', () => {
     });
     expect(result).toEqual({ status: 'cancelled', reason: 'selection_limit_back' });
     expect(stream.text).toContain(SCANNER_SELECTION_LIMIT_MESSAGE);
+    expect(stream.text).toContain(
+      '  You can leave out up to 32 project folders here. Choose a narrower folder, or index only this project.\n'
+    );
     expect(stream.text).toContain('32 shown; choose a narrower folder to see the rest');
     expect(stream.text).toContain('1. Choose a narrower folder');
     expect(stream.text).toContain('2. Watch only this project');
@@ -761,7 +764,7 @@ describe('scanner picker and consent', () => {
       canonicalizePath: async (path) => (path === typed ? canonical : fs.realpath(path)),
     });
     if ('status' in result) throw new Error('expected selected roots');
-    expect(stream.text).toContain(`1 repositories under ${typed} will be indexed`);
+    expect(stream.text).toContain(`1 project folders under ${typed} will be indexed`);
     expect(result.roots).toEqual([canonical]);
   });
 

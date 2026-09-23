@@ -65,7 +65,7 @@ it('renders the W3 owner previews from the production screen code', async () => 
   normal.output.line(REPOSITORY_APPROVAL_INSTRUCTION);
   normal.output.line('https://auth.mnemonik.ai/oauth/device?user_code=WKSG-ZKHW');
   normal.output.line(DEVICE_WARNING);
-  normal.output.line(completedLine('Connected 15 repositories.'));
+  normal.output.line(completedLine('Connected 15 project folders.'));
   normal.output.line(ADD_ANOTHER_FOLDER);
   normal.output.line(completedStep(5, 'Finish'));
   normal.output.line(completedLine('Installation finished'));
@@ -312,7 +312,7 @@ it('renders the L-60 to L-64 wording from production code', async () => {
   const gettingReady = stepProgress(indexingProgress.output, false, 'Getting ready');
   gettingReady.complete(completedLine('Ready'));
   const anotherFolder = capture();
-  anotherFolder.output.line(completedLine('Connected 3 repositories.'));
+  anotherFolder.output.line(completedLine('Connected 3 project folders.'));
   anotherFolder.output.line(`  ${ADD_ANOTHER_FOLDER}`);
 
   const preview = [

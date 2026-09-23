@@ -105,7 +105,7 @@ export function projectLimitMessage(result, roots) {
 }
 export const connectedProjectsMessage = (roots) => roots.length === 1
     ? `  ✓ Connected ${basename(roots[0] ?? '')}.`
-    : `  ✓ Connected ${roots.length} repositories.`;
+    : `  ✓ Connected ${roots.length} project folders.`;
 export const projectExecutor = (dependencies) => {
     const executor = createProjectSetupExecutor(dependencies);
     return {
@@ -333,7 +333,7 @@ async function finish(deps, input, result, root, reason, owner, beforeHash) {
         if (input.json)
             deps.output.json({ ...record, status: result.status, root, owner: ownerLabel(owner) });
         else
-            deps.output.line(`Repository ignored on this device: ${root}`);
+            deps.output.line(`Folder ignored on this machine: ${root}`);
         return 0;
     }
     if (result.status !== 'done') {
@@ -500,7 +500,7 @@ async function runProjectCommandInner(input, deps, prompts) {
             if (!input.confirmMismatch &&
                 (input.nonInteractive ||
                     input.json ||
-                    !(await prompts.confirm('Repository fingerprint differs. Link anyway?')))) {
+                    !(await prompts.confirm("This folder's Git remote differs from the project's. Link anyway?")))) {
                 return finishRequired(deps, input, decision.root, decision.reason, owner, 'fingerprint_mismatch', ['confirm_mismatch', 'cancel']);
             }
         }
@@ -530,12 +530,12 @@ async function runProjectCommandInner(input, deps, prompts) {
         if (result.status === 'ignored') {
             deps.output.line(`Root: ${decision.root}`);
             deps.output.line(`Identity: ${join(decision.root, '.mnemonik.json')}`);
-            if (await prompts.confirm('Clear this repository ignore and continue?'))
+            if (await prompts.confirm('Stop ignoring this folder and continue?'))
                 result = await executor.ensureProject({ ...base, clearIgnore: true });
         }
         else if ('allowedActions' in result &&
             result.allowedActions.includes('ignore') &&
-            (await prompts.confirm('Ignore this repository on this device?')))
+            (await prompts.confirm('Ignore this folder on this machine?')))
             result = await executor.ensureProject({ ...base, ignore: true });
     }
     return finish(deps, input, result, decision.root, decision.reason, owner, beforeHash);
