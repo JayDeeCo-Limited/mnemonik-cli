@@ -1,6 +1,6 @@
 {
   "name": "@mnemonik/local-setup",
-  "version": "0.1.56",
+  "version": "0.1.57",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/JayDeeCo-Limited/mnemonik.git",
@@ -33,7 +33,7 @@
   },
   "license": "SEE LICENSE IN LICENSE",
   "dependencies": {
-    "@mnemonik/shared": "7.108.3",
+    "@mnemonik/shared": "7.108.4",
     "proper-lockfile": "4.1.2"
   },
   "devDependencies": {
