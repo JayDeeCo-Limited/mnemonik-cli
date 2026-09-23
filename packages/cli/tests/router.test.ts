@@ -1,5 +1,5 @@
 import { Readable } from 'node:stream';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -326,6 +326,8 @@ describe('command router', () => {
     const diagnosticsRequests = vi.fn();
     vi.stubGlobal('fetch', diagnosticsRequests);
     const doctor = fixture();
+    // Doctor's one request is its readiness report to the console (L-160).
+    doctor.deps.grantFetch = vi.fn(async () => Response.json({ status: 'recorded' }));
     expect(await runCli(['doctor', '--json'], doctor.deps)).toBe(3);
     expect(JSON.parse(doctor.stdout.text)).toMatchObject({
       schemaVersion: 1,
@@ -429,6 +431,51 @@ describe('command router', () => {
     });
     signedOut.deps.grantFetch = vi.fn();
     await runCli(['status', '--json'], signedOut.deps);
+    expect(signedOut.deps.grantFetch).not.toHaveBeenCalled();
+  });
+
+  it('doctor reports the running CLI version to the console and keeps its --json unchanged (L-160)', async () => {
+    const signedIn = fixture();
+    signedIn.deps.statusGeneratedAt = '2026-09-23T05:35:00.000Z';
+    signedIn.deps.configuredHosts = [];
+    signedIn.deps.projectHookConditions = [];
+    signedIn.deps.scannerStatus = async () => ({ roots: [], exclusions: [], repositories: [] });
+    let posted: { versions?: { cli?: string } } | undefined;
+    signedIn.deps.grantFetch = vi.fn(async (input, init) => {
+      expect(new URL(String(input)).pathname).toBe('/api/v1/installations/current/readiness');
+      posted = JSON.parse(String(init?.body)).readiness;
+      return Response.json({ status: 'recorded' });
+    });
+    const code = await runCli(['doctor', '--json'], signedIn.deps);
+    expect(code).not.toBe(2);
+    expect(signedIn.deps.grantFetch).toHaveBeenCalledOnce();
+    expect(isReadinessDocument(posted)).toBe(true);
+    const running = JSON.parse(
+      readFileSync(new URL('../package.json', import.meta.url), 'utf8')
+    ) as { version: string };
+    expect(posted?.versions?.cli).toBe(running.version);
+    const printed = JSON.parse(signedIn.stdout.text) as Record<string, unknown>;
+    expect(printed).not.toHaveProperty('versions');
+    expect(printed).toHaveProperty('installation');
+
+    // A refused upload changes nothing doctor printed or returned.
+    const refused = fixture();
+    refused.deps.statusGeneratedAt = '2026-09-23T05:35:00.000Z';
+    refused.deps.configuredHosts = [];
+    refused.deps.projectHookConditions = [];
+    refused.deps.scannerStatus = async () => ({ roots: [], exclusions: [], repositories: [] });
+    refused.deps.grantFetch = vi.fn(async () => new Response('{}', { status: 500 }));
+    expect(await runCli(['doctor', '--json'], refused.deps)).toBe(code);
+    expect(refused.stdout.text).toBe(signedIn.stdout.text);
+    expect(refused.stderr.text).toBe('');
+
+    const signedOut = fixture();
+    signedOut.deps.cliAuth!.getCliBearer = async () => ({
+      status: 'missing',
+      reason: 'not_signed_in',
+    });
+    signedOut.deps.grantFetch = vi.fn();
+    await runCli(['doctor', '--json'], signedOut.deps);
     expect(signedOut.deps.grantFetch).not.toHaveBeenCalled();
   });
 

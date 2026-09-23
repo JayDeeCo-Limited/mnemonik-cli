@@ -862,6 +862,8 @@ async function doctorCommand(parsed, deps, output) {
         renderStatusSummaries(document, output, { diagnostics: true });
         await renderRefusals(refusalStateDir(deps), output, true);
     }
+    // The console's device card shows what the last report said, so doctor sends one as status does.
+    await reportCurrentInstallation(deps, output);
     return document.installation.state === 'READY'
         ? 0
         : document.installation.state === 'FAILED'
