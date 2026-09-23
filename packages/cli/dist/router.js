@@ -35,7 +35,7 @@ import { renderScannerStatus } from './scanner/picker.js';
 import { abandonInterrupted, interrupted } from './install/journal.js';
 import { installFailureReason, runInstall, } from './install/transaction.js';
 import { chooseHostProfile, simulatedInstall, terminalInstallUI } from './install/ui.js';
-import { CODEX_TRUST_MESSAGE, collectStatusDocument, localEditorStatus, localInstallationConditions, mcpTurnOnAction, renderStatusSummaries, statusExitCode, } from './status.js';
+import { CODEX_TRUST_MESSAGE, collectStatusDocument, localEditorStatus, localInstallationConditions, mcpTurnOnAction, renderStatusSummaries, renderRefusals, statusExitCode, } from './status.js';
 import { editorAuthorizationRows } from './screens/journey.js';
 import { DiagnosticsError, previewDiagnostics, sendDiagnostics, } from './diagnostics.js';
 export const connectFolderPrompt = (name) => `Connect ${name} to Mnemonik? [Y/n]`;
@@ -692,6 +692,12 @@ async function installCommand(parsed, deps, output) {
         terminal?.close();
     }
 }
+/** The state directory status and doctor read the scanner's receipt from. */
+function refusalStateDir(deps) {
+    return (deps.projectStateDir ??
+        deps.installStateDir ??
+        stateDirectory(process.platform, process.env, deps.home));
+}
 async function doctorCommand(parsed, deps, output) {
     const invalid = allowed(parsed, []);
     if (invalid)
@@ -728,6 +734,7 @@ async function doctorCommand(parsed, deps, output) {
     else {
         renderPreflight(result, output);
         renderStatusSummaries(document, output, { diagnostics: true });
+        await renderRefusals(refusalStateDir(deps), output, true);
     }
     return document.installation.state === 'READY'
         ? 0
@@ -1289,6 +1296,7 @@ export async function runCli(args, deps = {}) {
         const store = new RuntimeStore(deps.installStateDir ?? stateDirectory(process.platform, process.env, deps.home));
         if (!parsed.flags.has('json')) {
             renderStatusSummaries(document, output);
+            await renderRefusals(refusalStateDir(deps), output);
         }
         const hint = await cliUpdateHint(store, version);
         if (parsed.flags.has('json'))
@@ -1538,6 +1546,7 @@ export async function runCli(args, deps = {}) {
             else {
                 renderScannerStatus(status, output);
                 output.line(describeReadiness(document.installation));
+                await renderRefusals(refusalStateDir(deps), output);
             }
             return document.projects?.some((project) => project.summary.state === 'FAILED')
                 ? 1
@@ -1621,6 +1630,8 @@ export async function runCli(args, deps = {}) {
                         ? `Scanner status: ${result.status} (service: ${supervisor.kind}, ${supervisor.running ? 'running' : 'stopped'})`
                         : `Scanner status: ${result.status} (service not registered; run mnemonik scanner start)`
                     : `Scanner ${subcommand}: ${result.status}`);
+                if (subcommand === 'status')
+                    await renderRefusals(options.stateDir, output);
             }
             return 0;
         }

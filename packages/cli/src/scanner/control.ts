@@ -28,6 +28,8 @@ export interface ScannerReceipt {
     };
     roots: string[];
     exclusions: string[];
+    /** One entry per batch the server refused (scanner daemon `getRefusedBatches`). */
+    refusedBatches?: Array<{ project: string; files: number; issue: string }>;
   };
 }
 export async function scannerReceipt(stateDir: string): Promise<ScannerReceipt | null> {

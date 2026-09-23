@@ -140,7 +140,8 @@ export const MAX_AST_PARSE_BYTES = 2 * 1024 * 1024;
  */
 const MAX_RAW_SPAN_CHARS = 8000;
 
-const MAX_SIGNATURE_CHARS = 500;
+/** The wire bound on `metadata.signature` (`scanChunkSchema`); both chunkers cap at it. */
+export const MAX_SIGNATURE_CHARS = 500;
 
 /**
  * `definition.<kind>` -> the wire enum. `chunkType` is constrained to

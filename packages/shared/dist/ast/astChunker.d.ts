@@ -127,6 +127,8 @@ export type AstChunkResult = {
  * heuristic chunker, which is line-bounded and cheap.
  */
 export declare const MAX_AST_PARSE_BYTES: number;
+/** The wire bound on `metadata.signature` (`scanChunkSchema`); both chunkers cap at it. */
+export declare const MAX_SIGNATURE_CHARS = 500;
 /**
  * Chunk `content` by syntax for a language with a vendored grammar.
  *

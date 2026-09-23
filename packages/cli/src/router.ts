@@ -77,6 +77,7 @@ import {
   localInstallationConditions,
   mcpTurnOnAction,
   renderStatusSummaries,
+  renderRefusals,
   statusExitCode,
   type StatusDocumentInput,
 } from './status.js';
@@ -899,6 +900,15 @@ async function installCommand(
   }
 }
 
+/** The state directory status and doctor read the scanner's receipt from. */
+function refusalStateDir(deps: CliDependencies): string {
+  return (
+    deps.projectStateDir ??
+    deps.installStateDir ??
+    stateDirectory(process.platform, process.env, deps.home)
+  );
+}
+
 async function doctorCommand(
   parsed: Parsed,
   deps: CliDependencies,
@@ -938,6 +948,7 @@ async function doctorCommand(
   else {
     renderPreflight(result, output);
     renderStatusSummaries(document, output, { diagnostics: true });
+    await renderRefusals(refusalStateDir(deps), output, true);
   }
   return document.installation.state === 'READY'
     ? 0
@@ -1566,6 +1577,7 @@ export async function runCli(args: string[], deps: CliDependencies = {}): Promis
     );
     if (!parsed.flags.has('json')) {
       renderStatusSummaries(document, output);
+      await renderRefusals(refusalStateDir(deps), output);
     }
     const hint = await cliUpdateHint(store, version);
     if (parsed.flags.has('json'))
@@ -1826,6 +1838,7 @@ export async function runCli(args: string[], deps: CliDependencies = {}): Promis
       else {
         renderScannerStatus(status, output);
         output.line(describeReadiness(document.installation));
+        await renderRefusals(refusalStateDir(deps), output);
       }
       return document.projects?.some((project) => project.summary.state === 'FAILED')
         ? 1
@@ -1909,6 +1922,7 @@ export async function runCli(args: string[], deps: CliDependencies = {}): Promis
               : `Scanner status: ${result.status} (service not registered; run mnemonik scanner start)`
             : `Scanner ${subcommand}: ${result.status}`
         );
+        if (subcommand === 'status') await renderRefusals(options.stateDir, output);
       }
       return 0;
     } catch (error) {

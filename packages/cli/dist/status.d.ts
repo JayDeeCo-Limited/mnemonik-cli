@@ -76,6 +76,17 @@ export declare function renderStatusSummaries(document: ReadinessDocument & {
 }, output: Pick<Output, 'line'>, options?: {
     diagnostics?: boolean;
 }): void;
+/**
+ * One line per project whose files the server refused to index, summed over its
+ * refused batches. `mnemonik doctor` follows each with its distinct issue paths.
+ */
+export declare function refusalLines(batches: ReadonlyArray<{
+    project: string;
+    files: number;
+    issue: string;
+}> | undefined, withPaths?: boolean): string[];
+/** Print the refusal lines from the scanner's last recorded snapshot, if any. */
+export declare function renderRefusals(stateDir: string, output: Pick<Output, 'line'>, withPaths?: boolean): Promise<void>;
 export declare function statusExitCode(document: ReadinessDocument): number;
 export declare function readProjectStatus(input: ReadProjectStatusInput): Promise<ProjectStatusResult>;
 export declare function collectStatusDocument(input: CollectStatusInput): Promise<ReadinessDocument & {

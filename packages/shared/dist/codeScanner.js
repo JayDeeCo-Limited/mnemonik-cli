@@ -10,7 +10,7 @@ import { debug as logDebug, info as logInfo, warn as logWarn } from './logger.js
 import { withTimeout } from './asyncUtils.js';
 import { scrubSecrets } from './secretPatterns.js';
 import { isProtectedLocalPath, protectedLocalPaths } from './protectedPaths.js';
-import { MAX_AST_PARSE_BYTES, chunkWithAst } from './ast/astChunker.js';
+import { MAX_AST_PARSE_BYTES, MAX_SIGNATURE_CHARS, chunkWithAst, } from './ast/astChunker.js';
 import { astArtifactReport, resolveAstLanguage } from './ast/grammars.js';
 /**
  * File operation timeout (5 seconds) to prevent hanging on slow/unresponsive filesystems
@@ -1677,7 +1677,10 @@ export class CodeScanner {
                     matchContent.length <= this.options.maxChunkSize) {
                     // Extract function/class signature and symbol name
                     const firstLine = (matchContent.split('\n')[0] ?? '').trim();
-                    const signature = firstLine.replace(/\{$/, '').trim() || undefined;
+                    // Capped like the AST chunker's: a minified one-line bundle makes the
+                    // whole chunk its "first line", and an uncapped signature fails the
+                    // server's 500-char bound for the entire push batch.
+                    const signature = firstLine.replace(/\{$/, '').trim().slice(0, MAX_SIGNATURE_CHARS) || undefined;
                     const nameMatch = firstLine.match(/(?:function|class|const|interface|type|enum|export\s+(?:default\s+)?(?:function|class|const|interface|type|enum))\s+(\w+)/);
                     const symbolName = nameMatch?.[1] || undefined;
                     chunks.push({

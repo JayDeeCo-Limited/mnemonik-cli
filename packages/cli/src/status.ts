@@ -487,6 +487,37 @@ export function renderStatusSummaries(
   }
 }
 
+/**
+ * One line per project whose files the server refused to index, summed over its
+ * refused batches. `mnemonik doctor` follows each with its distinct issue paths.
+ */
+export function refusalLines(
+  batches: ReadonlyArray<{ project: string; files: number; issue: string }> | undefined,
+  withPaths = false
+): string[] {
+  const projects = new Map<string, { files: number; issues: Set<string> }>();
+  for (const { project, files, issue } of batches ?? []) {
+    const entry = projects.get(project) ?? { files: 0, issues: new Set<string>() };
+    entry.files += files;
+    entry.issues.add(issue);
+    projects.set(project, entry);
+  }
+  return [...projects].flatMap(([project, { files, issues }]) => [
+    `${files} ${files === 1 ? 'file' : 'files'} in ${project} could not be indexed. Run mnemonik doctor for details.`,
+    ...(withPaths ? [...issues].map((issue) => `  ${issue}`) : []),
+  ]);
+}
+
+/** Print the refusal lines from the scanner's last recorded snapshot, if any. */
+export async function renderRefusals(
+  stateDir: string,
+  output: Pick<Output, 'line'>,
+  withPaths = false
+): Promise<void> {
+  const receipt = await scannerReceipt(stateDir).catch(() => null);
+  for (const line of refusalLines(receipt?.snapshot?.refusedBatches, withPaths)) output.line(line);
+}
+
 export function statusExitCode(document: ReadinessDocument): number {
   const states = [document.installation, ...(document.projects ?? []).map((row) => row.summary)];
   if (states.some((summary) => summary.state === 'FAILED')) return 1;

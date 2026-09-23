@@ -930,3 +930,81 @@ describe('project ensure needs no flags', () => {
     expect(f.ensureProject).not.toHaveBeenCalled();
   });
 });
+
+describe('files the server could not index', () => {
+  const line = (files: string, project: string) =>
+    `${files} in ${project} could not be indexed. Run mnemonik doctor for details.`;
+  async function withRefusals(
+    f: ReturnType<typeof fixture>,
+    refusedBatches: Array<{ project: string; files: number; issue: string }>
+  ) {
+    const { mkdir, writeFile } = await import('node:fs/promises');
+    const dir = f.deps.installStateDir!;
+    await mkdir(join(dir, 'scanner'), { recursive: true });
+    await writeFile(
+      join(dir, 'scanner/status.json'),
+      JSON.stringify({
+        recordedAt: 0,
+        snapshot: {
+          version: null,
+          lifecycle: { state: 'stopped', reason: 'stopped', pid: null, pauseIntervals: [] },
+          heartbeat: { lastSuccess: null },
+          roots: [],
+          exclusions: [],
+          refusedBatches,
+        },
+      })
+    );
+  }
+  const occurrences = (text: string, needle: string) => text.split(needle).length - 1;
+
+  it('status prints one line per project with the summed count and no field path', async () => {
+    const f = fixture();
+    await withRefusals(f, [
+      { project: 't3code', files: 2, issue: 'files.0.chunks.0.metadata.signature' },
+      { project: 't3code', files: 3, issue: 'commits.68.files' },
+    ]);
+    await runCli(['status'], f.deps);
+    expect(occurrences(f.stdout.text, 'could not be indexed')).toBe(1);
+    expect(f.stdout.text).toContain(`${line('5 files', 't3code')}\n`);
+    expect(f.stdout.text).not.toContain('metadata.signature');
+    expect(f.stdout.text).not.toContain('commits.68.files');
+  });
+
+  it('scanner status uses the singular for one file', async () => {
+    const f = fixture();
+    await withRefusals(f, [{ project: 'demo', files: 1, issue: 'files.0.path' }]);
+    const live = { kind: 'systemd' as const, installed: true, running: true, pid: 42 };
+    f.deps.scannerService = {
+      stateDir: f.deps.installStateDir!,
+      command: vi.fn(async () => ({ status: 'ok' as const, supervisor: live })),
+    };
+    expect(await runCli(['scanner', 'status'], f.deps)).toBe(0);
+    expect(f.stdout.text).toBe(
+      `Scanner status: ok (service: systemd, running)\n${line('1 file', 'demo')}\n`
+    );
+  });
+
+  it('doctor follows the line with one indented line per distinct issue path', async () => {
+    const f = fixture();
+    await withRefusals(f, [
+      { project: 't3code', files: 2, issue: 'files.0.chunks.0.metadata.signature' },
+      { project: 't3code', files: 1, issue: 'files.0.chunks.0.metadata.signature' },
+      { project: 't3code', files: 4, issue: 'commits.68.files' },
+    ]);
+    await runCli(['doctor'], f.deps);
+    expect(f.stdout.text).toContain(
+      `${line('7 files', 't3code')}\n  files.0.chunks.0.metadata.signature\n  commits.68.files\n`
+    );
+    expect(occurrences(f.stdout.text, '  files.0.chunks.0.metadata.signature')).toBe(1);
+  });
+
+  it('prints nothing when there are no refusals', async () => {
+    const f = fixture();
+    await withRefusals(f, []);
+    await runCli(['status'], f.deps);
+    const doctor = fixture();
+    await runCli(['doctor'], doctor.deps);
+    expect(f.stdout.text + doctor.stdout.text).not.toContain('could not be indexed');
+  });
+});
