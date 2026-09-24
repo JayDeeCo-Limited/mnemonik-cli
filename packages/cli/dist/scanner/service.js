@@ -9,7 +9,8 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { RuntimeStore } from '../runtime/store.js';
 import { scannerReceipt } from './control.js';
 export const SCANNER_RESTART_MESSAGE = 'Background indexing stopped responding. Mnemonik restarted it.';
-export const SCANNER_RESTART_ACTION = 'Run mnemonik status after indexing starts.';
+// Printed by mnemonik status itself, so it must not send the person back to it.
+export const SCANNER_RESTART_ACTION = 'Wait a minute, then check again.';
 export const SCANNER_LIMITED_SENTENCE = 'Background indexing could not be started.';
 export const SCANNER_LIMITED_ACTION = 'Run mnemonik install to try again.';
 // One sentence and one next step for every scanner reason a person can meet. An

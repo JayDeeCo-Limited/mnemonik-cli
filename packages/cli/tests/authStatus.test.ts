@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { AccountGrant } from '../src/auth/status.js';
+import { grantHost, signedInElsewhere, type AccountGrant } from '../src/auth/status.js';
 import { runCli, type CliDependencies } from '../src/router.js';
 
 // Plain `mnemonik auth status` is one row per host; the per-grant detail is
@@ -34,7 +34,7 @@ function grant(clientName: string, lastUsedMinutesAgo: number | null): AccountGr
 const many = (count: number, clientName: string, newest: number) =>
   Array.from({ length: count }, (_, index) => grant(clientName, newest + index * 600));
 
-async function status(grants: AccountGrant[], args: string[] = []) {
+async function status(grants: AccountGrant[], args: string[] = [], deviceInstallationId?: string) {
   vi.useFakeTimers({ now: NOW, toFake: ['Date'] });
   const home = mkdtempSync(join(tmpdir(), 'auth-status-'));
   homes.push(home);
@@ -48,7 +48,12 @@ async function status(grants: AccountGrant[], args: string[] = []) {
       stateDir: join(home, 'state'),
       account: 'owner',
       grants: {
-        list: async () => ({ account: 'owner', email: 'daemonhunt@gmail.com', grants }),
+        list: async () => ({
+          account: 'owner',
+          email: 'daemonhunt@gmail.com',
+          deviceInstallationId,
+          grants,
+        }),
         revoke: async () => undefined,
       },
     },
@@ -115,5 +120,47 @@ describe('auth status', () => {
         { ...codex, host: 'codex' },
       ],
     });
+  });
+});
+
+// L-182: Cursor on the Mac opens this Linux machine over SSH; its sign-in is
+// bound to the Mac's installation and this machine only runs its hooks.
+describe('an editor signed in on another machine', () => {
+  const HERE = 'c8553445-83f4-47f6-a84d-4eb7804eb6e6';
+  const MAC = '9b7404c8-6e39-46bb-a4b4-f2d7fdabf06a';
+  const on = (installation: string, minutesAgo: number) => ({
+    ...grant('Cursor', minutesAgo),
+    deviceInstallationId: installation,
+  });
+  const listing = (...grants: AccountGrant[]) => ({
+    account: 'owner',
+    deviceInstallationId: HERE,
+    grants,
+  });
+
+  it('auth status --host cursor shows the sign-in from the other machine', async () => {
+    const result = await status([on(MAC, 3 * 60)], ['--host', 'cursor'], HERE);
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain('Cursor  signed in, last used 3 hours ago (1 sign-in)');
+  });
+
+  it('counts only an activated sign-in on another installation used within the day', () => {
+    expect(signedInElsewhere(listing(on(MAC, 3 * 60)), 'cursor', NOW)).toBe(true);
+    expect(signedInElsewhere(listing(on(MAC, 48 * 60)), 'cursor', NOW)).toBe(false);
+    expect(signedInElsewhere(listing(on(HERE, 5)), 'cursor', NOW)).toBe(false);
+    expect(signedInElsewhere(listing(on(MAC, 5)), 'codex', NOW)).toBe(false);
+    // Only editors that can run away from their hooks.
+    const elsewhere = (clientName: string) =>
+      signedInElsewhere(
+        listing({ ...grant(clientName, 5), deviceInstallationId: MAC }),
+        grantHost(grant(clientName, 5))!,
+        NOW
+      );
+    expect(elsewhere('GitHub Copilot')).toBe(true);
+    expect(elsewhere('Claude Code')).toBe(false);
+    expect(elsewhere('Codex')).toBe(false);
+    expect(signedInElsewhere(listing({ ...on(MAC, 5), activatedAt: null }), 'cursor', NOW)).toBe(
+      false
+    );
   });
 });

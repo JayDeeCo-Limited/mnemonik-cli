@@ -417,7 +417,7 @@ export async function collectStatusDocument(input) {
             scannerReason = {
                 kind: 'scanner_not_verified',
                 reason: 'scanner_paused',
-                action: 'mnemonik install',
+                action: 'mnemonik scanner resume',
             };
         if (state &&
             alive &&

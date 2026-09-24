@@ -27,7 +27,7 @@ import { createRealProjectRuntime, ensureProjectRoot, ensureProjectForAgent, fol
 import { evaluateRoot } from './project/eligibility.js';
 import { accountActions } from './transport/server.js';
 import { apiOrigin, describeReadiness, serializeReadiness as baseReadiness, resolveProjectIdentity, } from '@mnemonik/shared';
-import { grantTransport, grantHost, grantSummaryLines } from './auth/status.js';
+import { grantTransport, grantHost, grantSummaryLines, signedInElsewhere } from './auth/status.js';
 import { createCliAuth } from './auth/index.js';
 import { runEditorLogin } from './auth/pkce.js';
 import { currentInstallSession, ensureInstallSession } from './auth/installSession.js';
@@ -109,6 +109,8 @@ export const dataDeletePrompt = (projectId) => `This deletes everything backgrou
 export const stillWatchedLine = (root) => `The folder is still being indexed. Run mnemonik remove ${root} to stop that.`;
 export const identityFileKeptLine = "This folder's .mnemonik.json still points at the deleted project. Connecting the folder again creates a new project.";
 export const CODEX_SIGNED_IN_MESSAGE = 'Codex is signed in to Mnemonik.';
+/** An editor signed in on another of the person's machines (L-182). */
+export const signedInElsewhereMessage = (editor) => `${editor} is already signed in to Mnemonik from another of your machines.`;
 export const CONNECT_NOT_APPROVED_MESSAGE = 'Sign-in timed out. Run mnemonik connect codex to try again.';
 export function maintenanceExitCode(results) {
     if (results.some((result) => result.status === 'FAILED'))
@@ -1475,6 +1477,28 @@ export async function runCli(args, deps = {}) {
                     return (output.line(CONNECT_NOT_APPROVED_MESSAGE), 1);
             }
             // An editor that could not be started at all still has its own instructions.
+        }
+        // An editor that opens this machine from another one (Cursor over SSH) is
+        // signed in there; asking for Authenticate here would send the person to an
+        // editor that is already signed in.
+        if (editor?.mcp === 'ready') {
+            const bearer = await auth(deps, output, false)
+                .getCliBearer()
+                .catch(() => undefined);
+            const send = deps.grantFetch ?? globalThis.fetch;
+            const grants = typeof bearer === 'string'
+                ? await grantTransport(async () => bearer, (url, options) => send(url, { ...options, signal: AbortSignal.timeout(2500) }))
+                    .list()
+                    .catch(() => undefined)
+                : undefined;
+            if (grants && signedInElsewhere(grants, host)) {
+                const message = signedInElsewhereMessage(launchHostLabels[host]);
+                if (parsed.flags.has('json'))
+                    output.json({ status: 'READY', reason: message });
+                else
+                    output.line(message);
+                return 0;
+            }
         }
         const reason = editor?.mcp === 'disabled'
             ? `${editor.name} connection is turned off.`

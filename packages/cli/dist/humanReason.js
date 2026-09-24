@@ -65,7 +65,16 @@ const readinessMessages = [
         },
     ],
     [
-        /scanner_not_verified|background_indexing_not_verified|scanner_paused|dev_release_source/iu,
+        // A paused scanner is waiting for the person, not for time: waiting a
+        // minute changes nothing. Checked before the not-yet-reported pair below.
+        /scanner_paused/u,
+        {
+            sentence: 'Background indexing is paused on this computer.',
+            nextStep: 'Run mnemonik scanner resume to start it again.',
+        },
+    ],
+    [
+        /scanner_not_verified|background_indexing_not_verified|dev_release_source/iu,
         {
             sentence: 'The scanner has not checked in yet.',
             nextStep: 'Wait a minute for indexing to start.',
@@ -103,14 +112,14 @@ const readinessMessages = [
         /scanner_omitted|scanner (?:was |coverage was )?(?:deliberately )?(?:omitted|skipped)/iu,
         {
             sentence: 'The scanner is not watching projects on this machine.',
-            nextStep: 'Run mnemonik scanner enable to choose the projects to watch.',
+            nextStep: 'Run mnemonik add <folder> for each project you want indexed.',
         },
     ],
     [
         /project_uncovered|outside approved scanner roots/iu,
         {
             sentence: 'A connected project is outside the folders watched by the scanner.',
-            nextStep: 'Run mnemonik scanner enable and add that project.',
+            nextStep: "Run mnemonik add <folder> with that project's folder.",
         },
     ],
     [
@@ -124,7 +133,8 @@ const readinessMessages = [
         /windows_task_creation_failed|windows.*task/iu,
         {
             sentence: 'Windows could not start the scanner in the background.',
-            nextStep: 'Run mnemonik scanner enable again from a terminal with permission to create tasks.',
+            // Install sets up the background task; add needs a scanner already set up.
+            nextStep: 'Run mnemonik install again from a terminal with permission to create tasks.',
         },
     ],
     [

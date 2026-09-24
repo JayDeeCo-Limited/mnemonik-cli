@@ -1153,3 +1153,74 @@ it('reports a repository that has never been connected', async () => {
     await rm(stateDir, { recursive: true, force: true });
   }
 });
+
+// L-74: every attention pair sends the person somewhere that helps. Drafted
+// wording, pending the owner's approval.
+describe('attention pairs name the right next step', () => {
+  const render = (conditions: ReadinessCondition[]): string[] => {
+    const lines: string[] = [];
+    renderStatusSummaries(
+      buildStatusDocument({
+        installationConditions: conditions,
+        scannerReported: true,
+        projectHookConditions: [],
+      }),
+      { line: (value = '') => lines.push(value) }
+    );
+    return lines;
+  };
+
+  it('tells a person with a paused scanner to resume it, not to wait', () => {
+    const lines = render([
+      { kind: 'scanner_not_verified', reason: 'scanner_paused', action: 'mnemonik scanner resume' },
+    ]);
+    expect(lines).toEqual([
+      'Installation: Needs attention.',
+      'Background indexing is paused on this computer.',
+      'Run mnemonik scanner resume to start it again.',
+    ]);
+  });
+
+  it('does not send a person running status back to status after a scanner restart', () => {
+    const lines = render([
+      {
+        kind: 'scanner_not_verified',
+        component: 'scanner',
+        reason: 'scanner_restart_requested',
+        action: 'Wait a minute, then check again.',
+      },
+    ]);
+    expect(lines).toEqual([
+      'Installation: Needs attention.',
+      'Background indexing stopped responding. Mnemonik restarted it.',
+      'Wait a minute, then check again.',
+    ]);
+    expect(lines.join('\n')).not.toContain('mnemonik status');
+  });
+
+  it('names mnemonik add when the scanner watches no projects', () => {
+    expect(render([{ kind: 'scanner_omitted', reason: 'scanner_omitted' }])).toEqual([
+      'Installation: Needs attention.',
+      'The scanner is not watching projects on this machine.',
+      'Run mnemonik add <folder> for each project you want indexed.',
+    ]);
+  });
+
+  it('names mnemonik add for a project outside the watched folders', () => {
+    expect(render([{ kind: 'project_uncovered', reason: 'project_uncovered' }])).toEqual([
+      'Installation: Needs attention.',
+      'A connected project is outside the folders watched by the scanner.',
+      "Run mnemonik add <folder> with that project's folder.",
+    ]);
+  });
+
+  it('names mnemonik install when Windows could not create the background task', () => {
+    expect(
+      render([{ kind: 'selected_component_failed', reason: 'windows_task_creation_failed' }])
+    ).toEqual([
+      'Installation: Needs attention.',
+      'Windows could not start the scanner in the background.',
+      'Run mnemonik install again from a terminal with permission to create tasks.',
+    ]);
+  });
+});

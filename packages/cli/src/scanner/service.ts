@@ -30,7 +30,8 @@ import { scannerReceipt } from './control.js';
 
 export const SCANNER_RESTART_MESSAGE =
   'Background indexing stopped responding. Mnemonik restarted it.';
-export const SCANNER_RESTART_ACTION = 'Run mnemonik status after indexing starts.';
+// Printed by mnemonik status itself, so it must not send the person back to it.
+export const SCANNER_RESTART_ACTION = 'Wait a minute, then check again.';
 
 export interface ScannerServiceOptions {
   stateDir: string;

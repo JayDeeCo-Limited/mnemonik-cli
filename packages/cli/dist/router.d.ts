@@ -29,6 +29,8 @@ export declare const dataDeletePrompt: (projectId: string) => string;
 export declare const stillWatchedLine: (root: string) => string;
 export declare const identityFileKeptLine = "This folder's .mnemonik.json still points at the deleted project. Connecting the folder again creates a new project.";
 export declare const CODEX_SIGNED_IN_MESSAGE = "Codex is signed in to Mnemonik.";
+/** An editor signed in on another of the person's machines (L-182). */
+export declare const signedInElsewhereMessage: (editor: string) => string;
 export declare const CONNECT_NOT_APPROVED_MESSAGE = "Sign-in timed out. Run mnemonik connect codex to try again.";
 export declare function maintenanceExitCode(results: readonly Pick<HostResult, 'status'>[]): number;
 export declare const help: string;

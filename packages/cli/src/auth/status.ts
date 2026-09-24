@@ -41,6 +41,41 @@ export const grantHost = (grant: AccountGrant) =>
     URL.parse(grant.clientId)?.hostname ?? ''
   ];
 
+/**
+ * Editors that can run on one machine while their hooks run on another (Cursor
+ * over SSH, VS Code with Copilot over Remote SSH). Claude Code and Codex sign in
+ * where their hooks run, so a sign-in elsewhere says nothing about this machine.
+ */
+const REMOTE_EDITOR_HOSTS: ReadonlySet<HostName> = new Set(['cursor', 'vscode-copilot']);
+
+/** How recently a sign-in on another machine must have been used to count here. */
+export const SIGNED_IN_ELSEWHERE_WITHIN_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * An editor that opens this machine remotely (Cursor on a Mac over SSH) signs in
+ * where it runs, while its hooks run here. A sign-in for the host on another of
+ * the account's installations, activated and used within the last day, is that
+ * editor's sign-in, for the editors above only (L-182; the server's
+ * computeMachineHealth reads the same rule).
+ * The listing already leaves out revoked grants.
+ */
+export function signedInElsewhere(status: GrantStatus, host: HostName, now = Date.now()) {
+  const here = status.deviceInstallationId;
+  return (
+    REMOTE_EDITOR_HOSTS.has(host) &&
+    !!here &&
+    status.grants.some(
+      (grant) =>
+        grantHost(grant) === host &&
+        grant.activatedAt !== null &&
+        !!grant.deviceInstallationId &&
+        grant.deviceInstallationId !== here &&
+        grant.lastUsedAt !== null &&
+        now - Date.parse(grant.lastUsedAt) <= SIGNED_IN_ELSEWHERE_WITHIN_MS
+    )
+  );
+}
+
 /** "just now", "5 minutes ago", "1 hour ago", "3 days ago", or "never". */
 export function relativeTime(time: number | null, now: number): string {
   if (time === null) return 'never';

@@ -2,7 +2,7 @@ import { pidIsScanner } from '@mnemonik/shared';
 import type { ServiceDefinition, ServiceOperation, ServiceResult, SupervisorStatus } from '@mnemonik/shared';
 import { RuntimeStore, type Verified } from '../runtime/store.js';
 export declare const SCANNER_RESTART_MESSAGE = "Background indexing stopped responding. Mnemonik restarted it.";
-export declare const SCANNER_RESTART_ACTION = "Run mnemonik status after indexing starts.";
+export declare const SCANNER_RESTART_ACTION = "Wait a minute, then check again.";
 export interface ScannerServiceOptions {
     stateDir: string;
     pidIdentity?: typeof pidIsScanner;

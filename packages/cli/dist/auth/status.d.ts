@@ -20,6 +20,17 @@ export interface GrantStatus {
     grants: AccountGrant[];
 }
 export declare const grantHost: (grant: AccountGrant) => HostName;
+/** How recently a sign-in on another machine must have been used to count here. */
+export declare const SIGNED_IN_ELSEWHERE_WITHIN_MS: number;
+/**
+ * An editor that opens this machine remotely (Cursor on a Mac over SSH) signs in
+ * where it runs, while its hooks run here. A sign-in for the host on another of
+ * the account's installations, activated and used within the last day, is that
+ * editor's sign-in, for the editors above only (L-182; the server's
+ * computeMachineHealth reads the same rule).
+ * The listing already leaves out revoked grants.
+ */
+export declare function signedInElsewhere(status: GrantStatus, host: HostName, now?: number): boolean;
 /** "just now", "5 minutes ago", "1 hour ago", "3 days ago", or "never". */
 export declare function relativeTime(time: number | null, now: number): string;
 /**

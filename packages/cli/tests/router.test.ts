@@ -846,6 +846,81 @@ it('connect reports local editor setup consistently in plain text and JSON', asy
   }
 });
 
+// L-182: Cursor on the Mac opens this Linux machine over SSH. Its sign-in is
+// bound to the Mac's installation; this machine only runs its hooks.
+describe('connect with the editor signed in on another machine', () => {
+  const HERE = 'c8553445-83f4-47f6-a84d-4eb7804eb6e6';
+  const MAC = '9b7404c8-6e39-46bb-a4b4-f2d7fdabf06a';
+  const hoursAgo = (hours: number) => new Date(Date.now() - hours * 3_600_000).toISOString();
+  const cursorGrant = (installation: string, lastUsed: string, clientName = 'Cursor') => ({
+    id: `${clientName}-${installation}`,
+    clientId: 'nc7RI7SR2S3N1kzpaNqRF3kBRrWVASBzQ0oCrNv0G60',
+    clientName,
+    softwareId: null,
+    scopes: ['mcp:use'],
+    resource: 'https://api.mnemonik.dev/mcp',
+    deviceInstallationId: installation,
+    createdAt: '2026-09-21T04:32:15.890Z',
+    activatedAt: '2026-09-21T04:32:15.890Z',
+    lastUsedAt: lastUsed,
+  });
+
+  async function connect(host: 'cursor' | 'claude-code', grants: unknown[], args: string[] = []) {
+    const { mkdir, writeFile } = await import('node:fs/promises');
+    const { deps, stdout } = fixture();
+    const declared = JSON.stringify({
+      mcpServers: { mnemonik: { url: 'https://api.mnemonik.dev/mcp' } },
+    });
+    if (host === 'cursor') {
+      await mkdir(join(deps.home!, '.cursor'), { recursive: true });
+      await writeFile(join(deps.home!, '.cursor/mcp.json'), declared);
+    } else await writeFile(join(deps.home!, '.claude.json'), declared);
+    deps.grantFetch = vi.fn(async (input: unknown) => {
+      expect(new URL(String(input)).pathname).toBe('/api/v1/auth/grants');
+      return Response.json({ deviceInstallationId: HERE, account: 'owner', grants });
+    }) as typeof fetch;
+    const code = await runCli(['connect', host, ...args], deps);
+    return { code, stdout: stdout.text };
+  }
+  const connectCursor = (grants: unknown[], args: string[] = []) => connect('cursor', grants, args);
+
+  it('says Cursor is already signed in from another machine, and exits 0', async () => {
+    const grants = [cursorGrant(HERE, hoursAgo(50)), cursorGrant(MAC, hoursAgo(3))];
+    expect(await connectCursor(grants)).toEqual({
+      code: 0,
+      stdout: 'Cursor is already signed in to Mnemonik from another of your machines.\n',
+    });
+    const json = await connectCursor(grants, ['--json']);
+    expect(json.code).toBe(0);
+    expect(JSON.parse(json.stdout)).toEqual({
+      status: 'READY',
+      reason: 'Cursor is already signed in to Mnemonik from another of your machines.',
+    });
+  });
+
+  it('still asks for Authenticate when the other sign-in was last used two days ago', async () => {
+    expect(await connectCursor([cursorGrant(MAC, hoursAgo(48))])).toEqual({
+      code: 3,
+      stdout:
+        'Finish signing in to Mnemonik in the editor.\n' +
+        'Cursor Desktop   open Cursor Settings, Customize, MCPs, then Authenticate\n',
+    });
+  });
+
+  it('Claude Code signs in where its hooks run: connect still asks it to sign in', async () => {
+    const grants = [
+      cursorGrant(HERE, hoursAgo(50), 'Claude Code'),
+      cursorGrant(MAC, hoursAgo(3), 'Claude Code'),
+    ];
+    const result = await connect('claude-code', grants);
+    expect(result.code).toBe(3);
+    expect(result.stdout).toBe(
+      'Finish signing in to Mnemonik in the editor.\n' +
+        'Claude Code      type /mcp, choose mnemonik, then Authenticate\n'
+    );
+  });
+});
+
 describe('consent for removal and deletion', () => {
   const projectId = '22222222-2222-4222-8222-222222222222';
 
