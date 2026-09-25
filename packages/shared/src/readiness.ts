@@ -103,6 +103,8 @@ export interface ScannerStatus {
   version: string | null;
   readiness: ReadinessSummary | null;
   acceptedDisclosureVersion: string | null;
+  /** Approved folders that no longer exist on disk; absent when there are none. */
+  missingApprovedRoots?: number;
 }
 
 export interface ProjectSetupResult {
@@ -422,7 +424,13 @@ const validComponent = (value: unknown): boolean =>
 const validScanner = (value: unknown): boolean =>
   value === null ||
   (record(value) &&
-    exact(value, ['roots', 'heartbeatAt', 'version', 'readiness', 'acceptedDisclosureVersion']) &&
+    exact(
+      Object.fromEntries(Object.entries(value).filter(([key]) => key !== 'missingApprovedRoots')),
+      ['roots', 'heartbeatAt', 'version', 'readiness', 'acceptedDisclosureVersion']
+    ) &&
+    (value.missingApprovedRoots === undefined ||
+      (Number.isSafeInteger(value.missingApprovedRoots) &&
+        Number(value.missingApprovedRoots) > 0)) &&
     (value.roots === null || strings(value.roots)) &&
     nullableString(value.heartbeatAt) &&
     nullableString(value.version) &&

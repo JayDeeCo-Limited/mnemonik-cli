@@ -373,6 +373,50 @@ export async function abandonInterrupted(state = stateDirectory()): Promise<void
     await journal.event('complete');
   });
 }
+/**
+ * A scanner approval stopped before it changed anything: killed while it waited
+ * on the browser, it holds only planned targets, no credential, no project and
+ * no host run. Nothing in it is worth resuming or undoing.
+ */
+function untouchedScannerRun(data: JournalData): boolean {
+  return (
+    (data.phase === 'preparing' || data.phase === 'review') &&
+    data.hosts.length === 0 &&
+    data.components.length === 1 &&
+    data.components[0] === 'scanner' &&
+    data.targets.every((target) => target.status === 'planned') &&
+    data.credentials.length === 0 &&
+    data.projects.length === 0 &&
+    !data.hostRuns?.length
+  );
+}
+
+/**
+ * Closes an interrupted scanner approval that changed nothing, so it does not
+ * block every later command that needs the install journal (an update's host
+ * step, scanner enable). A run still holding the install lease is left alone:
+ * taking the lease fails and the caller reports the earlier run as running.
+ */
+export async function closeUntouchedScannerRun(state = stateDirectory()): Promise<boolean> {
+  const pending = (await interrupted(state))[0];
+  if (!pending || !untouchedScannerRun(pending.data)) return false;
+  let closed = false;
+  await withInstall(state, pending.data, pending, async (journal) => {
+    const latest = (await interrupted(state)).find(
+      (candidate) => candidate.data.runId === journal.data.runId
+    );
+    if (!latest || !untouchedScannerRun(latest.data)) return;
+    Object.assign(journal.data, latest.data);
+    if (!journal.data.reports.includes('installation_abandoned'))
+      journal.data.reports.push('installation_abandoned');
+    journal.data.phase = 'complete';
+    journal.data.state = 'FAILED';
+    await journal.event('complete');
+    closed = true;
+  });
+  return closed;
+}
+
 /** A user-wide lease plus durable generation refuses rollback from an older run. */
 export async function withInstall<T>(
   state: string,

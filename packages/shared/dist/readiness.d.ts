@@ -75,6 +75,8 @@ export interface ScannerStatus {
     version: string | null;
     readiness: ReadinessSummary | null;
     acceptedDisclosureVersion: string | null;
+    /** Approved folders that no longer exist on disk; absent when there are none. */
+    missingApprovedRoots?: number;
 }
 export interface ProjectSetupResult {
     projectId: string | null;

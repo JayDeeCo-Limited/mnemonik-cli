@@ -384,8 +384,7 @@ describe('command router', () => {
       {
         kind: 'host_trust_pending',
         reason: 'codex_trust_pending',
-        action:
-          'Run the codex command in a terminal, enter /hooks, and trust the Mnemonik hooks; then quit and reopen Codex.',
+        action: 'Run codex, then approve the Mnemonik hooks when it asks.',
       },
     ];
     expect(await runCli(['status'], trust.deps)).not.toBe(0);
@@ -1328,6 +1327,41 @@ describe('a running scanner that reports its own failure', () => {
       scannerDisclosureVersion: async () => '2026.09.2',
     });
     expect(current.stdout.text).not.toContain('updated notice');
+  });
+
+  it('the report counts approved folders that no longer exist, and says nothing when none are gone', async () => {
+    const { mkdir, writeFile } = await import('node:fs/promises');
+    const post = async (roots: string[]) => {
+      const f = fixture();
+      await withReceipt(f, null);
+      await writeFile(
+        join(f.deps.installStateDir!, 'scanner/state.json'),
+        JSON.stringify({
+          config: { roots: roots.slice(0, 1), exclusions: [] },
+          consent: { userId: 'owner', roots, exclusions: [], disclosureVersion: '2026.09.2' },
+          paused: false,
+          pauseIntervals: [],
+        })
+      );
+      let posted: { scanner?: Record<string, unknown> | null } | undefined;
+      f.deps.grantFetch = vi.fn(async (_input, init) => {
+        posted = JSON.parse(String(init?.body)).readiness;
+        return Response.json({ status: 'recorded' });
+      });
+      await runCli(['status', '--json'], {
+        ...f.deps,
+        scannerDisclosureVersion: async () => '2026.09.2',
+      });
+      expect(isReadinessDocument(posted)).toBe(true);
+      return posted!.scanner!;
+    };
+    const home = mkdtempSync(join(tmpdir(), 'approved-folders-'));
+    homes.push(home);
+    const kept = join(home, 'kept');
+    await mkdir(kept);
+    // The fifteenth folder on Dokploy: approved, then deleted from disk.
+    expect(await post([kept, join(home, 'deleted')])).toMatchObject({ missingApprovedRoots: 1 });
+    expect(await post([kept])).not.toHaveProperty('missingApprovedRoots');
   });
 
   it('a refused scanner sign-in has its own line in status and its cause in doctor', async () => {

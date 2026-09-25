@@ -15,16 +15,14 @@ const grant: AccountGrant = {
   lastUsedAt: null,
   deviceInstallationId: null,
 };
-it('renders trust instructions for the detected Codex surface', () => {
-  expect(codexTrustAction('/usr/local/bin/codex')).toBe(
-    'Run the codex command in a terminal and use its hook trust prompt to allow the Mnemonik hooks; then quit and reopen Codex.'
-  );
-  expect(codexTrustAction('/Applications/ChatGPT.app/Contents/Resources/codex')).toBe(
-    "Open the ChatGPT app and use the 'Hooks need review' notice at startup to review and allow the Mnemonik hooks. If the notice does not appear, restart the app once."
-  );
-  expect(
-    codexTrustAction('C:\\Users\\Jo\\AppData\\Local\\Programs\\OpenAI\\Codex\\bin\\codex.exe')
-  ).toContain("'Hooks need review'");
+it('gives one Codex trust step on every surface, with nothing to restart', () => {
+  for (const path of [
+    '/usr/local/bin/codex',
+    '/Applications/ChatGPT.app/Contents/Resources/codex',
+    'C:\\Users\\Jo\\AppData\\Local\\Programs\\OpenAI\\Codex\\bin\\codex.exe',
+    undefined,
+  ])
+    expect(codexTrustAction(path)).toBe('Run codex, then approve the Mnemonik hooks when it asks.');
 });
 it('recognises the captured Claude Code and Codex CIMD documents without DCR names', () => {
   for (const host of ['claude-code', 'codex'] as const) {

@@ -39,6 +39,7 @@ export interface StatusDocumentInput {
         at: string;
         version: string | null;
         disclosureVersion: string | null;
+        missingApprovedRoots?: number;
     };
     /** True once the scanner has sent a heartbeat, so indexing needs no announcement. */
     scannerReported?: boolean;

@@ -136,7 +136,7 @@ export async function compensate(journal, deps, keepCli = false) {
                 await journal.event('credential_revoked', credential.reference);
             }
             catch {
-                report(journal, `Credential ${credential.reference} retained; revoke it in Devices and grants.`);
+                report(journal, `Credential ${credential.reference} retained; revoke it from Devices and coding tools in the console.`);
             }
         }
     }

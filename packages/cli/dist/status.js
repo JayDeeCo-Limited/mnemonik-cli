@@ -251,6 +251,9 @@ export function buildStatusDocument(input) {
                     ])
                     : null,
                 acceptedDisclosureVersion: input.scannerHeartbeat?.disclosureVersion ?? null,
+                ...(input.scannerHeartbeat?.missingApprovedRoots
+                    ? { missingApprovedRoots: input.scannerHeartbeat.missingApprovedRoots }
+                    : {}),
             }
             : null,
         limitedMode: scannerOmitted
@@ -408,6 +411,15 @@ export async function readProjectStatus(input) {
     }, { ...input, output: new Output(writer) });
     return JSON.parse(text);
 }
+/**
+ * Approved folders that no longer exist on this computer. The scanner cannot
+ * watch them and nobody needs to act, so the console does not count them as
+ * approved folders that are not being watched.
+ */
+async function approvedFoldersGone(roots) {
+    const gone = await Promise.all(roots.map((root) => stat(root).then(() => false, (error) => error.code === 'ENOENT' || error.code === 'ENOTDIR')));
+    return gone.filter(Boolean).length;
+}
 export async function collectStatusDocument(input) {
     const statusStateDir = input.stateDir ?? stateDirectory(process.platform, process.env, input.home);
     let scannerStatus = await input.scannerStatus?.();
@@ -491,10 +503,12 @@ export async function collectStatusDocument(input) {
                 exclusions: state.config.exclusions ?? [],
                 repositories: [],
             };
+            const missing = await approvedFoldersGone(state.consent?.roots ?? []);
             scannerHeartbeat = {
                 at: new Date(heartbeat).toISOString(),
                 version: snapshot.version,
                 disclosureVersion: state.consent?.disclosureVersion ?? null,
+                ...(missing ? { missingApprovedRoots: missing } : {}),
             };
         }
         // A running scanner that says it is failing. A refused credential already

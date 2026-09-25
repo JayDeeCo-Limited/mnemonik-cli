@@ -521,7 +521,7 @@ export async function restoreScannerInstall(journal, options) {
     for (const credential of journal.data.credentials.filter((c) => c.component === 'scanner' && !c.revoked)) {
         credential.revoked = await revokeInstallComponent(options.stateDir, credential.reference, options.fetch).catch(() => false);
         if (!credential.revoked)
-            journal.data.reports.push(`Credential ${credential.reference} retained; revoke it in Devices and grants.`);
+            journal.data.reports.push(`Credential ${credential.reference} retained; revoke it from Devices and coding tools in the console.`);
     }
     await journal.save();
 }

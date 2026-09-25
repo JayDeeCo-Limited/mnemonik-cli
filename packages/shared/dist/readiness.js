@@ -219,7 +219,10 @@ const validComponent = (value) => record(value) &&
     typeof value.revokeAction === 'string';
 const validScanner = (value) => value === null ||
     (record(value) &&
-        exact(value, ['roots', 'heartbeatAt', 'version', 'readiness', 'acceptedDisclosureVersion']) &&
+        exact(Object.fromEntries(Object.entries(value).filter(([key]) => key !== 'missingApprovedRoots')), ['roots', 'heartbeatAt', 'version', 'readiness', 'acceptedDisclosureVersion']) &&
+        (value.missingApprovedRoots === undefined ||
+            (Number.isSafeInteger(value.missingApprovedRoots) &&
+                Number(value.missingApprovedRoots) > 0)) &&
         (value.roots === null || strings(value.roots)) &&
         nullableString(value.heartbeatAt) &&
         nullableString(value.version) &&

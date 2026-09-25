@@ -656,7 +656,7 @@ export async function restoreScannerInstall(
     ).catch(() => false);
     if (!credential.revoked)
       journal.data.reports.push(
-        `Credential ${credential.reference} retained; revoke it in Devices and grants.`
+        `Credential ${credential.reference} retained; revoke it from Devices and coding tools in the console.`
       );
   }
   await journal.save();

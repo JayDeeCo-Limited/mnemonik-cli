@@ -52,7 +52,8 @@ export interface HostResult {
     /** The editor already holds a Mnemonik grant, so it has nothing left to authorize. */
     signedIn?: true;
 }
-export declare function codexTrustAction(resolvedPath?: string): string;
+/** The one Codex trust step, for every surface (status, doctor, install, update). */
+export declare function codexTrustAction(_resolvedPath?: string): string;
 export declare const CODEX_TRUST_ACTION: string;
 /** L-86: shown once, when an install drops the family from Codex's hook command. */
 export declare const CODEX_TRUST_MIGRATION = "Mnemonik's Codex hooks no longer change when your sign-in changes. Codex will ask you to trust them one last time.";

@@ -3,6 +3,7 @@ import { createHash, createPrivateKey, generateKeyPairSync, randomBytes, sign } 
 import { mkdir, mkdtemp, readFile, readdir, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { Readable } from 'node:stream';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { serializeReadiness } from '@mnemonik/shared';
 import packageJson from '../package.json' with { type: 'json' };
@@ -403,12 +404,30 @@ it('standalone scanner enable retains the supervisor recovery action for an SSH 
     await runCli(['scanner', 'enable'], {
       installStateDir: state,
       home: state,
+      // A person at a terminal over SSH.
+      input: Readable.from([]),
       stdout: { write: () => {} },
       stderr: { write: (value) => (errors += value) },
     })
   ).toBe(3);
   expect(errors).toContain(failure.action);
   expect(errors).not.toContain('mnemonik scanner enable');
+});
+it('scanner enable with no terminal behind it asks for the consent flags instead of waiting', async () => {
+  const enable = vi.spyOn(scannerEnable, 'enableScanner');
+  const pipe = Object.assign(Readable.from([]), { isTTY: false as const });
+  let text = '';
+  expect(
+    await runCli(['scanner', 'enable'], {
+      installStateDir: state,
+      home: state,
+      input: pipe,
+      stdout: { write: () => {} },
+      stderr: { write: (value) => (text += value) },
+    })
+  ).toBe(3);
+  expect(enable).not.toHaveBeenCalled();
+  expect(text).toContain('--accept-indexing');
 });
 async function bootstrapCopy() {
   const root = join(state, 'runtimes/bootstrap');
@@ -681,8 +700,8 @@ it('reports a completed host update before the pending Codex trust action', asyn
     code: 3,
     text:
       'Mnemonik updated.\n' +
-      'Codex has not trusted the Mnemonik hooks yet.\n' +
-      'Open Codex settings, trust the Mnemonik hooks, then quit and reopen Codex.\n',
+      'Codex is not running the Mnemonik hooks until you trust them.\n' +
+      'Run codex, then approve the Mnemonik hooks when it asks.\n',
     errors: '',
     report: undefined,
   });
@@ -1020,15 +1039,18 @@ describe('a scanner release that names an updated notice', () => {
     const install = vi.spyOn(RuntimeStore.prototype, 'installRuntime');
     const out = { text: '', write: (value: string) => void (out.text += value) };
     const err = { text: '', write: (value: string) => void (err.text += value) };
+    const signIn = vi.fn();
     const deps = {
       installStateDir: state,
       home: state,
+      // A person at a terminal; the test below replaces it with a pipe.
+      input: Readable.from([]) as Readable & { isTTY?: boolean },
       stdout: out,
       stderr: err,
       scannerService: { stateDir: state, command },
       scannerEnable: { source: async () => release },
     };
-    return { root, operations, enable, install, out, err, deps };
+    return { root, operations, enable, install, out, err, deps, signIn };
   }
 
   it.each([false, true])(
@@ -1067,6 +1089,164 @@ describe('a scanner release that names an updated notice', () => {
     expect(await readFile(join(state, 'scanner/state.json'), 'utf8')).toBe(saved(f.root));
     const check = JSON.parse(await readFile(join(state, 'update-check.json'), 'utf8'));
     expect(check.result).not.toBe('failed');
+  });
+
+  it.each([
+    ['no terminal (a pipe, no flag)', false, []],
+    ['--non-interactive at a terminal', true, ['--non-interactive']],
+  ] as const)(
+    'an update with %s asks nothing and exits 3 within the run',
+    async (_case, terminal, flags) => {
+      const f = await setup();
+      // A script or a pipe: stdin is not a TTY.
+      const input = terminal
+        ? f.deps.input
+        : Object.assign(Readable.from([]), { isTTY: false as const });
+      const deviceFlow = vi.fn();
+      const started = Date.now();
+      const code = await runCli(['update', ...flags], {
+        ...f.deps,
+        input,
+        cliAuth: {
+          signIn: deviceFlow,
+          getCliBearer: async () => ({ status: 'ACTION_REQUIRED', reason: 'not_signed_in' }),
+          logout: async () => undefined,
+        },
+      } as Parameters<typeof runCli>[1]);
+      expect(code).toBe(3);
+      expect(Date.now() - started).toBeLessThan(30_000);
+      // Neither the browser approval nor a device sign-in was started.
+      expect(f.enable).not.toHaveBeenCalled();
+      expect(deviceFlow).not.toHaveBeenCalled();
+      expect(f.out.text).toBe(
+        'Mnemonik updated.\n' +
+          'A scanner update is waiting until you approve an updated notice.\n' +
+          'Run mnemonik scanner enable.\n'
+      );
+      expect(await readFile(join(state, 'scanner/state.json'), 'utf8')).toBe(saved(f.root));
+    }
+  );
+
+  /** What a scanner approval killed while it waited on the browser leaves behind. */
+  async function interruptedApproval(root: string, status: 'planned' | 'staged') {
+    const runId = '0a342b58-ddd3-4d1a-a792-041e9b6071a5';
+    const dir = join(state, 'install', runId);
+    await mkdir(dir, { recursive: true });
+    const statePath = join(state, 'scanner/state.json');
+    const bytes = await readFile(statePath);
+    await writeFile(join(dir, '0.before'), bytes);
+    await writeFile(join(dir, '0.proposed'), bytes);
+    const digest = createHash('sha256').update(bytes).digest('hex');
+    await writeFile(
+      join(dir, 'journal.json'),
+      JSON.stringify({
+        schemaVersion: 1,
+        runId,
+        generation: 62,
+        account: 'scanner',
+        joined: true,
+        hostRequest: { command: 'install', selections: [], allowMigration: false },
+        hosts: [],
+        components: ['scanner'],
+        scopes: {},
+        roots: [root],
+        credentials: [],
+        declaredTargets: [statePath],
+        targets: [
+          {
+            id: '0',
+            path: statePath,
+            beforeHash: digest,
+            proposedHash: digest,
+            backup: join(dir, '0.before'),
+            proposed: join(dir, '0.proposed'),
+            mode: 0o600,
+            status,
+            staging: 'inactive',
+            kind: 'runtime',
+            group: 'scanner:0',
+          },
+        ],
+        projects: [],
+        services: [{ id: 'scanner', before: '{}', started: true }],
+        mutations: [
+          { sequence: 1, event: 'journal_created' },
+          { sequence: 2, event: 'planned', target: '0' },
+          { sequence: 3, event: 'service_start_intent', target: 'scanner' },
+        ],
+        reports: [],
+        phase: 'preparing',
+        state: 'ACTION_REQUIRED',
+      })
+    );
+    await writeFile(join(state, 'install-owner.json'), JSON.stringify({ generation: 62, runId }));
+    return join(dir, 'journal.json');
+  }
+
+  it('the CLI updated, an abandoned approval is closed, and only the scanner waits: no failure line', async () => {
+    const f = await setup();
+    const journal = await interruptedApproval(f.root, 'planned');
+    const code = await runCli(
+      ['update', '--non-interactive'],
+      f.deps as Parameters<typeof runCli>[1]
+    );
+    expect(f.err.text).toBe('');
+    expect(f.out.text).toBe(
+      'Mnemonik updated.\n' +
+        'A scanner update is waiting until you approve an updated notice.\n' +
+        'Run mnemonik scanner enable.\n'
+    );
+    expect(code).toBe(3);
+    expect(JSON.parse(await readFile(journal, 'utf8'))).toMatchObject({ phase: 'complete' });
+    expect(JSON.parse(await readFile(join(state, 'update-check.json'), 'utf8')).result).not.toBe(
+      'failed'
+    );
+  });
+
+  it('an earlier run that changed something names the coding tools and the step, never the generic line', async () => {
+    const f = await setup();
+    const journal = await interruptedApproval(f.root, 'staged');
+    const code = await runCli(
+      ['update', '--non-interactive'],
+      f.deps as Parameters<typeof runCli>[1]
+    );
+    expect(code).toBe(3);
+    expect(f.out.text).toBe(
+      'The mnemonik command updated.\n' +
+        'A scanner update is waiting until you approve an updated notice.\n' +
+        'Run mnemonik scanner enable.\n'
+    );
+    expect(f.err.text).toBe(
+      'Your coding tools could not update.\n' +
+        'An earlier installation on this computer did not finish.\n' +
+        'Run mnemonik install to finish or remove it.\n'
+    );
+    expect(`${f.out.text}${f.err.text}`).not.toContain('Mnemonik could not update.');
+    // Left for install to finish or undo.
+    expect(JSON.parse(await readFile(journal, 'utf8'))).toMatchObject({ phase: 'preparing' });
+  });
+
+  it('an approval still waiting in another run keeps its journal', async () => {
+    const f = await setup();
+    const journal = await interruptedApproval(f.root, 'planned');
+    const { closeUntouchedScannerRun, interrupted, withInstall } =
+      await import('../src/install/journal.js');
+    const [pending] = await interrupted(state);
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => (release = resolve));
+    let running!: () => void;
+    const started = new Promise<void>((resolve) => (running = resolve));
+    const live = withInstall(state, pending!.data, pending, async () => {
+      running();
+      await held;
+    });
+    await started;
+    await expect(closeUntouchedScannerRun(state)).rejects.toThrow();
+    expect(JSON.parse(await readFile(journal, 'utf8'))).toMatchObject({ phase: 'preparing' });
+    release();
+    await live;
+    expect(await closeUntouchedScannerRun(state)).toBe(true);
+    expect(JSON.parse(await readFile(journal, 'utf8'))).toMatchObject({ phase: 'complete' });
   });
 
   it('a manual update the person does not approve says what is waiting', async () => {

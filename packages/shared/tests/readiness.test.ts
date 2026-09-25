@@ -155,3 +155,24 @@ test('optional version receipts round-trip while old schema-1 documents remain v
   ])
     assert.equal(isReadinessDocument({ ...old, versions: invalid }), false);
 });
+
+test('a scanner receipt may count approved folders gone from disk, and nothing else extra', async () => {
+  const { isReadinessDocument } = await import('../src/readiness.js');
+  const scanner = {
+    roots: ['/home/dev/projects/mnemonik'],
+    heartbeatAt: '2026-09-25T09:12:32.516Z',
+    version: '7.109.3',
+    readiness: null,
+    acceptedDisclosureVersion: '2026.09.1',
+  };
+  const document = (extra: Record<string, unknown>) =>
+    serializeReadiness({
+      installation: { conditions: [] },
+      scanner: { ...scanner, ...extra } as never,
+    });
+  assert.equal(isReadinessDocument(document({})), true);
+  assert.equal(isReadinessDocument(document({ missingApprovedRoots: 1 })), true);
+  for (const invalid of [0, -1, 1.5, '1', null])
+    assert.equal(isReadinessDocument(document({ missingApprovedRoots: invalid })), false);
+  assert.equal(isReadinessDocument(document({ missingRootPaths: ['/x'] })), false);
+});

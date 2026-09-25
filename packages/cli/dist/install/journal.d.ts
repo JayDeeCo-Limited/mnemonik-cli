@@ -101,6 +101,13 @@ export declare class Journal implements AdapterWriter {
 }
 export declare function interrupted(state?: string): Promise<Journal[]>;
 export declare function abandonInterrupted(state?: string): Promise<void>;
+/**
+ * Closes an interrupted scanner approval that changed nothing, so it does not
+ * block every later command that needs the install journal (an update's host
+ * step, scanner enable). A run still holding the install lease is left alone:
+ * taking the lease fails and the caller reports the earlier run as running.
+ */
+export declare function closeUntouchedScannerRun(state?: string): Promise<boolean>;
 /** A user-wide lease plus durable generation refuses rollback from an older run. */
 export declare function withInstall<T>(state: string, input: NewInstall, resume: Journal | undefined, work: (journal: Journal) => Promise<T>, afterMutation?: Journal['afterMutation']): Promise<T>;
 //# sourceMappingURL=journal.d.ts.map

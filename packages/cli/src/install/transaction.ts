@@ -196,7 +196,7 @@ export async function compensate(journal: Journal, deps: InstallDependencies, ke
       } catch {
         report(
           journal,
-          `Credential ${credential.reference} retained; revoke it in Devices and grants.`
+          `Credential ${credential.reference} retained; revoke it from Devices and coding tools in the console.`
         );
       }
     }

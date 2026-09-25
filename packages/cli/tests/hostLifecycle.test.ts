@@ -210,9 +210,7 @@ it('CLI installs the three launch-host adapters with planned bytes, verified ent
         bytes.includes(Buffer.from(pathToFileURL(entry).href).toString('base64url'))
     ).toBe(true);
   }
-  expect(stdout.join('')).toContain(
-    'use its hook trust prompt to allow the Mnemonik hooks; then quit and reopen Codex'
-  );
+  expect(stdout.join('')).toContain('Run codex, then approve the Mnemonik hooks when it asks.');
 }, 60_000);
 
 it('corrupt runtime fails before adapter plan and leaves config and current untouched', async () => {

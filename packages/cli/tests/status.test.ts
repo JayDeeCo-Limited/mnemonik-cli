@@ -153,10 +153,9 @@ it('hides launcher paths, credential diagnostics and readiness reason codes', ()
   );
 });
 
-it('says Codex has not trusted the hooks without promising a prompt', () => {
+it('says Codex is not running the hooks, with the one step and no restart', () => {
   const lines: string[] = [];
-  const action =
-    'Run the codex command in a terminal and use its hook trust prompt to allow the Mnemonik hooks; then quit and reopen Codex.';
+  const action = 'Run codex, then approve the Mnemonik hooks when it asks.';
   renderStatusSummaries(
     buildStatusDocument({
       installationConditions: [
@@ -170,10 +169,10 @@ it('says Codex has not trusted the hooks without promising a prompt', () => {
 
   expect(lines).toEqual([
     'Installation: Needs attention.',
-    'Codex has not trusted the Mnemonik hooks yet.',
-    'Open Codex settings, trust the Mnemonik hooks, then quit and reopen Codex.',
+    'Codex is not running the Mnemonik hooks until you trust them.',
+    'Run codex, then approve the Mnemonik hooks when it asks.',
   ]);
-  expect(lines.join('\n')).not.toMatch(/allow the .*hooks|will ask/u);
+  expect(lines.join('\n')).not.toMatch(/quit|reopen|restart/u);
 });
 
 it('keeps installed hooks READY before an editor has signed in', async () => {
@@ -616,10 +615,8 @@ it('reports Codex hooks that Codex has not trusted', async () => {
   });
   expect(result.code).not.toBe(0);
   expect(result.text).not.toContain('Mnemonik is installed and working.');
-  expect(result.text).toContain('Codex has not trusted the Mnemonik hooks yet.');
-  expect(result.text).toContain(
-    'Open Codex settings, trust the Mnemonik hooks, then quit and reopen Codex.'
-  );
+  expect(result.text).toContain('Codex is not running the Mnemonik hooks until you trust them.');
+  expect(result.text).toContain('Run codex, then approve the Mnemonik hooks when it asks.');
 }, 15_000);
 
 it('reports default editor files locally, including a disabled Cursor connection', async () => {

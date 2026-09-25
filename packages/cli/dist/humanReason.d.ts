@@ -14,6 +14,11 @@ export declare const SCANNER_UPDATE_CONSENT_MESSAGE: {
     sentence: string;
     nextStep: string;
 };
+export declare const INTERRUPTED_INSTALL: RegExp;
+export declare const INTERRUPTED_INSTALL_MESSAGE: {
+    sentence: string;
+    nextStep: string;
+};
 /**
  * The words for one condition. A reason with no table entry keeps its own
  * sentence and its own step, so nothing reaches a person as a reason code.

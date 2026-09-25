@@ -444,10 +444,10 @@ describe('host rulings', () => {
       ).toBe(3);
       if (args.includes('--json')) expect(stdout.text).toContain('codex_trust_pending');
       else {
-        expect(stdout.text).toContain('Codex has not trusted the Mnemonik hooks yet.');
         expect(stdout.text).toContain(
-          'Open Codex settings, trust the Mnemonik hooks, then quit and reopen Codex.'
+          'Codex is not running the Mnemonik hooks until you trust them.'
         );
+        expect(stdout.text).toContain('Run codex, then approve the Mnemonik hooks when it asks.');
         expect(stdout.text).not.toMatch(/allow the Mnemonik hooks|Codex will ask/u);
         expect(stdout.text).not.toMatch(/CLI 0\.1\.18\.|CLI credential:|Launcher:/u);
       }
@@ -487,7 +487,7 @@ describe('host rulings', () => {
     await createCredentialAdapter({ stateDir: f.deps.stateDir }).forget();
     conditions = await hookStatusConditions(f.deps, hosts);
     expect(conditions.find(({ component }) => component === 'claude-code')?.reason).toBe(
-      'claude-code hook credential family is missing or revoked.'
+      'claude-code hook sign-in is missing or revoked.'
     );
 
     overrideInspection(f.deps, 'codex', () => ({ trustPending: true }));
@@ -857,8 +857,7 @@ describe('host rulings', () => {
     expect(installed.results[0]).toMatchObject({
       status: 'ACTION_REQUIRED',
       reason: 'codex_trust_pending',
-      action:
-        'Run the codex command in a terminal and use its hook trust prompt to allow the Mnemonik hooks; then quit and reopen Codex.',
+      action: 'Run codex, then approve the Mnemonik hooks when it asks.',
     });
     const owned = (await readOwnership(f.deps.stateDir)).targets[0]!;
     const launcher = join(dirname(owned.runtimePointer), 'launcher.mjs');
@@ -925,7 +924,7 @@ describe('host rulings', () => {
       "codex: Mnemonik's Codex hooks no longer change when your sign-in changes. Codex will ask you to trust them one last time."
     );
     expect(migrated.reports.indexOf(migration)).toBeLessThan(
-      migrated.reports.findIndex((report) => report.startsWith('codex: Run the codex command'))
+      migrated.reports.findIndex((report) => report.startsWith('codex: Run codex, then approve'))
     );
     expect(await codexCommands(owned.profilePath)).toEqual(exact);
     const settled = await runHosts('update', [owned], f.deps);
@@ -1193,6 +1192,46 @@ describe('host state matrix', () => {
     ).toBe(true);
     expect(getCliBearer).toHaveBeenCalledOnce();
     expect(list).not.toHaveBeenCalled();
+  }, 240_000);
+
+  it('the report an update sends names the hook runtimes that same process left on disk', async () => {
+    const f = await fixture();
+    await runHosts('install', targets(f, 'hooks'), f.deps);
+    const store = new RuntimeStore(f.deps.stateDir);
+    const installed = await Promise.all(
+      f.selections.map(async ({ host }) => (await store.verifyRuntime(host)).reference.version)
+    );
+    f.deps.source = async (host) => bump(packed.sources[host]);
+    f.deps.now = Date.now;
+    const posted: Array<{ versions?: { hosts?: Array<{ host: string; hooks?: string }> } }> = [];
+    const grantFetch = vi.fn(async (...[input, init]: Parameters<typeof fetch>) => {
+      if (new URL(String(input)).pathname === '/api/v1/installations/current/readiness')
+        posted.push(JSON.parse(String(init?.body)).readiness);
+      return Response.json({ status: 'recorded' });
+    });
+    await runCli(['update', '--json'], {
+      home: f.home,
+      cwd: f.projectRoot,
+      hostManagement: f.deps,
+      stdout: capture(),
+      grantFetch,
+      scannerStatus: async () => ({ roots: [], exclusions: [], repositories: [] }),
+      cliAuth: {
+        signIn: async () => undefined,
+        getCliBearer: async () => 'cli-token',
+        logout: async () => undefined,
+      },
+    });
+    const onDisk = await Promise.all(
+      f.selections.map(async ({ host }) => ({
+        host,
+        hooks: (await store.verifyRuntime(host)).reference.version,
+      }))
+    );
+    // The update moved every runtime, and the one report says where they are now.
+    expect(onDisk.map(({ hooks }) => hooks)).not.toEqual(installed);
+    expect(posted).toHaveLength(1);
+    expect(posted[0]!.versions!.hosts!.map(({ host, hooks }) => ({ host, hooks }))).toEqual(onDisk);
   }, 240_000);
 
   it('partial: resumes the remaining host from the journal without re-staging the completed two', async () => {

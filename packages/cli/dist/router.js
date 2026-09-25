@@ -1,4 +1,4 @@
-import { humanReason, humanReport, humanIdentityState, SCANNER_CONSENT_MESSAGE, SCANNER_UPDATE_CONSENT_MESSAGE, } from './humanReason.js';
+import { humanReason, humanReport, humanIdentityState, INTERRUPTED_INSTALL, INTERRUPTED_INSTALL_MESSAGE, SCANNER_CONSENT_MESSAGE, SCANNER_UPDATE_CONSENT_MESSAGE, } from './humanReason.js';
 import { consentDecision, consentLines } from './consent.js';
 import { helpScreen } from './help.js';
 import { enableScanner, updateScannerRoots } from './scanner/enable.js';
@@ -35,7 +35,7 @@ import { runEditorLogin } from './auth/pkce.js';
 import { currentInstallSession, ensureInstallSession } from './auth/installSession.js';
 import { runIdentityMigration } from './identity/migrate.js';
 import { renderScannerStatus } from './scanner/picker.js';
-import { abandonInterrupted, interrupted } from './install/journal.js';
+import { abandonInterrupted, closeUntouchedScannerRun, interrupted } from './install/journal.js';
 import { installFailureReason, runInstall, } from './install/transaction.js';
 import { chooseHostProfile, simulatedInstall, terminalInstallUI } from './install/ui.js';
 import { CODEX_TRUST_MESSAGE, collectStatusDocument, localEditorStatus, localInstallationConditions, mcpTurnOnAction, renderStatusSummaries, renderRefusals, REPORT_NOT_SENT, renderScannerFailure, statusExitCode, } from './status.js';
@@ -132,6 +132,22 @@ async function retryUpdateOnce(update, failed = () => false) {
     }
 }
 /**
+ * Whether a person is there to answer: no --json, no --non-interactive, and a
+ * terminal on stdin. Without a terminal (a script, a pipe, a scheduler) the
+ * commands that would open a consent or sign-in flow and wait on it (update,
+ * scanner enable, add, remove) behave exactly as with --non-interactive; install
+ * decides the same way in its own journey. An injected input stream counts as
+ * a terminal unless it says isTTY: false, so callers that answer prompts
+ * through one keep doing so.
+ */
+function personPresent(parsed, deps) {
+    if (parsed.flags.has('json') || parsed.flags.has('non-interactive'))
+        return false;
+    if (deps.input)
+        return deps.input.isTTY !== false;
+    return process.stdin.isTTY === true;
+}
+/**
  * A scanner release names a newer notice than the saved consent. With a person
  * at the terminal, ask once in the browser through the flow install uses, over
  * the folders already approved; it installs the new scanner when approved and
@@ -139,9 +155,7 @@ async function retryUpdateOnce(update, failed = () => false) {
  * --non-interactive), nothing changes and the running scanner keeps indexing.
  */
 async function approveScannerUpdate(parsed, deps, output, stateDir) {
-    if (parsed.flags.has('automatic') ||
-        parsed.flags.has('json') ||
-        parsed.flags.has('non-interactive'))
+    if (parsed.flags.has('automatic') || !personPresent(parsed, deps))
         return 'pending';
     const saved = JSON.parse(await readFile(join(stateDir, 'scanner/state.json'), 'utf8'));
     try {
@@ -462,6 +476,10 @@ async function runHostCommand(command, parsed, deps, output, scannerSelected = f
         }, 'Invalid host or component');
     if (command === 'uninstall')
         await abandonInterrupted(state);
+    // A scanner approval killed while it waited changed nothing; it must not
+    // block the host step. One still running keeps its lease and is named below.
+    else if (command === 'update')
+        await closeUntouchedScannerRun(state).catch(() => false);
     let selections;
     if (command === 'install') {
         const names = String(parsed.flags.get('hosts') ?? hostOrder.join(',')).split(',');
@@ -551,9 +569,15 @@ async function runHostCommand(command, parsed, deps, output, scannerSelected = f
             instruction: json ? undefined : (text) => output.line(text),
             apply: parsed.flags.has('apply'),
         }, false);
+        // A host step that throws is that step's failure, named below; the scanner
+        // step still runs and the update never collapses into one generic line.
+        let hostError;
         const result = managed
             ? command === 'update'
-                ? await retryUpdateOnce(() => maintainHosts(managed), hostUpdateFailed)
+                ? await retryUpdateOnce(() => maintainHosts(managed), hostUpdateFailed).catch((error) => {
+                    hostError = error.message;
+                    return { journal: { state: 'FAILED' }, results: [], reports: [] };
+                })
                 : await maintainHosts(managed)
             : { journal: { state: 'READY' }, results: [], reports: [] };
         let scanner;
@@ -608,7 +632,7 @@ async function runHostCommand(command, parsed, deps, output, scannerSelected = f
             : remaining?.installation.state === 'READY' || !remaining
                 ? 0
                 : 3;
-        const hostsFailed = hostUpdateFailed(result);
+        const hostsFailed = hostError !== undefined || hostUpdateFailed(result);
         const codexTrustPending = result.results.some((target) => target.reason === 'codex_trust_pending');
         // Every host update is journaled: a failed one has already put the previous
         // runtime back. The record says so to the console through the readiness report.
@@ -687,7 +711,14 @@ async function runHostCommand(command, parsed, deps, output, scannerSelected = f
                 }
                 if (hostsFailed) {
                     output.error('Your coding tools could not update.');
-                    output.error('Run mnemonik repair, then start a new session in each coding tool.');
+                    if (hostError && INTERRUPTED_INSTALL.test(hostError)) {
+                        output.error(INTERRUPTED_INSTALL_MESSAGE.sentence);
+                        output.error(INTERRUPTED_INSTALL_MESSAGE.nextStep);
+                    }
+                    else if (hostError === 'lock_held')
+                        output.error(humanReason(hostError));
+                    else
+                        output.error('Run mnemonik repair, then start a new session in each coding tool.');
                 }
                 if (scanner?.status === 'FAILED') {
                     output.error(scannerRecovery?.message ?? 'The scanner could not update.');
@@ -742,6 +773,9 @@ async function runHostCommand(command, parsed, deps, output, scannerSelected = f
         }
         if (failed || remainingExit === 1)
             return 1;
+        // An earlier run in the way needs the person, not a retry.
+        if (hostError)
+            return INTERRUPTED_INSTALL.test(hostError) || hostError === 'lock_held' ? 3 : 1;
         return (hostExit || remainingExit || (scannerConsentPending && !parsed.flags.has('automatic') ? 3 : 0));
     }
     catch (error) {
@@ -798,7 +832,8 @@ async function scannerRecoveryAction(error, options) {
 }
 async function enableCommand(parsed, deps, output) {
     const json = parsed.flags.has('json');
-    if (parsed.flags.has('non-interactive') || json) {
+    const present = personPresent(parsed, deps);
+    if (!present) {
         const missing = requireConsent(parsed, output, ['accept-indexing', 'apply']);
         if (missing !== undefined)
             return missing;
@@ -806,6 +841,7 @@ async function enableCommand(parsed, deps, output) {
             return actionRequired(output, json, 'Supply --scan-roots with approved roots', '--scan-roots');
     }
     try {
+        await closeUntouchedScannerRun(deps.installStateDir ?? stateDirectory(process.platform, process.env, deps.home)).catch(() => false);
         const roots = parsed.flags.get('scan-roots');
         const exclusions = parsed.flags.get('exclusions');
         const result = await enableScanner({
@@ -814,7 +850,7 @@ async function enableCommand(parsed, deps, output) {
             home: deps.home,
             input: deps.input ?? process.stdin,
             output,
-            nonInteractive: parsed.flags.has('non-interactive') || json,
+            nonInteractive: !present,
             noBrowser: parsed.flags.has('no-browser'),
             timeout: retryOnce(parsed.flags),
             ...(typeof roots === 'string' ? { roots: roots.split(',').filter(Boolean) } : {}),
@@ -1254,7 +1290,7 @@ export async function runCli(args, deps = {}) {
             return 0;
         }
         if ((action === 'add' || action === 'remove') &&
-            (parsed.flags.has('non-interactive') || parsed.flags.has('json')) &&
+            !personPresent(parsed, deps) &&
             !parsed.flags.has('apply'))
             return actionRequired(output, parsed.flags.has('json'), 'Rerun with --apply', '--apply');
         const pathArgument = actionArguments[0] ?? '';
@@ -1270,7 +1306,7 @@ export async function runCli(args, deps = {}) {
                 output.line(alreadyConnectedFolderLine(name));
             return 0;
         }
-        if (!parsed.flags.has('non-interactive') && !parsed.flags.has('json')) {
+        if (personPresent(parsed, deps)) {
             output.line(action === 'add' ? connectFolderPrompt(name) : removeFolderPrompt(name));
             const readline = createInterface({ input: deps.input ?? process.stdin, terminal: false });
             const answer = String((await readline[Symbol.asyncIterator]().next()).value ?? '').trim();

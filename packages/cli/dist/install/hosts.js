@@ -1,3 +1,4 @@
+import { CODEX_TRUST_MESSAGE } from '../humanReason.js';
 import { apiOrigin } from '@mnemonik/shared';
 import { readFile, rm } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
@@ -8,12 +9,9 @@ import { readOwnership, rollbackHost, saveOwnership, } from './ownership.js';
 import { ensureInstallSession } from '../auth/installSession.js';
 import { createCliCredentials } from '../auth/credentials.js';
 import { readInstallation } from '../installation.js';
-export function codexTrustAction(resolvedPath) {
-    const desktop = resolvedPath?.includes('/ChatGPT.app/') ||
-        /[\\/]Programs[\\/]OpenAI[\\/]Codex[\\/]/i.test(resolvedPath ?? '');
-    return desktop
-        ? "Open the ChatGPT app and use the 'Hooks need review' notice at startup to review and allow the Mnemonik hooks. If the notice does not appear, restart the app once."
-        : 'Run the codex command in a terminal and use its hook trust prompt to allow the Mnemonik hooks; then quit and reopen Codex.';
+/** The one Codex trust step, for every surface (status, doctor, install, update). */
+export function codexTrustAction(_resolvedPath) {
+    return CODEX_TRUST_MESSAGE.nextStep;
 }
 export const CODEX_TRUST_ACTION = codexTrustAction();
 /** L-86: shown once, when an install drops the family from Codex's hook command. */
@@ -771,7 +769,7 @@ export async function hookStatusConditions(deps, hosts) {
             ? `${host} hook declaration is missing.`
             : !record.credentialFamily ||
                 !(await credentials.readFamily(record.credentialFamily).catch(() => null))
-                ? `${host} hook credential family is missing or revoked.`
+                ? `${host} hook sign-in is missing or revoked.`
                 : undefined;
         if (missing)
             conditions.push({

@@ -1,8 +1,8 @@
-// Codex hooks are trusted in Codex settings and Codex never asks, so this
-// never says "allow the hooks" or promises a prompt.
+// Said only when Codex's own records show the registered hooks untrusted, so
+// Codex skips them. Codex re-reads its hooks every turn: nothing to restart.
 export const CODEX_TRUST_MESSAGE = {
-    sentence: 'Codex has not trusted the Mnemonik hooks yet.',
-    nextStep: 'Open Codex settings, trust the Mnemonik hooks, then quit and reopen Codex.',
+    sentence: 'Codex is not running the Mnemonik hooks until you trust them.',
+    nextStep: 'Run codex, then approve the Mnemonik hooks when it asks.',
 };
 // The scanner stopped because its saved consent names an older notice (or
 // folders nobody approved). Resume cannot help; enable asks once in the browser.
@@ -15,7 +15,15 @@ export const SCANNER_UPDATE_CONSENT_MESSAGE = {
     sentence: 'A scanner update is waiting until you approve an updated notice.',
     nextStep: 'Run mnemonik scanner enable.',
 };
+// An earlier install run stopped part-way and holds the install journal, so
+// nothing that needs it can proceed until install finishes or removes it.
+export const INTERRUPTED_INSTALL = /^(?:resolve_interrupted_install_first|Resolve interrupted install first)$/u;
+export const INTERRUPTED_INSTALL_MESSAGE = {
+    sentence: 'An earlier installation on this computer did not finish.',
+    nextStep: 'Run mnemonik install to finish or remove it.',
+};
 const readinessMessages = [
+    [INTERRUPTED_INSTALL, INTERRUPTED_INSTALL_MESSAGE],
     [/scanner_consent_required/u, SCANNER_CONSENT_MESSAGE],
     [/scanner_update_consent_required|release_consent_required/u, SCANNER_UPDATE_CONSENT_MESSAGE],
     [

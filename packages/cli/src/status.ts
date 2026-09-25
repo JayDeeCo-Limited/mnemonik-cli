@@ -204,7 +204,12 @@ export interface StatusDocumentInput {
   projectHookConditions?: readonly ReadinessCondition[];
   configuredHosts?: readonly string[];
   details?: Omit<ReadinessDocumentInput, 'installation' | 'projects' | 'generatedAt'>;
-  scannerHeartbeat?: { at: string; version: string | null; disclosureVersion: string | null };
+  scannerHeartbeat?: {
+    at: string;
+    version: string | null;
+    disclosureVersion: string | null;
+    missingApprovedRoots?: number;
+  };
   /** True once the scanner has sent a heartbeat, so indexing needs no announcement. */
   scannerReported?: boolean;
   generatedAt?: string;
@@ -384,6 +389,9 @@ export function buildStatusDocument(
               ])
             : null,
           acceptedDisclosureVersion: input.scannerHeartbeat?.disclosureVersion ?? null,
+          ...(input.scannerHeartbeat?.missingApprovedRoots
+            ? { missingApprovedRoots: input.scannerHeartbeat.missingApprovedRoots }
+            : {}),
         }
       : null,
     limitedMode: scannerOmitted
@@ -592,6 +600,23 @@ export async function readProjectStatus(
   return JSON.parse(text) as ProjectStatusResult;
 }
 
+/**
+ * Approved folders that no longer exist on this computer. The scanner cannot
+ * watch them and nobody needs to act, so the console does not count them as
+ * approved folders that are not being watched.
+ */
+async function approvedFoldersGone(roots: readonly string[]): Promise<number> {
+  const gone = await Promise.all(
+    roots.map((root) =>
+      stat(root).then(
+        () => false,
+        (error: NodeJS.ErrnoException) => error.code === 'ENOENT' || error.code === 'ENOTDIR'
+      )
+    )
+  );
+  return gone.filter(Boolean).length;
+}
+
 export async function collectStatusDocument(input: CollectStatusInput): Promise<
   ReadinessDocument & {
     cliCredential: Awaited<ReturnType<typeof cliCredentialStatus>>;
@@ -652,7 +677,7 @@ export async function collectStatusDocument(input: CollectStatusInput): Promise<
       await readFile(join(statusStateDir, 'scanner/state.json'), 'utf8').catch(() => 'null')
     ) as {
       boundary?: string;
-      consent?: { disclosureVersion: string };
+      consent?: { disclosureVersion: string; roots?: string[] };
       devReleaseSource?: boolean;
       config: { roots: string[]; exclusions?: string[] };
     } | null;
@@ -710,10 +735,12 @@ export async function collectStatusDocument(input: CollectStatusInput): Promise<
         exclusions: state.config.exclusions ?? [],
         repositories: [],
       };
+      const missing = await approvedFoldersGone(state.consent?.roots ?? []);
       scannerHeartbeat = {
         at: new Date(heartbeat).toISOString(),
         version: snapshot.version,
         disclosureVersion: state.consent?.disclosureVersion ?? null,
+        ...(missing ? { missingApprovedRoots: missing } : {}),
       };
     }
     // A running scanner that says it is failing. A refused credential already
