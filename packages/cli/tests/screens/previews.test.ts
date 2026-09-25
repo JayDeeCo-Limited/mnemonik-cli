@@ -57,8 +57,8 @@ it('renders the W3 owner previews from the production screen code', async () => 
   normal.output.line('https://auth.mnemonik.ai/oauth/device?user_code=XCDM-KZGJ');
   normal.output.line(DEVICE_WARNING);
   normal.output.line(completedLine('Signed in'));
-  normal.output.line(completedStep(3, 'Configure editors'));
-  normal.output.line(completedLine('3 editors configured'));
+  normal.output.line(completedStep(3, 'Configure coding tools'));
+  normal.output.line(completedLine('3 coding tools configured'));
   renderJourney('scanner', normal.output);
   normal.output.line(scannerBoundaryPrompt('~/Projects'));
   normal.output.line('~/Projects');
@@ -156,7 +156,7 @@ it('renders the W3 owner previews from the production screen code', async () => 
     '=== Scanner failure ending ===',
     scannerFailureEnding,
     '',
-    '=== No supported editors ===',
+    '=== No supported coding tools ===',
     noEditors.text().trimEnd(),
     '',
     '=== Step 1 checklist ===',
@@ -392,8 +392,8 @@ it('renders the night interaction screens from production code', async () => {
   const progress = capture();
   const signingIn = stepProgress(progress.output, false, 'Signing in');
   signingIn.complete(completedLine('Signed in'));
-  const configuring = stepProgress(progress.output, false, 'Configuring your editors');
-  configuring.complete(completedLine('2 editors configured'));
+  const configuring = stepProgress(progress.output, false, 'Configuring your coding tools');
+  configuring.complete(completedLine('2 coding tools configured'));
 
   const localSignIn = capture();
   const opened: string[] = [];

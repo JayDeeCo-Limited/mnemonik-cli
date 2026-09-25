@@ -10,6 +10,19 @@ export interface ProjectExecutor {
     apply(options: EnsureOptions): Promise<SetupResult>;
     rollback(options: EnsureOptions): Promise<SetupResult>;
 }
+/**
+ * The command that gives each offered answer, for an agent that reads JSON.
+ * An action no command can give is left out.
+ */
+export declare function answerCommands(actions: readonly string[], root: string, details?: {
+    candidates?: Array<{
+        projectId: string;
+    }>;
+    projectId?: string;
+}): Array<{
+    action: string;
+    command: string;
+}>;
 export declare function ensureProjectRoot(root: string, executor: ProjectExecutor): Promise<SetupResult>;
 /** Does Mnemonik have plain words for this state? */
 export declare const hasRefusalWords: (reason: string) => boolean;
@@ -118,6 +131,8 @@ export interface ProjectCommandInput {
     apply: boolean;
     confirmMismatch: boolean;
     replace: boolean;
+    /** Answer a waiting setup with cancel: clear the folder's setup notes. */
+    cancel?: boolean;
     owner?: string;
 }
 export declare function runProjectCommand(input: ProjectCommandInput, deps: ProjectCommandDependencies): Promise<number>;

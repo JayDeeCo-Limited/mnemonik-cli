@@ -60,6 +60,8 @@ export interface EnableOptions extends ScannerServiceOptions {
     exclusions?: string[];
     noBrowser?: boolean;
     approvalAnnounced?: boolean;
+    /** Called as the browser approval starts, so the caller can show it is waiting. */
+    awaitingApproval?: () => void;
     fetch?: typeof fetch;
     source?: () => Promise<RuntimeSource>;
     store?: RuntimeStore;

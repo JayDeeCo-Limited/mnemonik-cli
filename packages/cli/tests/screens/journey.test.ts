@@ -11,6 +11,7 @@ import { serializeReadiness } from '@mnemonik/shared';
 import { readFile } from 'node:fs/promises';
 import { expect, it, vi } from 'vitest';
 import * as screens from '../../src/screens.js';
+import { interruptedStep } from '../../src/screens/journey.js';
 import { Output } from '../../src/output.js';
 
 it.each(['account', 'scanner', 'apply', 'done', 'skipped', 'windows'])(
@@ -187,7 +188,7 @@ it('renders fresh step 1 exactly for three editors and applies keyboard changes'
   );
   expect(text).toBe(
     'Step 1 of 5: Choose what to set up\n' +
-      '  These editors were found on this computer. Untick any you do not want.\n' +
+      '  These coding tools were found on this computer. Untick any you do not want.\n' +
       '  Use the Up/Down arrow keys to move, Space to select, Enter to continue.\n\n' +
       '  > [x] Claude Code\n' +
       '    [x] Codex\n' +
@@ -237,9 +238,9 @@ it('keeps the existing zero-editor and skipped-indexing wording when everything 
   ]);
   input.write(' \u001b[B \r');
   await expect(selected).resolves.toEqual({ selected: [] });
-  output.line('  ✓ 0 editors configured');
+  output.line('  ✓ 0 coding tools configured');
   screens.renderJourney('indexing_skipped', output);
-  expect(text).toContain('  ✓ 0 editors configured\n');
+  expect(text).toContain('  ✓ 0 coding tools configured\n');
   expect(text).toContain('Indexing was skipped. Run mnemonik install to set it up later.\n');
   answers.close();
 });
@@ -347,7 +348,14 @@ it('a piped install stops at the first missing flag without printing key instruc
   });
 
   expect(code).toBe(3);
-  expect(text).toBe('Missing required consent flag: --accept-indexing\n');
+  expect(text).toBe(
+    [
+      'Missing required consent flag: --accept-indexing',
+      'Ask the person: Do you want automatic project indexing?',
+      'Then run the command again with --accept-indexing for yes, or with --without-scanner --accept-limited for no.',
+      '',
+    ].join('\n')
+  );
   expect(text).not.toMatch(/arrow keys|Recommended|Customize/iu);
   expect(authorizations).toBe(0);
 });
@@ -399,7 +407,7 @@ it('a second run after skipping indexing offers only indexing', async () => {
     expect(code).toBe(130);
     expect(text).toContain('Indexing was skipped.\n');
     expect(text).toContain('  > Set up indexing\n    Cancel\n');
-    expect(text).not.toMatch(/Recommended|Customize|Configure editors/iu);
+    expect(text).not.toMatch(/Recommended|Customize|Configure coding tools/iu);
   } finally {
     await rm(home, { recursive: true, force: true });
   }
@@ -557,7 +565,7 @@ it('keeps indexing detail out of the finished install transcript', () => {
     { total: 6, completed: 3, hosts: ['claude-code'] }
   );
   expect(text).not.toContain('Indexing');
-  expect(text).toContain('  One step is left in each editor');
+  expect(text).toContain('  One step is left in each coding tool');
 });
 it('keeps unknown indexing detail out of the completion wording', () => {
   let text = '';
@@ -579,8 +587,8 @@ it('shows the exact authorization block for all three editors', () => {
   screens.renderJourney('done', new Output({ write: (chunk) => void (text += chunk) }), {
     hosts: ['claude-code', 'codex', 'cursor'],
   });
-  expect(text).toBe(`  One step is left in each editor: Authorize the Mnemonik MCP connection.
-  You may need to restart your editor after authorizing.
+  expect(text).toBe(`  One step is left in each coding tool: Authorize the Mnemonik MCP connection.
+  You may need to restart your coding tool after authorizing.
 
   Claude Code      type /mcp, choose mnemonik, then Authenticate
   Codex CLI        run codex mcp login mnemonik
@@ -595,8 +603,8 @@ it('shows only the Claude Code authorization row when only Claude Code was set u
   screens.renderJourney('done', new Output({ write: (chunk) => void (text += chunk) }), {
     hosts: ['claude-code'],
   });
-  expect(text).toBe(`  One step is left in each editor: Authorize the Mnemonik MCP connection.
-  You may need to restart your editor after authorizing.
+  expect(text).toBe(`  One step is left in each coding tool: Authorize the Mnemonik MCP connection.
+  You may need to restart your coding tool after authorizing.
 
   Claude Code      type /mcp, choose mnemonik, then Authenticate
 
@@ -619,8 +627,8 @@ it('puts scanner failure before the editor authorization block', () => {
   expect(text).toBe(`  Background indexing could not be started.
   Run mnemonik install to try again.
 
-  One step is left in each editor: Authorize the Mnemonik MCP connection.
-  You may need to restart your editor after authorizing.
+  One step is left in each coding tool: Authorize the Mnemonik MCP connection.
+  You may need to restart your coding tool after authorizing.
 
   Claude Code      type /mcp, choose mnemonik, then Authenticate
 
@@ -648,7 +656,14 @@ it('removes an interrupted install in a non-interactive run and says so in one l
     let text = '';
     const output = { write: (chunk: string) => void (text += chunk) };
     await runCli(
-      ['install', '--non-interactive', '--accept-indexing', '--apply', '--scan-roots=/repo'],
+      [
+        'install',
+        '--non-interactive',
+        '--components=scanner',
+        '--accept-indexing',
+        '--apply',
+        '--scan-roots=/repo',
+      ],
       { installStateDir: stateDir, stdout: output, stderr: output }
     );
     expect(text).toContain('An earlier installation did not finish and was removed.');
@@ -763,11 +778,35 @@ it('interrupted joined files can be rolled back without account authorization', 
     expect(code).toBe(130);
     expect(authorized).toBe(false);
     expect(await bytesAt(identity)).toBeNull();
-    expect(text).toContain('Resume keeps your choices and continues the installation.\n');
+    // L-82, L-85: the resume screen has a flush-left heading and names the step.
+    expect(text).toContain(`
+
+Previous installation was interrupted
+  It stopped at step 5 of 5: Finish.
+  Resume keeps your choices and continues the installation.
+`);
     expect(text).toContain('Rollback removes changes from the unfinished installation.\n');
     expect(text).toContain('The unfinished installation was removed.\n');
     expect(text).not.toContain('rolled_back');
   } finally {
     await rm(stateDir, { recursive: true, force: true });
   }
+});
+
+it('names the step an interrupted joined install had reached', () => {
+  const selections = [
+    { host: 'codex' as const, component: 'hooks' as const, scope: 'user' as const, home: '/h' },
+    { host: 'codex' as const, component: 'mcp' as const, scope: 'user' as const, home: '/h' },
+  ];
+  const data = {
+    hostRequest: { command: 'install' as const, selections, allowMigration: false },
+    hostRuns: [{ id: 'codex:hooks', host: 'codex' as const, status: 'complete' as const }],
+    phase: 'preparing' as const,
+    components: ['hooks', 'mcp', 'scanner'],
+  };
+  expect(interruptedStep(data)).toBe(3);
+  data.hostRuns.push({ id: 'codex:mcp', host: 'codex', status: 'complete' });
+  expect(interruptedStep(data)).toBe(4);
+  expect(interruptedStep({ ...data, components: ['hooks', 'mcp'] })).toBe(5);
+  expect(interruptedStep({ ...data, phase: 'applying' })).toBe(5);
 });

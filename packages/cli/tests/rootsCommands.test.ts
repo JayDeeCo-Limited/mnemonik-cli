@@ -123,6 +123,35 @@ it('falls back to browser consent only when the disclosure changed', async () =>
   expect(JSON.parse(await readFile(join(f.stateDir, 'scanner/state.json'), 'utf8'))).toBeTruthy();
 });
 
+it.each(['add', 'remove'])(
+  '%s on a scanner paused for consent names scanner enable, not the server refusal',
+  async (action) => {
+    const f = await fixture();
+    await writeFile(
+      join(f.stateDir, 'scanner/status.json'),
+      JSON.stringify({
+        recordedAt: Date.now(),
+        snapshot: {
+          version: '1.2.3',
+          lifecycle: { state: 'paused', reason: 'consent_required', pid: null, pauseIntervals: [] },
+          heartbeat: { lastSuccess: null },
+          roots: [],
+          exclusions: [],
+        },
+      })
+    );
+
+    expect(await runCli([action, f.root], f.deps)).toBe(3);
+
+    expect(f.stdout.text).toBe(
+      'Background indexing is paused until you approve an updated notice.\n' +
+        'Run mnemonik scanner enable.\n'
+    );
+    expect(scanner.update).not.toHaveBeenCalled();
+    expect(scanner.enable).not.toHaveBeenCalled();
+  }
+);
+
 it('explains the plan limit in two actionable lines', async () => {
   const f = await fixture();
   f.ensureProject.mockResolvedValue({

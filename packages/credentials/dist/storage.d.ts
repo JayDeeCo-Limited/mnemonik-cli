@@ -1,5 +1,5 @@
 import { type Stats } from 'node:fs';
-import { stateDirectory, type ExecFile, type Fault } from '@mnemonik/local-setup';
+import { stateDirectory, type ExecFile, type Fault, type WindowsAclRun } from '@mnemonik/local-setup';
 export { stateDirectory };
 export type CredentialFailureReason = 'symlink_rejected' | 'wrong_owner' | 'weak_permissions' | 'not_regular_file' | 'path_outside_state' | 'acl_identity_unavailable';
 export declare class CredentialError extends Error {
@@ -15,6 +15,8 @@ export interface SecureFileOptions {
     fault?: Fault;
     execFile?: ExecFile;
     username?: string;
+    /** Native runner for the Windows ACL reader; tests inject fixture output. */
+    aclRun?: WindowsAclRun;
 }
 export declare function credentialPaths(stateDir?: string, familyId?: string): {
     root: string;
@@ -37,10 +39,12 @@ export declare class SecureFiles {
     private readonly fault?;
     private readonly execFile?;
     private readonly username?;
+    private readonly aclRun?;
     constructor(options?: SecureFileOptions);
     private assertInsideState;
     private components;
     private inspect;
+    private verifyWindowsPrivate;
     private makeDirectory;
     ensureParent(path: string): Promise<void>;
     read(path: string): Promise<Buffer | null>;

@@ -15,7 +15,7 @@ import { RuntimeStore, hash } from '../runtime/store.js';
 import { releaseSource, devReadiness } from '../runtime/releaseSource.js';
 import { evaluateRoot, repositoryAt } from '../project/eligibility.js';
 import { scannerService } from './service.js';
-import { controlScanner, scannerReceipt } from './control.js';
+import { ABANDONED_PAUSE_RESUMED, controlScanner, resumeAbandonedPause, scannerReceipt, } from './control.js';
 import { bytesAt, digest, withInstall } from '../install/journal.js';
 import { connectedProjectsMessage, createRealProjectRuntime, ensureProjectRoot, projectLimitMessage, } from '../project.js';
 import { consentDraft, runScannerBoundaryPicker } from './picker.js';
@@ -116,6 +116,12 @@ export async function prepareScanner(options, work) {
     await mkdir(join(options.stateDir, 'scanner'), { recursive: true, mode: 0o700 });
     return withLock(join(options.stateDir, 'scanner/enable'), 5000, async () => {
         const path = join(options.stateDir, 'scanner/state.json');
+        // Before reading the saved state, which an earlier run's pause still marks paused.
+        if (await resumeAbandonedPause(options))
+            if (options.nonInteractive)
+                options.output.error(ABANDONED_PAUSE_RESUMED);
+            else
+                options.output.line(ABANDONED_PAUSE_RESUMED);
         const saved = JSON.parse(await readFile(path, 'utf8').catch(() => 'null'));
         const credentials = options.credentials ?? createCliCredentials({ stateDir: options.stateDir });
         const authorize = options.authorize ??
@@ -180,8 +186,11 @@ export async function prepareScanner(options, work) {
             });
             await journal.event('service_start_intent', 'scanner');
         }
+        // The pause names this run, so a later command can undo it if this run dies.
         if (restore)
-            await controlScanner('pause', options);
+            await controlScanner('pause', options, options.journal
+                ? { session: options.journal.data.runId, pid: process.pid, at: Date.now() }
+                : undefined);
         try {
             const picked = options.roots
                 ? { roots: options.roots, exclusions: options.exclusions ?? [], repositories: [] }
@@ -230,8 +239,10 @@ export async function prepareScanner(options, work) {
                 if (!installation)
                     throw new Error('scanner_installation_missing');
                 // Browser approval reuses this installation's active session. Never cancel the hosts' session.
-                if (!options.nonInteractive)
+                if (!options.nonInteractive) {
                     options.output.line(options.approvalAnnounced ? REPOSITORY_APPROVAL_INSTRUCTION : SCANNER_APPROVAL_WAIT);
+                    options.awaitingApproval?.();
+                }
                 bearer = await authorize(consentDraft(picked), installation);
                 session = (await request('GET', '/api/v1/install-sessions/current'));
                 remote = (await request('GET', '/api/v1/scanner-consent/current'));

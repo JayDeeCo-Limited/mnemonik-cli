@@ -179,6 +179,7 @@ async function install(
       ['non-interactive', true],
       ['apply', true],
       ['accept-indexing', true],
+      ['components', 'scanner'],
       ['no-browser', true],
       ['scan-roots', roots.join(',')],
     ]),

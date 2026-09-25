@@ -6,11 +6,20 @@ export const INSTALLATION_STOPPED = 'Installation stopped.';
 export const SCANNER_FAILURE_MESSAGE = 'Background indexing could not be started.';
 export const SCANNER_RETRY_MESSAGE = 'Run mnemonik install to try again.';
 export const ADD_ANOTHER_FOLDER = 'To connect a folder somewhere else, run mnemonik add <folder>.';
+/** Step 4's spinner while the browser approval of the project folders is pending. */
+export const APPROVAL_WAITING = 'Waiting for approval';
+const STEP_NAMES = [
+    'Choose what to set up',
+    'Sign in',
+    'Configure coding tools',
+    'Connect project folders',
+    'Finish',
+];
 export const stepProgress = (output, interactive, text) => output.progressLine(interactive ? text : `  ${text}`, interactive);
 function setupLines(items, cursor = 0) {
     return [
         'Step 1 of 5: Choose what to set up',
-        '  These editors were found on this computer. Untick any you do not want.',
+        '  These coding tools were found on this computer. Untick any you do not want.',
         '  Use the Up/Down arrow keys to move, Space to select, Enter to continue.',
         '',
         ...items.map((item, index) => `  ${index === cursor ? '>' : ' '} [${item.checked ? 'x' : ' '}] ${item.label}`),
@@ -23,10 +32,10 @@ export function renderSetup(items, output, cursor = 0) {
     return setupLines(items, cursor).reduce((count, line) => count + output.line(line), 0);
 }
 export function renderNoSupportedEditors(output) {
-    output.line('No supported editors found.');
+    output.line('No supported coding tools found.');
     output.line();
-    output.line('Learn more about supported editors:');
-    output.line('https://mnemonik.ai/editor-support');
+    output.line('Learn more about supported coding tools:');
+    output.line('https://mnemonik.ai/install#support');
 }
 export function editorAuthorizationRows(hosts = []) {
     const selected = new Set(hosts);
@@ -50,8 +59,8 @@ function editorAuthorizationLines(hosts = []) {
     if (!rows.length)
         return [];
     return [
-        '  One step is left in each editor: Authorize the Mnemonik MCP connection.',
-        '  You may need to restart your editor after authorizing.',
+        '  One step is left in each coding tool: Authorize the Mnemonik MCP connection.',
+        '  You may need to restart your coding tool after authorizing.',
         '',
         ...rows.map((row) => `  ${row}`),
         '',
@@ -118,9 +127,21 @@ export function renderJourney(screen, output, v = {}) {
     const rendered = lines[screen] ?? [];
     return rendered.reduce((count, line) => count + output.line(line), 0);
 }
-export function renderInterrupted(output) {
+/** The step an unfinished joined install had reached, read from its journal. */
+export function interruptedStep(data) {
+    const done = (data.hostRuns ?? []).filter((run) => run.status === 'complete' || run.status === 'verified').length;
+    // The journal starts at step 3, so steps 1 and 2 were already behind it.
+    if (done < (data.hostRequest?.selections.length ?? 0))
+        return 3;
+    return data.phase === 'applying' || !data.components.includes('scanner') ? 5 : 4;
+}
+export function renderInterrupted(output, data) {
     output.installSection();
-    output.line('  Previous installation was interrupted.');
+    output.heading('Previous installation was interrupted');
+    if (data) {
+        const step = interruptedStep(data);
+        output.line(`  It stopped at step ${step} of 5: ${STEP_NAMES[step - 1]}.`);
+    }
     output.line('  Resume keeps your choices and continues the installation.');
     output.line('  Rollback removes changes from the unfinished installation.');
     output.line('  Use the Up/Down arrow keys and Enter.');

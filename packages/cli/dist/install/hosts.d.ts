@@ -54,6 +54,8 @@ export interface HostResult {
 }
 export declare function codexTrustAction(resolvedPath?: string): string;
 export declare const CODEX_TRUST_ACTION: string;
+/** L-86: shown once, when an install drops the family from Codex's hook command. */
+export declare const CODEX_TRUST_MIGRATION = "Mnemonik's Codex hooks no longer change when your sign-in changes. Codex will ask you to trust them one last time.";
 export declare function hostSource(host: HostArtifact, packagePath?: string | URL): Promise<RuntimeSource>;
 /** All selected targets share the ownership lease; a failed target restores only its group. */
 export declare function runHosts(command: HostCommand, selections: HostSelection[], deps: HostDependencies, allowMigration?: boolean): Promise<{

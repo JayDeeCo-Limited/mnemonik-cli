@@ -38,6 +38,8 @@ export interface ScannerServiceOptions {
   pidIdentity?: typeof pidIsScanner;
   signal?: typeof process.kill;
   onScannerRestartRequested?: () => void;
+  /** Called once a pause left by an installation that did not finish is undone. */
+  onAbandonedPauseResumed?: () => void;
   platform?: NodeJS.Platform;
   home?: string;
   uid?: number;

@@ -32,5 +32,11 @@ interface NpmDist {
 export declare function npmReleaseSource(fetcher?: Fetch, view?: () => Promise<NpmDist>): Promise<RuntimeSource>;
 /** Supply this as runtimeUpdate.source; the update path restarts managed services. */
 export declare function releaseSource(artifact: Artifact): Promise<RuntimeSource>;
+/**
+ * The disclosure version the scanner this CLI installs expects its consent to
+ * carry, read from the release manifest bundled with the CLI (no download).
+ * Undefined when the manifest predates the field or cannot be read.
+ */
+export declare function expectedScannerDisclosureVersion(platform?: string): Promise<string | undefined>;
 export {};
 //# sourceMappingURL=releaseSource.d.ts.map

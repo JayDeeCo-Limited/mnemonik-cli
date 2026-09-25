@@ -1,5 +1,5 @@
 import { Readable } from 'node:stream';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -434,6 +434,62 @@ describe('command router', () => {
     expect(signedOut.deps.grantFetch).not.toHaveBeenCalled();
   });
 
+  it('status says when the console has not heard from this machine because its sign-in no longer works (L-166)', async () => {
+    const prepare = () => {
+      const f = fixture();
+      f.deps.statusGeneratedAt = '2026-09-24T00:00:00.000Z';
+      f.deps.configuredHosts = [];
+      f.deps.projectHookConditions = [];
+      f.deps.scannerStatus = async () => ({ roots: [], exclusions: [], repositories: [] });
+      f.deps.grantFetch = vi.fn(async () => Response.json({ status: 'recorded' }));
+      return f;
+    };
+    const notTold =
+      'The console has not heard from this machine because its sign-in no longer works.\n' +
+      'Run mnemonik auth renew, then try again.\n';
+
+    const refused = prepare();
+    refused.deps.cliAuth!.getCliBearer = async () => ({
+      status: 'ACTION_REQUIRED',
+      reason: 'invalid_grant',
+    });
+    await runCli(['status'], refused.deps);
+    expect(refused.deps.grantFetch).not.toHaveBeenCalled();
+    expect(refused.stdout.text).toContain('Mnemonik is installed and working.\n');
+    expect(refused.stdout.text.endsWith(notTold)).toBe(true);
+
+    const usable = prepare();
+    await runCli(['status'], usable.deps);
+    expect(usable.deps.grantFetch).toHaveBeenCalledOnce();
+    expect(usable.stdout.text).not.toContain('has not heard');
+    expect(usable.stdout.text).not.toContain('auth renew');
+
+    // A credential file other users can read is refused, and status says so
+    // with the store's own words instead of reading as healthy (L-131).
+    const exposed = prepare();
+    exposed.deps.cliAuth!.getCliBearer = async () => {
+      throw Object.assign(new Error('weak_permissions'), {
+        name: 'CredentialError',
+        reason: 'weak_permissions',
+      });
+    };
+    await runCli(['status'], exposed.deps);
+    expect(exposed.deps.grantFetch).not.toHaveBeenCalled();
+    expect(
+      exposed.stdout.text.endsWith(
+        'A Mnemonik credential file can be read by other users on this computer.\n' +
+          'Set that file to owner-only access, then run mnemonik status again.\n'
+      )
+    ).toBe(true);
+    expect(exposed.stdout.text).not.toContain('has not heard');
+
+    // --json stays the document alone.
+    const json = prepare();
+    json.deps.cliAuth!.getCliBearer = refused.deps.cliAuth!.getCliBearer;
+    await runCli(['status', '--json'], json.deps);
+    expect(() => JSON.parse(json.stdout.text)).not.toThrow();
+  });
+
   it('doctor reports the running CLI version to the console and keeps its --json unchanged (L-160)', async () => {
     const signedIn = fixture();
     signedIn.deps.statusGeneratedAt = '2026-09-23T05:35:00.000Z';
@@ -524,6 +580,92 @@ describe('command router', () => {
       );
       expect(f.stderr.text).toBe('');
       expect(f.deps.grantFetch).toHaveBeenCalledOnce();
+    }
+  );
+
+  it.each([
+    ['current', false],
+    ['failed', true],
+  ] as const)(
+    'a full automatic update records its result (%s) and reports it with the machine',
+    async (result, foreignLauncher) => {
+      const f = fixture();
+      f.deps.configuredHosts = [];
+      f.deps.projectHookConditions = [];
+      const stateDir = f.deps.installStateDir!;
+      mkdirSync(stateDir, { recursive: true });
+      if (foreignLauncher) {
+        // Something that is not Mnemonik's owns the launcher path: the update stops.
+        mkdirSync(join(f.deps.home!, '.local', 'bin'), { recursive: true });
+        writeFileSync(join(f.deps.home!, '.local', 'bin', 'mnemonik'), '#!/bin/sh\n');
+      }
+      let posted: { versions?: { update?: unknown } } | undefined;
+      f.deps.grantFetch = vi.fn(async (input, init) => {
+        expect(new URL(String(input)).pathname).toBe('/api/v1/installations/current/readiness');
+        posted = JSON.parse(String(init?.body)).readiness;
+        return Response.json({ status: 'recorded' });
+      });
+      const before = Date.now();
+      await runCli(['update', '--automatic'], f.deps);
+      const saved = JSON.parse(readFileSync(join(stateDir, 'update-check.json'), 'utf8'));
+      expect(saved.result).toBe(result);
+      expect(Date.parse(saved.checkedAt)).toBeGreaterThanOrEqual(before - 1000);
+      expect(isReadinessDocument(posted)).toBe(true);
+      expect(posted?.versions?.update).toEqual(saved);
+      expect(f.stdout.text + f.stderr.text).toBe('');
+    }
+  );
+
+  it.each([
+    ['paused for consent', 'scanner_consent_required'],
+    ['holding a scanner update for consent', 'scanner_update_consent_required'],
+  ])(
+    'automatic update records a scanner %s in the readiness report, silently',
+    async (_state, reason) => {
+      const f = fixture();
+      f.deps.configuredHosts = [];
+      f.deps.projectHookConditions = [];
+      f.deps.scannerDisclosureVersion = async () => '2026.09.2';
+      const stateDir = f.deps.installStateDir!;
+      mkdirSync(join(stateDir, 'scanner'), { recursive: true });
+      writeFileSync(
+        join(stateDir, 'scanner/state.json'),
+        JSON.stringify({
+          config: { roots: [], exclusions: [] },
+          consent: { userId: 'owner', roots: [], exclusions: [], disclosureVersion: '2026.09.1' },
+          paused: reason === 'scanner_consent_required',
+          pauseIntervals: [],
+        })
+      );
+      writeFileSync(
+        join(stateDir, 'scanner/status.json'),
+        JSON.stringify({
+          recordedAt: Date.now(),
+          snapshot: {
+            version: '1.2.3',
+            lifecycle:
+              reason === 'scanner_consent_required'
+                ? { state: 'paused', reason: 'consent_required', pid: null, pauseIntervals: [] }
+                : { state: 'running', reason: 'started', pid: process.pid, pauseIntervals: [] },
+            heartbeat: { lastSuccess: Date.now() },
+            roots: [],
+            exclusions: [],
+          },
+        })
+      );
+      let posted: { installation?: { state: string; reasons: string[]; actions: string[] } } = {};
+      f.deps.grantFetch = vi.fn(async (input, init) => {
+        expect(new URL(String(input)).pathname).toBe('/api/v1/installations/current/readiness');
+        posted = JSON.parse(String(init?.body)).readiness;
+        return Response.json({ status: 'recorded' });
+      });
+      await runCli(['update', '--host', 'codex', '--automatic'], f.deps);
+      expect(isReadinessDocument(posted)).toBe(true);
+      expect(posted.installation?.state).toBe('ACTION_REQUIRED');
+      expect(posted.installation?.reasons).toContain(reason);
+      expect(posted.installation?.reasons).not.toContain('scanner_paused');
+      expect(posted.installation?.actions).toContain('mnemonik scanner enable');
+      expect(f.stdout.text + f.stderr.text).toBe('');
     }
   );
 
@@ -716,7 +858,7 @@ it('connect reports an unapproved sign-in and how to try again', async () => {
 });
 
 const CODEX_INSTRUCTIONS =
-  'Finish signing in to Mnemonik in the editor.\n' +
+  'Finish signing in to Mnemonik in the coding tool.\n' +
   'Codex CLI        run codex mcp login mnemonik\n' +
   'Codex Desktop    open Settings, Plugins, MCPs, then Authenticate\n';
 
@@ -826,7 +968,7 @@ it('connect reports local editor setup consistently in plain text and JSON', asy
     stdout.text = '';
     expect(await runCli(['connect', 'codex'], deps)).toBe(3);
     expect(stdout.text).toBe(
-      'Finish signing in to Mnemonik in the editor.\n' +
+      'Finish signing in to Mnemonik in the coding tool.\n' +
         'Codex CLI        run codex mcp login mnemonik\n' +
         'Codex Desktop    open Settings, Plugins, MCPs, then Authenticate\n'
     );
@@ -835,7 +977,7 @@ it('connect reports local editor setup consistently in plain text and JSON', asy
     expect(await runCli(['connect', 'codex', '--json'], deps)).toBe(3);
     expect(JSON.parse(stdout.text)).toEqual({
       status: 'ACTION_REQUIRED',
-      reason: 'Finish signing in to Mnemonik in the editor.',
+      reason: 'Finish signing in to Mnemonik in the coding tool.',
       actions: [
         'Codex CLI        run codex mcp login mnemonik',
         'Codex Desktop    open Settings, Plugins, MCPs, then Authenticate',
@@ -902,7 +1044,7 @@ describe('connect with the editor signed in on another machine', () => {
     expect(await connectCursor([cursorGrant(MAC, hoursAgo(48))])).toEqual({
       code: 3,
       stdout:
-        'Finish signing in to Mnemonik in the editor.\n' +
+        'Finish signing in to Mnemonik in the coding tool.\n' +
         'Cursor Desktop   open Cursor Settings, Customize, MCPs, then Authenticate\n',
     });
   });
@@ -915,7 +1057,7 @@ describe('connect with the editor signed in on another machine', () => {
     const result = await connect('claude-code', grants);
     expect(result.code).toBe(3);
     expect(result.stdout).toBe(
-      'Finish signing in to Mnemonik in the editor.\n' +
+      'Finish signing in to Mnemonik in the coding tool.\n' +
         'Claude Code      type /mcp, choose mnemonik, then Authenticate\n'
     );
   });
@@ -1050,6 +1192,166 @@ describe('project ensure needs no flags', () => {
     const f = await ensureFixture();
     expect(await runCli(['project', 'ensure', '--apply'], f.deps)).toBe(2);
     expect(f.ensureProject).not.toHaveBeenCalled();
+  });
+});
+
+describe('a running scanner that reports its own failure', () => {
+  const FAILING =
+    'Background indexing is failing on this computer.\nRun mnemonik doctor to see why.\n';
+  async function withReceipt(
+    f: ReturnType<typeof fixture>,
+    failure: {
+      kind: string;
+      at: string;
+      cause: string;
+      reason?: string;
+      project?: string;
+    } | null,
+    lifecycle: { state: string; reason: string } = { state: 'running', reason: 'started' }
+  ) {
+    const { mkdir, writeFile } = await import('node:fs/promises');
+    const dir = f.deps.installStateDir!;
+    await mkdir(join(dir, 'scanner'), { recursive: true });
+    await writeFile(
+      join(dir, 'scanner/status.json'),
+      JSON.stringify({
+        recordedAt: Date.now(),
+        snapshot: {
+          version: '1.2.3',
+          lifecycle: { ...lifecycle, pid: process.pid, pauseIntervals: [] },
+          heartbeat: { lastSuccess: Date.now() },
+          roots: [],
+          exclusions: [],
+          failure,
+        },
+      })
+    );
+  }
+  const refused = {
+    kind: 'push_rejected',
+    at: '2026-09-25T03:00:00.000Z',
+    cause: 'Upload rejected: 503 Service Unavailable',
+    reason: 'HTTP 503',
+  };
+
+  it('status says so in one sentence with doctor, and only while it is failing', async () => {
+    const failing = fixture();
+    await withReceipt(failing, refused);
+    await runCli(['status'], failing.deps);
+    expect(failing.stdout.text).toContain(`\n${FAILING}`);
+    expect(failing.stdout.text.split('failing').length - 1).toBe(1);
+    expect(failing.stdout.text).not.toContain('Upload rejected');
+    const recovered = fixture();
+    await withReceipt(recovered, null);
+    await runCli(['status'], recovered.deps);
+    expect(recovered.stdout.text).not.toContain('failing');
+  });
+
+  it('doctor gives the plain cause with the server reason, the logged line beneath', async () => {
+    const f = fixture();
+    await withReceipt(f, refused);
+    await runCli(['doctor'], f.deps);
+    expect(f.stdout.text).toContain(FAILING);
+    expect(f.stdout.text).toContain(
+      'The server rejected an upload from this computer. The server said: HTTP 503.\n' +
+        '  Upload rejected: 503 Service Unavailable\n'
+    );
+  });
+
+  it('doctor names a folder that could not be watched by its project, never its path', async () => {
+    const f = fixture();
+    await withReceipt(f, {
+      kind: 'watcher_error',
+      at: refused.at,
+      cause: 'Failed to start watcher for atlas: ENOSPC <path:redacted>',
+      project: 'atlas',
+    });
+    await runCli(['doctor'], f.deps);
+    expect(f.stdout.text).toContain(
+      'A folder could not be watched. Project: atlas.\n' +
+        '  Failed to start watcher for atlas: ENOSPC <path:redacted>\n'
+    );
+  });
+
+  it('a scanner paused for consent names scanner enable in status and resume, never resume', async () => {
+    const consent = { state: 'paused', reason: 'consent_required' };
+    const lines =
+      'Background indexing is paused until you approve an updated notice.\n' +
+      'Run mnemonik scanner enable.\n';
+    const status = fixture();
+    await withReceipt(status, null, consent);
+    await runCli(['status'], status.deps);
+    expect(status.stdout.text).toContain(lines);
+    expect(status.stdout.text).not.toContain('scanner resume');
+    const resume = fixture();
+    await withReceipt(resume, null, consent);
+    expect(await runCli(['scanner', 'resume'], resume.deps)).toBe(3);
+    expect(resume.stdout.text).toBe(lines);
+    const { access } = await import('node:fs/promises');
+    await expect(
+      access(join(resume.deps.installStateDir!, 'scanner/control.json'))
+    ).rejects.toThrow();
+  });
+
+  it('status names a scanner update waiting for an updated notice while the scanner runs', async () => {
+    const f = fixture();
+    await withReceipt(f, null);
+    const { writeFile } = await import('node:fs/promises');
+    await writeFile(
+      join(f.deps.installStateDir!, 'scanner/state.json'),
+      JSON.stringify({
+        config: { roots: [], exclusions: [] },
+        consent: { userId: 'owner', roots: [], exclusions: [], disclosureVersion: '2026.09.1' },
+        paused: false,
+        pauseIntervals: [],
+      })
+    );
+    await runCli(['status'], { ...f.deps, scannerDisclosureVersion: async () => '2026.09.2' });
+    expect(f.stdout.text).toContain(
+      'A scanner update is waiting until you approve an updated notice.\n' +
+        'Run mnemonik scanner enable.\n'
+    );
+    expect(f.stdout.text).not.toContain('paused');
+    const current = fixture();
+    await withReceipt(current, null);
+    await writeFile(
+      join(current.deps.installStateDir!, 'scanner/state.json'),
+      JSON.stringify({
+        config: { roots: [], exclusions: [] },
+        consent: { userId: 'owner', roots: [], exclusions: [], disclosureVersion: '2026.09.2' },
+        paused: false,
+        pauseIntervals: [],
+      })
+    );
+    await runCli(['status'], {
+      ...current.deps,
+      scannerDisclosureVersion: async () => '2026.09.2',
+    });
+    expect(current.stdout.text).not.toContain('updated notice');
+  });
+
+  it('a refused scanner sign-in has its own line in status and its cause in doctor', async () => {
+    const refusedSignIn = {
+      kind: 'credential_refused',
+      at: refused.at,
+      cause: 'The server refused the scanner credential (credential_revoked).',
+    };
+    const paused = { state: 'paused', reason: 'credential_revoked' };
+    const status = fixture();
+    await withReceipt(status, refusedSignIn, paused);
+    await runCli(['status'], status.deps);
+    expect(status.stdout.text).toContain(
+      'Background indexing has lost its sign-in on this computer.\nRun mnemonik repair.\n'
+    );
+    expect(status.stdout.text).not.toContain('failing');
+    expect(status.stdout.text).not.toContain('A coding tool is signed out');
+    const doctor = fixture();
+    await withReceipt(doctor, refusedSignIn, paused);
+    await runCli(['doctor'], doctor.deps);
+    expect(doctor.stdout.text).toContain(
+      "The server refused this computer's indexing sign-in. Run mnemonik repair.\n" +
+        '  The server refused the scanner credential (credential_revoked).\n'
+    );
   });
 });
 

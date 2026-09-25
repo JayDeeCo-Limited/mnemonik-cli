@@ -22,6 +22,8 @@ export interface DiscoveredRepository {
   state: RepositoryState;
   /** What is on disk, for display only. Git history is optional, never a condition. */
   kind?: 'git' | 'folder';
+  /** The project its `.mnemonik.json` names. A folder with one is a project, git or not. */
+  projectId?: string;
   fingerprint?: RepositoryFingerprint;
   reason?: Exclude<ProjectIdentityResolution['kind'], 'ok' | 'absent'>;
 }
@@ -30,6 +32,8 @@ export interface ScannerCandidate {
   path: string;
   name: string;
   kind: 'git' | 'folder';
+  /** Lets the server tell an already-connected project from a new folder. */
+  projectId?: string;
 }
 
 export type DiscoveryResult = {
@@ -111,7 +115,12 @@ export async function classifyRepository(
       ? ('git' as const)
       : ('folder' as const);
   if (resolution.kind === 'ok') {
-    return { path: resolvedPath, state: 'existing_project', kind };
+    return {
+      path: resolvedPath,
+      state: 'existing_project',
+      kind,
+      projectId: resolution.identity.projectId,
+    };
   }
   if (resolution.kind !== 'absent') {
     return { path: resolvedPath, state: 'action_required', kind, reason: resolution.kind };
@@ -225,13 +234,21 @@ export async function scannerCandidates(boundary: string): Promise<{
     boundary: discovered.root,
     repositories: discovered.repositories,
     omitted: discovered.omitted,
-    candidates: discovered.repositories.map((repository) => ({
-      path: repository.path,
-      name: repositoryName(discovered.root, repository.path),
-      kind: repository.kind ?? 'git',
-    })),
+    candidates: discovered.repositories.map((repository) =>
+      scannerCandidate(discovered.root, repository)
+    ),
   };
 }
+
+export const scannerCandidate = (
+  root: string,
+  repository: DiscoveredRepository
+): ScannerCandidate => ({
+  path: repository.path,
+  name: repositoryName(root, repository.path),
+  kind: repository.kind ?? 'git',
+  ...(repository.projectId ? { projectId: repository.projectId } : {}),
+});
 
 export async function guessDiscoveryBoundary(cwd: string, home: string): Promise<string> {
   const current = resolve(cwd);

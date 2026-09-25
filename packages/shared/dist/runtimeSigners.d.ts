@@ -21,6 +21,12 @@ export declare function verifyWindowsPermission(path: string, run?: Execute, sta
 type HookIdentity = {
     name: string;
     sid: string;
+    /**
+     * The SID the SDDL alias `LA` stands for on this machine: its own account
+     * domain's RID 500. Resolved only for a RID-500 token (no other account can
+     * be LA); `null` when that token is not a local account, so LA is someone else.
+     */
+    localAdministratorSid?: string | null;
 };
 export declare function windowsCurrentAccountSync(): HookIdentity;
 /** Frequent config polling checks fresh ACEs; stat changes trigger a full owner audit. */

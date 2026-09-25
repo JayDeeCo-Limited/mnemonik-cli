@@ -167,10 +167,10 @@ it.each(['indexing-skipped marker', 'retired host ownership'])(
 
   ✓ Computer checked
 
-  No supported editors found.
+  No supported coding tools found.
 
-  Learn more about supported editors:
-  https://mnemonik.ai/editor-support`);
+  Learn more about supported coding tools:
+  https://mnemonik.ai/install#support`);
     expect(network).not.toHaveBeenCalled();
     expect(authorize).not.toHaveBeenCalled();
     expect(manage).not.toHaveBeenCalled();
@@ -187,8 +187,9 @@ it.each(['indexing-skipped marker', 'retired host ownership'])(
 async function runJourney(
   uncheckCodex = false,
   onlyIndexing = false,
-  beforeApply?: (terminal: Terminal) => Promise<void>,
-  signedIn: string[] = []
+  beforeApply?: (terminal: Terminal, stage: ReturnType<typeof vi.fn>) => Promise<void>,
+  signedIn: string[] = [],
+  duringApproval?: (terminal: Terminal) => Promise<void>
 ) {
   const home = await mkdtemp(join(tmpdir(), 'journey-transcript-'));
   homes.push(home);
@@ -268,8 +269,11 @@ async function runJourney(
     options.output.line('Where do your projects live? [~/projects]');
     expect(await options.readAnswer?.()).toBe('~/projects');
     options.output.line(REPOSITORY_APPROVAL_INSTRUCTION);
+    // The order of the real prepareScanner: announce, start waiting, then the device flow.
+    options.awaitingApproval?.();
     options.output.line('https://auth.mnemonik.ai/oauth/device?user_code=WKSG-ZKHW');
     options.output.line(DEVICE_WARNING);
+    await duringApproval?.(terminal);
     options.waiting?.('service', 120_000);
     return work({
       roots: [...projects],
@@ -343,7 +347,7 @@ async function runJourney(
   await vi.waitFor(() => expect(terminal.text()).toContain('Install and upload'), {
     timeout: 5_000,
   });
-  await beforeApply?.(terminal);
+  await beforeApply?.(terminal, executor.stage);
   input.write('\r');
   await expect(install).resolves.toBe(0);
   return { text: terminal.text(), selections };
@@ -366,8 +370,8 @@ https://auth.mnemonik.ai/oauth/device?user_code=XCDM-KZGJ
   Approve only a request on a device you control.
   ✓ Signed in
 
-Step 3 of 5: Configure editors
-  ✓ 3 editors configured
+Step 3 of 5: Configure coding tools
+  ✓ 3 coding tools configured
 
 Step 4 of 5: Connect project folders
   Where do your projects live? [~/projects]
@@ -383,8 +387,8 @@ https://auth.mnemonik.ai/oauth/device?user_code=WKSG-ZKHW
 Step 5 of 5: Finish
   ✓ Installation finished
 
-  One step is left in each editor: Authorize the Mnemonik MCP connection.
-  You may need to restart your editor after authorizing.
+  One step is left in each coding tool: Authorize the Mnemonik MCP connection.
+  You may need to restart your coding tool after authorizing.
 
   Claude Code      type /mcp, choose mnemonik, then Authenticate
   Codex CLI        run codex mcp login mnemonik
@@ -394,13 +398,54 @@ Step 5 of 5: Finish
 });
 
 it('leaves the finish menu still while waiting for the install decision', async () => {
-  await runJourney(false, false, async (terminal) => {
+  await runJourney(false, false, async (terminal, stage) => {
     const waiting = terminal.text();
+    // L-101: nothing is staged, and nothing spins, before the choice.
+    expect(stage).not.toHaveBeenCalled();
     expect(waiting).not.toContain('Connecting your project folders');
+    expect(waiting).not.toContain('Waiting for approval');
     expect(waiting).toContain('  > Install and upload\n    Back\n    Cancel');
     await new Promise((resolve) => setTimeout(resolve, 240));
     expect(terminal.text()).toBe(waiting);
   });
+});
+
+it('shows the same waiting indicator as step 2 while the folder approval is pending', async () => {
+  let waiting = '';
+  await runJourney(false, false, undefined, [], async (terminal) => {
+    waiting = terminal.text();
+  });
+  expect(waiting.slice(waiting.indexOf('Step 4 of 5'))).toMatch(
+    /\n {2}Approve only a request on a device you control\.\n {2}[|/\\-] Waiting for approval$/u
+  );
+});
+
+/** The owner-approved layout rules of L-85, checked line by line. */
+function expectApprovedLayout(text: string) {
+  const lines = text.split('\n');
+  expect(lines[0]).toBe('Mnemonik');
+  for (const [index, line] of lines.entries()) {
+    if (line.includes('://')) expect(line, 'a link is never indented').toMatch(/^https?:\/\//u);
+    if (/^Step \d of 5:/u.test(line)) {
+      // A blank line before each heading, and the heading is the step name only.
+      expect(lines[index - 1], line).toBe('');
+      expect(line).toMatch(/^Step \d of 5: [A-Z][a-z ]+$/u);
+    } else if (/^https?:\/\//u.test(line)) {
+      // Links flush left with a blank line above and below.
+      expect(lines[index - 1], line).toBe('');
+      expect(lines[index + 1], line).toBe('');
+    } else if (line && index > 0)
+      expect(line, 'everything else is indented').toMatch(/^ {2}\S| {4}/u);
+  }
+  // Waiting lines are replaced by their tick, and the closing block stands apart.
+  expect(text).not.toMatch(/Waiting for|[|/\\-] (?:Signing in|Connecting)/u);
+  expect(lines[lines.indexOf('  ✓ Installation finished') + 1]).toBe('');
+}
+
+it('follows the approved layout rules for the whole journey', async () => {
+  const { text } = await runJourney();
+  expectApprovedLayout(text);
+  expect(text.match(/Connected \d+ project folders|Repositories connected/gu)).toHaveLength(1);
 });
 
 it.each([false, true])(
@@ -438,7 +483,7 @@ it('Space on Codex then Enter configures only the other two editors', async () =
   const { text, selections } = await runJourney(true);
   expect([...new Set(selections.map(({ host }) => host))]).toEqual(['claude-code', 'cursor']);
   expect(text).toContain('  ✓ Claude Code, Cursor, automatic project indexing');
-  expect(text).toContain('  ✓ 2 editors configured');
+  expect(text).toContain('  ✓ 2 coding tools configured');
 });
 
 it('omits authorization for a previously configured editor unticked at Step 1', async () => {
@@ -454,7 +499,7 @@ it('asks only the editors that are not signed in to authorize', async () => {
   expect(text).not.toContain('Claude Code      type /mcp');
   expect(text).not.toContain('Cursor Desktop');
   expect(text).toContain(
-    '  One step is left in each editor: Authorize the Mnemonik MCP connection.'
+    '  One step is left in each coding tool: Authorize the Mnemonik MCP connection.'
   );
   expect(text).toContain('Codex CLI        run codex mcp login mnemonik');
 });

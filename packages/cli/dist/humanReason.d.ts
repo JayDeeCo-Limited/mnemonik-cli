@@ -6,6 +6,14 @@ export declare const CODEX_TRUST_MESSAGE: {
     sentence: string;
     nextStep: string;
 };
+export declare const SCANNER_CONSENT_MESSAGE: {
+    sentence: string;
+    nextStep: string;
+};
+export declare const SCANNER_UPDATE_CONSENT_MESSAGE: {
+    sentence: string;
+    nextStep: string;
+};
 /**
  * The words for one condition. A reason with no table entry keeps its own
  * sentence and its own step, so nothing reaches a person as a reason code.

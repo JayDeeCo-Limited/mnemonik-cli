@@ -9,6 +9,8 @@ export interface DiscoveredRepository {
     state: RepositoryState;
     /** What is on disk, for display only. Git history is optional, never a condition. */
     kind?: 'git' | 'folder';
+    /** The project its `.mnemonik.json` names. A folder with one is a project, git or not. */
+    projectId?: string;
     fingerprint?: RepositoryFingerprint;
     reason?: Exclude<ProjectIdentityResolution['kind'], 'ok' | 'absent'>;
 }
@@ -16,6 +18,8 @@ export interface ScannerCandidate {
     path: string;
     name: string;
     kind: 'git' | 'folder';
+    /** Lets the server tell an already-connected project from a new folder. */
+    projectId?: string;
 }
 export type DiscoveryResult = {
     status: 'complete' | 'list_truncated';
@@ -42,6 +46,7 @@ export declare function scannerCandidates(boundary: string): Promise<{
     repositories: DiscoveredRepository[];
     omitted: number;
 }>;
+export declare const scannerCandidate: (root: string, repository: DiscoveredRepository) => ScannerCandidate;
 export declare function guessDiscoveryBoundary(cwd: string, home: string): Promise<string>;
 export declare const repositoryName: (root: string, path: string) => string;
 export declare const repositoryStateLabel: (state: RepositoryState) => string;

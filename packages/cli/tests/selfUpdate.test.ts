@@ -3,7 +3,8 @@ import { createHash, createPrivateKey, generateKeyPairSync, randomBytes, sign } 
 import { mkdir, mkdtemp, readFile, readdir, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterAll, afterEach, beforeAll, beforeEach, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { serializeReadiness } from '@mnemonik/shared';
 import packageJson from '../package.json' with { type: 'json' };
 import { ensureLauncher } from '../src/launcher.js';
 import { runCli } from '../src/router.js';
@@ -734,7 +735,7 @@ it('reports one failure after both host update attempts fail', async () => {
     code: 3,
     text: 'The mnemonik command updated.\n',
     errors:
-      'Your editors could not update.\nRun mnemonik repair, then start a new session in each editor.\n',
+      'Your coding tools could not update.\nRun mnemonik repair, then start a new session in each coding tool.\n',
   });
   expect(runHosts).toHaveBeenCalledTimes(2);
 });
@@ -968,4 +969,115 @@ it('names what updated and what did not when only the scanner step fails', async
   expect(text).toBe('The mnemonik command updated.\n');
   expect(errors).toBe(`${failure.summary}\n${failure.action}\n`);
   expect(`${text}${errors}`).not.toContain('Mnemonik could not update.');
+});
+
+describe('a scanner release that names an updated notice', () => {
+  const saved = (root: string) =>
+    JSON.stringify({
+      schemaVersion: 1,
+      config: { roots: [root], exclusions: [], serverUrl: 'https://api.mnemonik.dev' },
+      consent: { userId: 'owner', roots: [root], exclusions: [], disclosureVersion: '2026.09.1' },
+      paused: false,
+      pauseIntervals: [],
+    });
+  async function setup() {
+    const root = join(state, 'Projects', 'app');
+    await mkdir(root, { recursive: true });
+    await mkdir(join(state, 'scanner'));
+    await writeFile(join(state, 'scanner/state.json'), saved(root));
+    const verify = RuntimeStore.prototype.verifyRuntime;
+    vi.spyOn(RuntimeStore.prototype, 'verifyRuntime').mockImplementation(async function (
+      this: RuntimeStore,
+      artifact
+    ) {
+      if (artifact !== 'scanner') return verify.call(this, artifact);
+      return {
+        directory: '/verified/1',
+        entry: '/verified/1/scanner',
+        reference: { version: '1.0.0', manifestSha256: 'installed' },
+        manifest: { artifact: 'scanner', version: '1.0.0', disclosureVersion: '2026.09.1' },
+      } as Awaited<ReturnType<RuntimeStore['verifyRuntime']>>;
+    });
+    const operations: string[] = [];
+    const command = vi.fn(async (operation: string) => {
+      operations.push(operation);
+      return {
+        status: 'ok' as const,
+        supervisor: { kind: 'systemd' as const, installed: true, running: true, pid: 1234 },
+      };
+    });
+    const release: RuntimeSource = {
+      manifest: {
+        artifact: 'scanner',
+        version: '2.0.0',
+        disclosureVersion: '2026.09.2',
+      } as RuntimeSource['manifest'],
+      files: {},
+    };
+    const enable = vi
+      .spyOn(scannerEnable, 'enableScanner')
+      .mockResolvedValue(serializeReadiness({ installation: { conditions: [] } }));
+    const install = vi.spyOn(RuntimeStore.prototype, 'installRuntime');
+    const out = { text: '', write: (value: string) => void (out.text += value) };
+    const err = { text: '', write: (value: string) => void (err.text += value) };
+    const deps = {
+      installStateDir: state,
+      home: state,
+      stdout: out,
+      stderr: err,
+      scannerService: { stateDir: state, command },
+      scannerEnable: { source: async () => release },
+    };
+    return { root, operations, enable, install, out, err, deps };
+  }
+
+  it.each([false, true])(
+    'a manual update asks once in the browser and leaves the running scanner running (scanner-only: %s)',
+    async (scannerOnly) => {
+      const f = await setup();
+      const code = await runCli(
+        ['update', ...(scannerOnly ? ['--component=scanner'] : [])],
+        f.deps as Parameters<typeof runCli>[1]
+      );
+      expect(code).toBe(0);
+      expect(f.enable).toHaveBeenCalledOnce();
+      expect(f.enable).toHaveBeenCalledWith(
+        expect.objectContaining({ roots: [f.root], exclusions: [], stateDir: state })
+      );
+      expect(f.enable.mock.calls[0]?.[0]).not.toHaveProperty('nonInteractive', true);
+      expect(f.out.text).toContain('Mnemonik updated.\n');
+      expect(f.out.text).not.toContain('updated notice');
+      // The update itself neither paused, stopped nor replaced the running scanner:
+      // the approval flow is where the new scanner is installed.
+      expect(f.operations).not.toEqual(expect.arrayContaining(['stop']));
+      expect(f.operations).not.toEqual(expect.arrayContaining(['uninstall']));
+      expect(f.install).not.toHaveBeenCalledWith('scanner', expect.anything(), expect.anything());
+      await expect(readFile(join(state, 'scanner/control.json'))).rejects.toThrow();
+      expect(await readFile(join(state, 'scanner/state.json'), 'utf8')).toBe(saved(f.root));
+    }
+  );
+
+  it('an automatic update asks nothing, keeps the scanner running and is not a failure', async () => {
+    const f = await setup();
+    expect(await runCli(['update', '--automatic'], f.deps as Parameters<typeof runCli>[1])).toBe(0);
+    expect(f.enable).not.toHaveBeenCalled();
+    expect(`${f.out.text}${f.err.text}`).toBe('');
+    expect(f.operations).not.toEqual(expect.arrayContaining(['stop']));
+    await expect(readFile(join(state, 'scanner/control.json'))).rejects.toThrow();
+    expect(await readFile(join(state, 'scanner/state.json'), 'utf8')).toBe(saved(f.root));
+    const check = JSON.parse(await readFile(join(state, 'update-check.json'), 'utf8'));
+    expect(check.result).not.toBe('failed');
+  });
+
+  it('a manual update the person does not approve says what is waiting', async () => {
+    const f = await setup();
+    f.enable.mockRejectedValue(new Error('consent_declined'));
+    expect(await runCli(['update'], f.deps as Parameters<typeof runCli>[1])).toBe(3);
+    expect(f.enable).toHaveBeenCalledOnce();
+    expect(f.out.text).toContain(
+      'A scanner update is waiting until you approve an updated notice.\n' +
+        'Run mnemonik scanner enable.\n'
+    );
+    expect(await readFile(join(state, 'scanner/state.json'), 'utf8')).toBe(saved(f.root));
+  });
 });

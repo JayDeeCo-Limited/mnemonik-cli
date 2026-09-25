@@ -1,10 +1,10 @@
 import { resolveProjectIdentity } from '@mnemonik/shared';
-import { type Evidence, type SetupTransport, type EnsureOptions, type SetupResult, type Owner } from './contracts.js';
+import { type Evidence, type SetupTransport, type EnsureOptions, type SetupResult, type SetupCancelled, type Owner } from './contracts.js';
 import { type Fault } from './storage.js';
 export * from './contracts.js';
 export * from './windowsPath.js';
 export * from './automaticUpdate.js';
-export { stateDirectory, recordPath, protectStateFile, windowsCurrentUserAcl, windowsCurrentAccount, atomicWrite, withLock, type Fault, type PermissionStatus, type ExecFile, } from './storage.js';
+export { stateDirectory, recordPath, protectStateFile, windowsCurrentUserAcl, windowsCurrentAccount, verifyWindowsCurrentUserOnly, type WindowsAclRun, atomicWrite, withLock, type Fault, type PermissionStatus, type ExecFile, } from './storage.js';
 type Step = {
     complete: boolean;
     started?: boolean;
@@ -62,5 +62,13 @@ export declare function createProjectSetupExecutor(deps: ExecutorDependencies): 
     stage: (options: EnsureOptions) => Promise<SetupResult>;
     apply: (options: EnsureOptions) => Promise<SetupResult>;
     rollback: (options: EnsureOptions) => Promise<SetupResult>;
+    cancel: (options: EnsureOptions) => Promise<SetupCancelled>;
 };
+/**
+ * The answer `cancel` names. Removes the folder's setup notes, whatever state
+ * they are in, so the next command starts fresh. An unfinished setup that had
+ * already written the identity file puts the earlier bytes back; a finished
+ * setup's file and any project the server reserved are left as they are.
+ */
+export declare function cancelProjectSetup(folder: string, stateDir?: string, waitMs?: number): Promise<SetupCancelled>;
 //# sourceMappingURL=index.d.ts.map

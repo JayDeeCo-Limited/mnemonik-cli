@@ -70,6 +70,8 @@ export interface CliDependencies {
     identityStateDir?: string;
     scannerService?: ScannerServiceOptions;
     scannerEnable?: Partial<EnableOptions>;
+    /** The disclosure version the scanner this CLI installs expects; the bundled release manifest by default. */
+    scannerDisclosureVersion?: () => Promise<string | undefined>;
     scannerStatus?: () => Promise<ScannerPickerResult>;
     installationConditions?: readonly ReadinessCondition[];
     projectHookConditions?: readonly ReadinessCondition[];

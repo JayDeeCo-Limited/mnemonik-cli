@@ -792,6 +792,42 @@ it('login reuses owned installation identity when the session cannot read its cr
   expect(fetcher).toHaveBeenCalledTimes(1);
 });
 
+it('a Mac signs in under its Computer Name, not its network host name (L-44)', async () => {
+  const { hostname } = await import('node:os');
+  const observed: (string | null)[] = [];
+  for (const computerName of [
+    async () => 'Mac Mini\n',
+    async () => {
+      throw new Error('scutil unavailable');
+    },
+  ]) {
+    const stateDir = await mkdtemp(join(tmpdir(), 'mac-name-'));
+    dirs.push(stateDir);
+    await createCliAuth({
+      stateDir,
+      issuer,
+      resource,
+      platform: 'darwin',
+      noBrowser: true,
+      computerName,
+      credentials: createCredentialAdapter({ stateDir }),
+      fetch: async (url, init) => {
+        const path = new URL(url).pathname;
+        if (path === '/oauth/device_authorization') {
+          observed.push(new URLSearchParams(String(init?.body)).get('device_name'));
+          return new Response(JSON.stringify(issued), { status: 200 });
+        }
+        if (path === '/oauth/token') return token();
+        if (path === '/api/v1/auth/grants') return Response.json({ email: 'owner@example.test' });
+        throw new Error(`unexpected request: ${path}`);
+      },
+      print: () => {},
+      sleep: async () => undefined,
+    }).signIn();
+  }
+  expect(observed).toEqual(['Mac Mini', hostname()]);
+});
+
 it('local CLI sign-in sends the hostname and opens the complete link', async () => {
   const { hostname } = await import('node:os');
   const stateDir = await mkdtemp(join(tmpdir(), 'browser-name-'));

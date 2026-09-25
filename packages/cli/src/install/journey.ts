@@ -13,7 +13,7 @@ import {
 import { atomicWrite, recordPath, stateDirectory, type SetupRecord } from '@mnemonik/local-setup';
 import type { CliDependencies } from '../router.js';
 import type { Output } from '../output.js';
-import { nodeVersionHelp, runPreflight } from '../preflight.js';
+import { detectEditors, nodeVersionHelp, runPreflight } from '../preflight.js';
 import {
   createRealProjectRuntime,
   folderRefusalMessage,
@@ -37,6 +37,7 @@ import {
   renderRollbackResult,
   journeyAnswers,
   INSTALLATION_STOPPED,
+  APPROVAL_WAITING,
   stepProgress,
 } from '../screens/journey.js';
 import { interrupted, type Journal } from './journal.js';
@@ -52,6 +53,7 @@ import { compensate, revokeInstallComponent, type InstallDependencies } from './
 import * as ownership from './ownership.js';
 import { ensureLauncher, launcherPathAction, LauncherError } from '../launcher.js';
 import { launchHostLabels as labels, launchHosts } from './adapters.js';
+import { missingConsent } from '../consent.js';
 
 const FINAL_REPORT_TIMEOUT_MS = 3_000;
 export const EARLIER_INSTALL_REMOVED = 'An earlier installation did not finish and was removed.';
@@ -59,6 +61,38 @@ export const EARLIER_INSTALL_RUNNING =
   'An earlier installation is still running. Try again when it finishes.';
 export const EARLIER_INSTALL_KEPT =
   'An earlier installation did not finish and could not be removed.';
+
+/** How a bounded wait that ran out was answered, for a reader of `--json`. */
+export interface WaitAnswer {
+  step: 'sign_in' | 'indexing_start' | 'installation_checks';
+  answer: 'retry' | 'skip';
+}
+
+/** What became of one selected folder at the connect step. */
+export interface RepositoryOutcome {
+  folder: string;
+  outcome: 'connected' | 'not_connected';
+  projectId?: string;
+  /** Why it was left out, as a state name. */
+  reason?: string;
+  /** What to do about it, in words. */
+  action?: string;
+}
+
+/**
+ * The answer to a wait that ran out when nobody is at the terminal: `--retry`
+ * waits once more for each step, then skips; otherwise the step is skipped.
+ */
+export function automaticWaitAnswer(
+  flags: ReadonlyMap<string, string | true>,
+  step: WaitAnswer['step'],
+  answered: readonly WaitAnswer[]
+): WaitAnswer['answer'] {
+  return flags.has('retry') &&
+    !answered.some((wait) => wait.step === step && wait.answer === 'retry')
+    ? 'retry'
+    : 'skip';
+}
 
 export function hostReadinessConditions(
   results: HostResult[],
@@ -136,23 +170,32 @@ export async function joinedInstall(
     return 2;
   }
   if (automatic || flags.has('hosts') || flags.has('components')) {
+    // The same decisions the terminal puts to the person, in its order: editors
+    // and indexing, then the projects folder, then going ahead.
+    const editors = components.some((c) => c === 'hooks' || c === 'mcp');
     const required = [
       scanner ? 'accept-indexing' : 'accept-limited',
-      'apply',
+      ...(automatic && editors ? ['hosts'] : []),
       ...(automatic && scanner ? ['scan-roots'] : []),
+      'apply',
     ];
     for (const flag of required)
-      if (!flags.has(flag)) {
-        if (json)
-          output.json({
-            status: 'action_required',
-            reason: 'consent_required',
-            flag: `--${flag}`,
-            action: `Rerun with --${flag}`,
-          });
-        else output.error(`Missing required consent flag: --${flag}`);
-        return 3;
-      }
+      if (!flags.has(flag))
+        return missingConsent(
+          output,
+          json,
+          flag,
+          'install',
+          flag === 'hosts'
+            ? (
+                await detectEditors(
+                  deps.home ?? homedir(),
+                  deps.cwd ?? process.cwd(),
+                  deps.preflight?.pathExists
+                )
+              ).map(({ host }) => ({ value: host, label: labels[host] }))
+            : []
+        );
   }
   const home = deps.home ?? homedir();
   let cwd = deps.cwd ?? process.cwd();
@@ -294,6 +337,19 @@ export async function joinedInstall(
     output.line();
     return answers ? answers.choose(choices) : 'Skip';
   };
+  const waits: WaitAnswer[] = [];
+  const repositories: RepositoryOutcome[] = [];
+  // A person answers the Retry/Skip menu. With nobody at the terminal the flags
+  // answer it, and the menu is never drawn.
+  const answerWait = async (step: WaitAnswer['step'], title: string) => {
+    let answer: WaitAnswer['answer'];
+    if (automatic) {
+      answer = automaticWaitAnswer(flags, step, waits);
+      if (!json) output.line(`  ${title}`);
+    } else answer = (await choose(title, ['Retry', 'Skip'])) === 'Retry' ? 'retry' : 'skip';
+    waits.push({ step, answer });
+    return answer;
+  };
   let prepared: PreparedScanner | undefined;
   let scannerInstallFailed = false;
   let scannerFailureRendered = false;
@@ -358,8 +414,9 @@ export async function joinedInstall(
     }
   };
   let restart = false;
+  let earlierRemoved = false;
   try {
-    if (previous?.data.joined && !automatic) renderInterrupted(output);
+    if (previous?.data.joined && !automatic) renderInterrupted(output, previous.data);
     if (
       previous?.data.joined &&
       (automatic || (await answers?.choose(['Resume', 'Rollback'])) !== 'Resume')
@@ -407,7 +464,8 @@ export async function joinedInstall(
         closeInteraction();
         return 1;
       }
-      output.line(EARLIER_INSTALL_REMOVED);
+      if (!json) output.line(EARLIER_INSTALL_REMOVED);
+      earlierRemoved = true;
       previous = undefined;
     }
     if (indexingOnly) {
@@ -468,12 +526,11 @@ export async function joinedInstall(
       } catch (error) {
         activeProgress?.stop();
         activeProgress = undefined;
-        if (automatic || (await choose('Sign-in did not finish.', ['Retry', 'Skip'])) !== 'Retry')
-          throw error;
+        if ((await answerWait('sign_in', 'Sign-in did not finish.')) !== 'retry') throw error;
       }
     }
-    if (!automatic && !indexingOnly) output.line(completedStep(3, 'Configure editors'));
-    startProgress(indexingOnly ? 'Getting ready' : 'Configuring your editors');
+    if (!automatic && !indexingOnly) output.line(completedStep(3, 'Configure coding tools'));
+    startProgress(indexingOnly ? 'Getting ready' : 'Configuring your coding tools');
     const managed = await management();
     reportFinal = async (readiness) => {
       const versions = await ownership
@@ -557,7 +614,7 @@ export async function joinedInstall(
       completeProgress(
         indexingOnly
           ? 'Ready'
-          : `${names.length} ${names.length === 1 ? 'editor' : 'editors'} configured`
+          : `${names.length} ${names.length === 1 ? 'coding tool' : 'coding tools'} configured`
       );
       journal.data.components = components;
       journal.data.roots = roots;
@@ -581,6 +638,7 @@ export async function joinedInstall(
           reason: `project_setup_required: ${state}: ${root}`,
           action,
         };
+        repositories.push({ folder: root, outcome: 'not_connected', reason: state, action });
         projectConditions.push(condition);
         projectReadiness.push(
           ...(serializeReadiness({
@@ -592,6 +650,22 @@ export async function joinedInstall(
       const finish = async (scannerPlan?: PreparedScanner) => {
         prepared = scannerPlan;
         let limitMessage: string | undefined;
+        // Nothing is staged, and nothing spins, until the person has chosen.
+        if (!automatic && !flags.has('apply')) {
+          activeProgress?.stop();
+          activeProgress = undefined;
+          for (;;) {
+            const applyLines = renderJourney('apply', output);
+            const choice = await answers?.choose(['Install and upload', 'Back', 'Cancel']);
+            replaceScreen(applyLines);
+            if (choice === 'Back') {
+              restart = true;
+              throw new Error('install_back');
+            }
+            if (choice !== 'Install and upload') throw new Error('install_cancelled');
+            break;
+          }
+        }
         if (scannerPlan) {
           startProgress('Connecting your project folders');
           if (!executor) {
@@ -698,6 +772,12 @@ export async function joinedInstall(
               if (message) {
                 limitedRoots.push(repo.path);
                 limitMessage = message.join('\n');
+                repositories.push({
+                  folder: repo.path,
+                  outcome: 'not_connected',
+                  reason: 'project_limit_reached',
+                  action: projectLimitMessage(staged, repo.path)?.join(' '),
+                });
                 continue;
               }
               leaveProjectForPerson(
@@ -721,22 +801,6 @@ export async function joinedInstall(
           roots = scannerPlan.roots;
           journal.data.roots = roots;
         }
-        if (!automatic && !flags.has('apply')) {
-          activeProgress?.stop();
-          activeProgress = undefined;
-          for (;;) {
-            const applyLines = renderJourney('apply', output);
-            const choice = await answers?.choose(['Install and upload', 'Back', 'Cancel']);
-            replaceScreen(applyLines);
-            if (choice === 'Back') {
-              restart = true;
-              throw new Error('install_back');
-            }
-            if (choice !== 'Install and upload') throw new Error('install_cancelled');
-            break;
-          }
-          if (scannerPlan) startProgress('Connecting your project folders');
-        }
         journal.data.phase = 'applying';
         if (automatic) startProgress('Finishing installation');
         await journal.event('apply');
@@ -752,6 +816,11 @@ export async function joinedInstall(
           });
           if (result?.status !== 'done') throw new Error('project_apply_failed');
           project.uuid = result.projectId;
+          repositories.push({
+            folder: project.root,
+            outcome: 'connected',
+            ...(result.projectId ? { projectId: result.projectId } : {}),
+          });
           const target = journal.data.targets.find(
             (t) => t.path === join(project.root, '.mnemonik.json')
           );
@@ -857,7 +926,8 @@ export async function joinedInstall(
           : await waitForInstallation(
               check,
               async () =>
-                (await choose('Installation checks did not finish.', ['Retry', 'Skip'])) === 'Retry'
+                (await answerWait('installation_checks', 'Installation checks did not finish.')) ===
+                'retry'
                   ? 'Retry'
                   : 'Skip',
               managed
@@ -903,6 +973,9 @@ export async function joinedInstall(
               home,
               noBrowser: flags.has('no-browser'),
               approvalAnnounced: true,
+              awaitingApproval: () => {
+                if (!automatic) startProgress(APPROVAL_WAITING);
+              },
               exclusions: String(flags.get('exclusions') ?? '')
                 .split(',')
                 .filter(Boolean),
@@ -920,9 +993,7 @@ export async function joinedInstall(
                   );
               },
               timeout: async () =>
-                (await choose('Background indexing did not start.', ['Retry', 'Skip'])) === 'Retry'
-                  ? 'retry'
-                  : 'skip',
+                answerWait('indexing_start', 'Background indexing did not start.'),
             },
             finish
           );
@@ -1076,6 +1147,9 @@ export async function joinedInstall(
         reports: result.reports,
         runId: result.journal.runId,
         phase: result.journal.phase,
+        repositories,
+        waits,
+        ...(earlierRemoved ? { earlierInstallationRemoved: true } : {}),
       });
     else {
       output.installSection();
@@ -1140,6 +1214,8 @@ export async function joinedInstall(
         status: 'ACTION_REQUIRED',
         reason,
         ...(error instanceof LauncherError ? { launcher: error.launcher } : {}),
+        repositories,
+        waits,
       });
     else {
       await log({ error: reason }).catch(() => undefined);

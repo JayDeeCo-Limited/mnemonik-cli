@@ -43,6 +43,11 @@ export interface PreflightDependencies {
     env?: NodeJS.ProcessEnv;
 }
 export declare function nodeVersionHelp(version: string, platform: NodeJS.Platform): [string, string];
+/** The launch editors present on this machine, by their files alone. */
+export declare function detectEditors(home: string, root: string, pathExists?: (path: string) => Promise<boolean>): Promise<Array<{
+    host: (typeof launchHosts)[number];
+    path: string;
+}>>;
 export declare function runPreflight(deps?: PreflightDependencies): Promise<PreflightResult>;
 export declare function renderPreflight(result: PreflightResult, output: Output): void;
 //# sourceMappingURL=preflight.d.ts.map

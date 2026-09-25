@@ -1169,28 +1169,50 @@ it('cleans the export on native failure and keeps artifact directory identities 
   expect(readdirSync(join(state, 'audit-tmp'))).toEqual([]);
 });
 
-it.each(['local-admin', 'other-user', 'domain-admin', 'shared-admin', 'shared-system'])(
-  'checks the local Administrator SDDL alias without allowing shared access (%s)',
-  async (mode) => {
-    vi.resetModules();
-    const { verifyWindowsAcl: verify } = await import('../../shared/src/runtimeSigners.js');
-    const sid = `S-1-5-21-1-2-3-${mode === 'other-user' ? '1001' : '500'}`;
-    const account = `${mode === 'domain-admin' ? 'FOREIGN-DOMAIN' : hostname()}\\admin`;
-    const run = async (file: string, args: string[]) => {
-      if (file.endsWith('whoami.exe')) return { stdout: `"${account}","${sid}"` };
-      if (args.includes('/save'))
-        saveFixture(args, [
-          [
-            state,
-            `(A;OICI;FA;;;LA)${mode === 'shared-admin' ? '(A;;FA;;;BA)' : mode === 'shared-system' ? '(A;;FA;;;SY)' : ''}`,
-          ],
-        ]);
-      return { stdout: '' };
-    };
-    if (mode === 'local-admin') await expect(verify(state, run)).resolves.toBeUndefined();
-    else await expect(verify(state, run)).rejects.toThrow('acl_permissions');
-  }
-);
+// L-131: LA is resolved to a SID, never accepted by name. A local account's token
+// carries S-1-5-113, so LA is its own domain's RID 500; the account and host
+// names play no part ('renamed-host' names a machine the host name does not match,
+// 'domain-admin' names this host yet is not a local account).
+it.each([
+  'local-admin',
+  'renamed-host',
+  'other-user',
+  'domain-admin',
+  'shared-admin',
+  'shared-system',
+])('resolves the local Administrator SDDL alias by SID (%s)', async (mode) => {
+  vi.resetModules();
+  const { verifyWindowsAcl: verify } = await import('../../shared/src/runtimeSigners.js');
+  const sid = `S-1-5-21-1-2-3-${mode === 'other-user' ? '1001' : '500'}`;
+  const account = `${mode === 'renamed-host' ? 'OLD-NAME' : hostname()}\\admin`;
+  const localAccount = mode !== 'domain-admin';
+  const run = async (file: string, args: string[]) => {
+    if (file.endsWith('whoami.exe'))
+      return {
+        stdout: args.includes('/groups')
+          ? [
+              '"Everyone","Well-known group","S-1-1-0","Mandatory group, Enabled by default, Enabled group"',
+              ...(localAccount
+                ? [
+                    '"NT AUTHORITY\\Local account","Well-known group","S-1-5-113","Mandatory group, Enabled by default, Enabled group"',
+                  ]
+                : []),
+            ].join('\r\n')
+          : `"${account}","${sid}"`,
+      };
+    if (args.includes('/save'))
+      saveFixture(args, [
+        [
+          state,
+          `(A;OICI;FA;;;LA)${mode === 'shared-admin' ? '(A;;FA;;;BA)' : mode === 'shared-system' ? '(A;;FA;;;SY)' : ''}`,
+        ],
+      ]);
+    return { stdout: '' };
+  };
+  if (mode === 'local-admin' || mode === 'renamed-host')
+    await expect(verify(state, run)).resolves.toBeUndefined();
+  else await expect(verify(state, run)).rejects.toThrow('acl_permissions');
+});
 
 it('fails closed for duplicate SDDL paths and missing or null DACLs', () => {
   const path = basename(state);

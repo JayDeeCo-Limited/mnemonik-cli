@@ -268,11 +268,22 @@ export function hostAdapterConformance(
         assert.equal(plan.effectiveScope, scope);
         assert.equal(plan.version, '1.0.0');
         assert.equal(plan.artifactDigest, 'verified-receipt');
-        assert.ok(
-          plan.changes.some((change) =>
-            change.content.includes('--credential-family ' + target.credentialFamily)
-          )
-        );
+        if (options.name === 'codex') {
+          // Codex fingerprints the command for trust, so the family lives in state instead.
+          const binding = plan.changes.find(
+            (change) => change.path === join(target.runtimeRoot, 'binding.json')
+          );
+          assert.ok(binding);
+          assert.deepEqual(JSON.parse(binding.content.toString()), {
+            credentialFamily: target.credentialFamily,
+          });
+          assert.ok(!plan.changes.at(-1)?.content.includes('--credential-family'));
+        } else
+          assert.ok(
+            plan.changes.some((change) =>
+              change.content.includes('--credential-family ' + target.credentialFamily)
+            )
+          );
         const configuration = plan.changes.at(-1);
         assert.ok(configuration);
         const config = JSON.parse(configuration.content.toString());

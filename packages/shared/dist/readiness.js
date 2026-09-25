@@ -113,8 +113,14 @@ const versionString = (value) => typeof value === 'string' &&
     value.length > 0 &&
     value.length <= 128 &&
     /^[\x20-\x7e]+$/u.test(value);
+const validUpdateCheck = (value) => record(value) &&
+    exact(value, ['checkedAt', 'result']) &&
+    typeof value.checkedAt === 'string' &&
+    Number.isFinite(Date.parse(value.checkedAt)) &&
+    ['updated', 'current', 'failed'].includes(String(value.result));
 const validVersions = (value) => record(value) &&
-    Object.keys(value).every((key) => ['cli', 'scanner', 'hosts'].includes(key)) &&
+    Object.keys(value).every((key) => ['cli', 'scanner', 'hosts', 'update'].includes(key)) &&
+    (value.update === undefined || validUpdateCheck(value.update)) &&
     (value.cli === undefined || versionString(value.cli)) &&
     (value.scanner === undefined || versionString(value.scanner)) &&
     (value.hosts === undefined ||

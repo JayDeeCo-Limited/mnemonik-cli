@@ -365,6 +365,7 @@ it.each([true, false])('reports fresh launcher status (json=%s)', async (json) =
   await joinedInstall(
     new Map<string, string | true>([
       ...(json ? [['json', true] as [string, true]] : []),
+      ['components', 'scanner'],
       ['apply', true],
       ['accept-scanner', true],
       ['scan-roots', home],
@@ -486,6 +487,7 @@ it('connects all three ticked repositories when two owned identities already exi
   let text = '';
   const code = await joinedInstall(
     new Map<string, string | true>([
+      ['components', 'scanner'],
       ['apply', true],
       ['accept-scanner', true],
       ['scan-roots', home],
@@ -590,6 +592,7 @@ it('leaves a fingerprint mismatch out while connecting a matching identity', asy
   let text = '';
   const code = await joinedInstall(
     new Map<string, string | true>([
+      ['components', 'scanner'],
       ['apply', true],
       ['accept-scanner', true],
       ['scan-roots', home],
@@ -708,6 +711,7 @@ it.each([
   let text = '';
   const code = await joinedInstall(
     new Map<string, string | true>([
+      ['components', 'scanner'],
       ['apply', true],
       ['accept-scanner', true],
       ['scan-roots', home],
@@ -782,6 +786,7 @@ it('leaves one inaccessible identity for the person and reports it once', async 
   let text = '';
   const code = await joinedInstall(
     new Map<string, string | true>([
+      ['components', 'scanner'],
       ['apply', true],
       ['accept-scanner', true],
       ['scan-roots', home],
@@ -873,6 +878,7 @@ it('keeps earlier projects and reports the skipped count when the plan limit is 
   let text = '';
   const code = await joinedInstall(
     new Map<string, string | true>([
+      ['components', 'scanner'],
       ['apply', true],
       ['accept-scanner', true],
       ['scan-roots', home],

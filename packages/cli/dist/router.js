@@ -1,8 +1,9 @@
-import { humanReason, humanReport, humanIdentityState } from './humanReason.js';
+import { humanReason, humanReport, humanIdentityState, SCANNER_CONSENT_MESSAGE, SCANNER_UPDATE_CONSENT_MESSAGE, } from './humanReason.js';
+import { consentDecision, consentLines } from './consent.js';
 import { helpScreen } from './help.js';
 import { enableScanner, updateScannerRoots } from './scanner/enable.js';
-import { controlScanner, scannerReceipt } from './scanner/control.js';
-import { updateScanner } from './scanner/update.js';
+import { ABANDONED_PAUSE_RESUMED, controlScanner, pausedForConsent, scannerReceipt, } from './scanner/control.js';
+import { ScannerConsentRequired, updateScanner } from './scanner/update.js';
 import { deleteScannerIndex } from './scanner/data.js';
 import { devReadiness } from './runtime/releaseSource.js';
 import { scannerService, ScannerServiceLimited, } from './scanner/service.js';
@@ -15,6 +16,7 @@ import { ensureLauncher, removeLauncher, LauncherError } from './launcher.js';
 import { readFile, realpath } from 'node:fs/promises';
 import { createInterface } from 'node:readline';
 import { RuntimeStore, updateRuntime } from './runtime/store.js';
+import { recordUpdateCheck } from './runtime/updateCheck.js';
 import { updateCli, cliUpdateHint } from './runtime/selfUpdate.js';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -36,7 +38,7 @@ import { renderScannerStatus } from './scanner/picker.js';
 import { abandonInterrupted, interrupted } from './install/journal.js';
 import { installFailureReason, runInstall, } from './install/transaction.js';
 import { chooseHostProfile, simulatedInstall, terminalInstallUI } from './install/ui.js';
-import { CODEX_TRUST_MESSAGE, collectStatusDocument, localEditorStatus, localInstallationConditions, mcpTurnOnAction, renderStatusSummaries, renderRefusals, statusExitCode, } from './status.js';
+import { CODEX_TRUST_MESSAGE, collectStatusDocument, localEditorStatus, localInstallationConditions, mcpTurnOnAction, renderStatusSummaries, renderRefusals, REPORT_NOT_SENT, renderScannerFailure, statusExitCode, } from './status.js';
 import { editorAuthorizationRows } from './screens/journey.js';
 import { DiagnosticsError, previewDiagnostics, sendDiagnostics, } from './diagnostics.js';
 export const connectFolderPrompt = (name) => `Connect ${name} to Mnemonik? [Y/n]`;
@@ -122,9 +124,60 @@ async function retryUpdateOnce(update, failed = () => false) {
         const result = await update();
         return failed(result) ? update() : result;
     }
-    catch {
+    catch (error) {
+        // Asking again changes nothing until a person approves the updated notice.
+        if (error instanceof ScannerConsentRequired)
+            throw error;
         return update();
     }
+}
+/**
+ * A scanner release names a newer notice than the saved consent. With a person
+ * at the terminal, ask once in the browser through the flow install uses, over
+ * the folders already approved; it installs the new scanner when approved and
+ * puts the running one back when not. Without one (automatic, --json,
+ * --non-interactive), nothing changes and the running scanner keeps indexing.
+ */
+async function approveScannerUpdate(parsed, deps, output, stateDir) {
+    if (parsed.flags.has('automatic') ||
+        parsed.flags.has('json') ||
+        parsed.flags.has('non-interactive'))
+        return 'pending';
+    const saved = JSON.parse(await readFile(join(stateDir, 'scanner/state.json'), 'utf8'));
+    try {
+        const document = await enableScanner({
+            stateDir,
+            cwd: deps.cwd ?? process.cwd(),
+            home: deps.home,
+            input: deps.input ?? process.stdin,
+            output,
+            noBrowser: parsed.flags.has('no-browser'),
+            roots: saved.config.roots,
+            exclusions: saved.config.exclusions ?? [],
+            ...deps.scannerService,
+            ...deps.scannerEnable,
+            projectExecutor: deps.projectExecutor,
+            projectStateDir: deps.projectStateDir,
+        });
+        return document.installation.state === 'READY' ? 'approved' : 'pending';
+    }
+    catch {
+        return 'pending';
+    }
+}
+/** The scanner paused itself for consent: the decided two lines, never the resume line. */
+function scannerConsentRequired(output, json) {
+    if (json)
+        output.json({
+            status: 'ACTION_REQUIRED',
+            reason: 'scanner_consent_required',
+            action: 'mnemonik scanner enable',
+        });
+    else {
+        output.line(SCANNER_CONSENT_MESSAGE.sentence);
+        output.line(SCANNER_CONSENT_MESSAGE.nextStep);
+    }
+    return 3;
 }
 function hostUpdateFailed(result) {
     return result.results.some((target) => target.status !== 'READY' && target.reason !== 'codex_trust_pending');
@@ -149,6 +202,9 @@ const booleans = new Set([
     'dry-run',
     'reopen-install',
     'automatic',
+    'cancel',
+    'retry',
+    'skip',
 ]);
 const values = new Set([
     'components',
@@ -276,20 +332,33 @@ function allowed(parsed, names) {
     return undefined;
 }
 function actionRequired(output, json, message, flag) {
+    const decision = flag ? consentDecision(flag) : undefined;
     if (json)
         output.json({
             status: 'action_required',
             reason: 'consent_required',
             ...(flag ? { flag } : {}),
             action: message,
+            ...(decision
+                ? { question: decision.question, then: decision.then, answers: decision.answers }
+                : {}),
         });
+    else if (flag)
+        for (const line of consentLines(flag))
+            output.error(line);
     else
-        output.error(flag
-            ? `Missing required consent flag: ${flag}`
-            : /^[a-z][a-z0-9_]*$/u.test(message)
-                ? humanReason(message)
-                : message);
+        output.error(/^[a-z][a-z0-9_]*$/u.test(message) ? humanReason(message) : message);
     return 3;
+}
+/**
+ * A scanner wait that ran out with nobody at the terminal: `--retry` waits once
+ * more, then gives up; without it the wait gives up at once.
+ */
+function retryOnce(flags) {
+    if (!flags.has('retry'))
+        return undefined;
+    let retried = false;
+    return async () => (retried ? 'skip' : ((retried = true), 'retry'));
 }
 function requireConsent(parsed, output, required) {
     for (const flag of required) {
@@ -501,6 +570,10 @@ async function runHostCommand(command, parsed, deps, output, scannerSelected = f
                         if (!json)
                             output.line(SCANNER_RESTART_MESSAGE);
                     },
+                    onAbandonedPauseResumed: () => {
+                        if (!json)
+                            output.line(ABANDONED_PAUSE_RESUMED);
+                    },
                 }, deps.scannerEnable?.source));
                 scanner = {
                     status: before?.reference.version === runtime.reference.version ? 'UP_TO_DATE' : 'UPDATED',
@@ -508,8 +581,18 @@ async function runHostCommand(command, parsed, deps, output, scannerSelected = f
                 };
             }
             catch (error) {
-                scanner = { status: 'FAILED', reason: error.message };
-                if (!json)
+                if (error instanceof ScannerConsentRequired)
+                    scanner =
+                        (await approveScannerUpdate(parsed, deps, output, state)) === 'approved'
+                            ? { status: 'UPDATED' }
+                            : {
+                                status: 'ACTION_REQUIRED',
+                                reason: 'scanner_update_consent_required',
+                                action: 'mnemonik scanner enable',
+                            };
+                else
+                    scanner = { status: 'FAILED', reason: error.message };
+                if (!json && scanner.status === 'FAILED')
                     scannerRecovery = await scannerRecoveryAction(error, {
                         stateDir: state,
                         ...deps.scannerService,
@@ -517,6 +600,7 @@ async function runHostCommand(command, parsed, deps, output, scannerSelected = f
             }
         }
         let failed = scanner?.status === 'FAILED' || cli?.status === 'FAILED';
+        const scannerConsentPending = scanner?.status === 'ACTION_REQUIRED';
         const hostExit = maintenanceExitCode(result.results);
         const remaining = command === 'repair' ? await collectCurrentInstallation(deps, output) : undefined;
         const remainingExit = remaining?.installation.state === 'FAILED'
@@ -526,6 +610,14 @@ async function runHostCommand(command, parsed, deps, output, scannerSelected = f
                 : 3;
         const hostsFailed = hostUpdateFailed(result);
         const codexTrustPending = result.results.some((target) => target.reason === 'codex_trust_pending');
+        // Every host update is journaled: a failed one has already put the previous
+        // runtime back. The record says so to the console through the readiness report.
+        if (all)
+            await recordUpdateCheck(state, failed || hostsFailed
+                ? 'failed'
+                : cli?.status === 'UPDATED' || result.reports.length > 0 || scanner?.status === 'UPDATED'
+                    ? 'updated'
+                    : 'current');
         if (fullUninstall && hostExit === 0) {
             // A damaged install can lose the runtime pointer and still leave a service
             // registered, so the saved scanner state also counts as one to remove. A
@@ -586,7 +678,7 @@ async function runHostCommand(command, parsed, deps, output, scannerSelected = f
                 if (cli?.status === 'UPDATED')
                     output.line('The mnemonik command updated.');
                 if (result.reports.length > 0 && !hostsFailed)
-                    output.line('Your editors updated.');
+                    output.line('Your coding tools updated.');
                 if (scanner?.status === 'UPDATED')
                     output.line('The scanner updated.');
                 if (cli?.status === 'FAILED') {
@@ -594,8 +686,8 @@ async function runHostCommand(command, parsed, deps, output, scannerSelected = f
                     output.error('Run npx -y @mnemonik/cli@latest install to update it.');
                 }
                 if (hostsFailed) {
-                    output.error('Your editors could not update.');
-                    output.error('Run mnemonik repair, then start a new session in each editor.');
+                    output.error('Your coding tools could not update.');
+                    output.error('Run mnemonik repair, then start a new session in each coding tool.');
                 }
                 if (scanner?.status === 'FAILED') {
                     output.error(scannerRecovery?.message ?? 'The scanner could not update.');
@@ -613,6 +705,11 @@ async function runHostCommand(command, parsed, deps, output, scannerSelected = f
                 output.line('Mnemonik updated.');
             else
                 output.line('Mnemonik is up to date.');
+            // The scanner kept running; its update waits for the person's approval.
+            if (scannerConsentPending) {
+                output.line(SCANNER_UPDATE_CONSENT_MESSAGE.sentence);
+                output.line(SCANNER_UPDATE_CONSENT_MESSAGE.nextStep);
+            }
         }
         else {
             for (const target of result.results)
@@ -645,9 +742,11 @@ async function runHostCommand(command, parsed, deps, output, scannerSelected = f
         }
         if (failed || remainingExit === 1)
             return 1;
-        return hostExit || remainingExit;
+        return (hostExit || remainingExit || (scannerConsentPending && !parsed.flags.has('automatic') ? 3 : 0));
     }
     catch (error) {
+        if (command === 'update' && !host && !component)
+            await recordUpdateCheck(state, 'failed');
         if (command === 'update' && !json) {
             output.error(updateFailureMessage);
             return error instanceof LauncherError ? 3 : 1;
@@ -717,6 +816,7 @@ async function enableCommand(parsed, deps, output) {
             output,
             nonInteractive: parsed.flags.has('non-interactive') || json,
             noBrowser: parsed.flags.has('no-browser'),
+            timeout: retryOnce(parsed.flags),
             ...(typeof roots === 'string' ? { roots: roots.split(',').filter(Boolean) } : {}),
             ...(typeof exclusions === 'string'
                 ? { exclusions: exclusions.split(',').filter(Boolean) }
@@ -762,9 +862,13 @@ async function installCommand(parsed, deps, output) {
         'apply',
         'no-browser',
         'dry-run',
+        'retry',
+        'skip',
     ]);
     if (invalid)
         return flagError(output, parsed, invalid);
+    if (parsed.flags.has('retry') && parsed.flags.has('skip'))
+        return flagError(output, parsed, 'Unknown flag combination: --retry --skip');
     if (!deps.install && !parsed.flags.has('dry-run')) {
         const { joinedInstall } = await import('./install/journey.js');
         const state = deps.hostManagement?.stateDir ??
@@ -862,6 +966,8 @@ async function doctorCommand(parsed, deps, output) {
     else {
         renderPreflight(result, output);
         renderStatusSummaries(document, output, { diagnostics: true });
+        if (document.installation.reasons.some((reason) => reason === 'scanner_failing' || reason === 'scanner_signed_out'))
+            await renderScannerFailure(refusalStateDir(deps), output);
         await renderRefusals(refusalStateDir(deps), output, true);
     }
     // The console's device card shows what the last report said, so doctor sends one as status does.
@@ -872,7 +978,7 @@ async function doctorCommand(parsed, deps, output) {
             ? 1
             : 3;
 }
-async function collectCurrentInstallation(deps, output) {
+async function collectCurrentInstallation(deps, output, announce) {
     const result = await runPreflight({
         cwd: deps.cwd,
         home: deps.home,
@@ -917,6 +1023,15 @@ async function collectCurrentInstallation(deps, output) {
         details: deps.statusDetails,
         generatedAt: deps.statusGeneratedAt,
         launcher: { ...deps.launcher, stateDir: hostStateDir, home: deps.home },
+        expectedDisclosureVersion: deps.scannerDisclosureVersion,
+        ...(announce
+            ? {
+                abandonedPause: {
+                    ...deps.scannerService,
+                    onAbandonedPauseResumed: () => announce(ABANDONED_PAUSE_RESUMED),
+                },
+            }
+            : {}),
     });
     const versions = await readInstallVersions(hostStateDir, document.scanner?.version ?? undefined);
     const installedCli = await new RuntimeStore(hostStateDir)
@@ -930,17 +1045,35 @@ async function collectCurrentInstallation(deps, output) {
  * The web console's devices page reads the row this writes. Local evidence has
  * already decided the verdict and the exit code, so the upload is best effort:
  * it is bounded like the update hint and changes nothing a person sees.
+ *
+ * Resolves `signed_out` when nothing was sent because this computer's own
+ * sign-in is unusable (L-166), and `refused` with the store's reason when the
+ * credential file itself was refused (L-131: readable by other users). Those
+ * are the failures a person can fix, which `status` says. Any other failure
+ * says nothing about this machine.
  */
 async function reportCurrentInstallation(deps, output, document) {
+    let refused;
     const bearer = await auth(deps, output, false)
         .getCliBearer()
-        .catch(() => undefined);
-    if (typeof bearer !== 'string')
-        return;
-    const send = deps.grantFetch ?? globalThis.fetch;
-    await postCurrentReadiness(bearer, baseReadiness(document ?? (await collectCurrentInstallation(deps, output))), (url, options) => send(url, { ...options, signal: AbortSignal.timeout(2500) })).catch(() => {
-        /* An unreachable server says nothing about this machine. */
+        .catch((error) => {
+        // The same reading ensureCliAuth gives a credential store it cannot open.
+        if (isCredentialSessionUnavailableError(error))
+            return { status: 'ACTION_REQUIRED' };
+        const reason = error?.reason;
+        if (error?.name === 'CredentialError' &&
+            typeof reason === 'string')
+            refused = reason;
+        return undefined;
     });
+    if (refused)
+        return { refused };
+    if (typeof bearer !== 'string')
+        return bearer?.status === 'ACTION_REQUIRED' ? 'signed_out' : 'failed';
+    const send = deps.grantFetch ?? globalThis.fetch;
+    return postCurrentReadiness(bearer, baseReadiness(document ?? (await collectCurrentInstallation(deps, output))), (url, options) => send(url, { ...options, signal: AbortSignal.timeout(2500) })).then(() => 'sent', 
+    /* An unreachable server says nothing about this machine. */
+    () => 'failed');
 }
 /**
  * Delete a project, from the folder it belongs to or by id or name. The server
@@ -1109,6 +1242,9 @@ export async function runCli(args, deps = {}) {
         const saved = JSON.parse(await readFile(`${stateDir}/scanner/state.json`, 'utf8').catch(() => 'null'));
         if (!saved)
             return actionRequired(output, parsed.flags.has('json'), 'mnemonik install');
+        if ((action === 'add' || action === 'remove') &&
+            pausedForConsent(await scannerReceipt(stateDir)))
+            return scannerConsentRequired(output, parsed.flags.has('json'));
         if (action === 'list') {
             if (parsed.flags.has('json'))
                 output.json(saved.config.roots);
@@ -1287,6 +1423,10 @@ export async function runCli(args, deps = {}) {
                         if (!parsed.flags.has('json'))
                             output.line(SCANNER_RESTART_MESSAGE);
                     },
+                    onAbandonedPauseResumed: () => {
+                        if (!parsed.flags.has('json'))
+                            output.line(ABANDONED_PAUSE_RESUMED);
+                    },
                 }, deps.scannerEnable?.source));
                 const result = {
                     status: before?.reference.version === runtime.reference.version ? 'up_to_date' : 'updated',
@@ -1306,6 +1446,27 @@ export async function runCli(args, deps = {}) {
             return 0;
         }
         catch (error) {
+            if (command === 'update' && error instanceof ScannerConsentRequired) {
+                const stateDir = deps.installStateDir ?? stateDirectory(process.platform, process.env, deps.home);
+                if ((await approveScannerUpdate(parsed, deps, output, stateDir)) === 'approved') {
+                    if (parsed.flags.has('json'))
+                        output.json({ status: 'updated' });
+                    else
+                        output.line('Mnemonik updated.');
+                    return 0;
+                }
+                if (parsed.flags.has('json'))
+                    output.json({
+                        status: 'ACTION_REQUIRED',
+                        reason: 'scanner_update_consent_required',
+                        action: 'mnemonik scanner enable',
+                    });
+                else {
+                    output.line(SCANNER_UPDATE_CONSENT_MESSAGE.sentence);
+                    output.line(SCANNER_UPDATE_CONSENT_MESSAGE.nextStep);
+                }
+                return 3;
+            }
             const failure = scannerFailure(error);
             if (command === 'uninstall' && parsed.flags.has('json'))
                 output.json({
@@ -1430,7 +1591,7 @@ export async function runCli(args, deps = {}) {
         const invalid = allowed(parsed, []);
         if (invalid || subcommand)
             return invalid ? flagError(output, parsed, invalid) : usageError(['status']);
-        const document = await collectCurrentInstallation(deps, output);
+        const document = await collectCurrentInstallation(deps, output, parsed.flags.has('json') ? undefined : (line) => output.line(line));
         const version = await packageVersion();
         const store = new RuntimeStore(deps.installStateDir ?? stateDirectory(process.platform, process.env, deps.home));
         if (!parsed.flags.has('json')) {
@@ -1442,7 +1603,13 @@ export async function runCli(args, deps = {}) {
             output.json({ ...document, cli: { version, ...(hint ? { updateAvailable: hint } : {}) } });
         else if (hint)
             output.line(hint);
-        await reportCurrentInstallation(deps, output, document);
+        const reported = await reportCurrentInstallation(deps, output, document);
+        if (reported === 'signed_out' && !parsed.flags.has('json')) {
+            output.line(REPORT_NOT_SENT.sentence);
+            output.line(REPORT_NOT_SENT.nextStep);
+        }
+        else if (typeof reported === 'object' && !parsed.flags.has('json'))
+            output.line(humanReason(reported.refused));
         return statusExitCode(document);
     }
     if (command === 'connect') {
@@ -1503,7 +1670,7 @@ export async function runCli(args, deps = {}) {
         const reason = editor?.mcp === 'disabled'
             ? `${editor.name} connection is turned off.`
             : editor?.mcp === 'ready'
-                ? 'Finish signing in to Mnemonik in the editor.'
+                ? 'Finish signing in to Mnemonik in the coding tool.'
                 : `${launchHostLabels[host]} connection is missing.`;
         const actions = editor?.mcp === 'ready'
             ? editorAuthorizationRows([host])
@@ -1539,7 +1706,9 @@ export async function runCli(args, deps = {}) {
                 ? []
                 : subcommand === 'link'
                     ? ['apply', 'non-git', 'confirm-mismatch', 'replace']
-                    : ['apply', 'non-git', 'owner']);
+                    : subcommand === 'setup'
+                        ? ['apply', 'non-git', 'owner', 'cancel']
+                        : ['apply', 'non-git', 'owner']);
         if (invalid)
             return flagError(output, parsed, invalid);
         if (subcommand === 'ensure') {
@@ -1578,6 +1747,7 @@ export async function runCli(args, deps = {}) {
             apply: parsed.flags.has('apply'),
             confirmMismatch: parsed.flags.has('confirm-mismatch'),
             replace: parsed.flags.has('replace'),
+            cancel: parsed.flags.has('cancel'),
             owner: typeof parsed.flags.get('owner') === 'string'
                 ? parsed.flags.get('owner')
                 : undefined,
@@ -1653,14 +1823,18 @@ export async function runCli(args, deps = {}) {
             ].includes(subcommand))
             return usageError(subcommand && helpScreen(['scanner', subcommand]) ? ['scanner', subcommand] : ['scanner']);
         const invalid = allowed(parsed, subcommand === 'enable'
-            ? ['accept-indexing', 'apply', 'scan-roots', 'exclusions', 'no-browser']
+            ? ['accept-indexing', 'apply', 'scan-roots', 'exclusions', 'no-browser', 'retry', 'skip']
             : subcommand === 'export-preview'
                 ? ['out']
                 : subcommand === 'uninstall'
                     ? ['confirm']
-                    : []);
+                    : subcommand === 'start'
+                        ? ['retry', 'skip']
+                        : []);
         if (invalid)
             return flagError(output, parsed, invalid);
+        if (parsed.flags.has('retry') && parsed.flags.has('skip'))
+            return flagError(output, parsed, 'Unknown flag combination: --retry --skip');
         if (subcommand === 'enable')
             return enableCommand(parsed, deps, output);
         if (subcommand === 'uninstall') {
@@ -1740,7 +1914,7 @@ export async function runCli(args, deps = {}) {
                 ? undefined
                 : (phase, ms) => output.line(`Waiting for scanner ${phase} (up to ${ms / 1000} seconds).`),
             timeout: json || parsed.flags.has('non-interactive')
-                ? undefined
+                ? retryOnce(parsed.flags)
                 : async (phase) => (await chooseHostProfile(deps.input ?? process.stdin, output, [
                     `Retry scanner ${phase}`,
                     'Skip scanner',
@@ -1754,6 +1928,9 @@ export async function runCli(args, deps = {}) {
                 stateDir: deps.installStateDir ?? stateDirectory(process.platform, process.env, deps.home),
                 ...deps.scannerService,
             };
+            // Resume cannot lift a pause for consent; say what can.
+            if (subcommand === 'resume' && pausedForConsent(await scannerReceipt(options.stateDir)))
+                return scannerConsentRequired(output, json);
             if (subcommand === 'pause' || subcommand === 'resume')
                 await controlScanner(subcommand, options);
             else if (subcommand === 'export-preview') {

@@ -40,7 +40,7 @@ describe.runIf(process.platform !== 'win32')('permission failures', () => {
     const f = await fixture();
     await chmod(f.hostPaths.codex, 0o400);
     expect(await f.run()).toBe(1);
-    expect(f.stdout.text).toContain('An editor settings file cannot be written.');
+    expect(f.stdout.text).toContain("A coding tool's settings file cannot be written.");
     expect(f.stdout.text).not.toContain('target_read_only');
     await expectOriginalHosts(f);
     expect((await f.journal()).targets.filter((target) => target.kind === 'host')).toHaveLength(1);

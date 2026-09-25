@@ -4,7 +4,19 @@ import { join } from 'node:path';
 import { RuntimeStore, updateRuntime, type RuntimeSource } from '../runtime/store.js';
 import { releaseSource } from '../runtime/releaseSource.js';
 import { scannerService, type ScannerServiceOptions } from './service.js';
+import { resumeAbandonedPause } from './control.js';
 import type { SavedState } from './enable.js';
+/**
+ * The release names a newer disclosure than the saved consent. Nothing was
+ * installed and the running scanner was left as it was; a person has to
+ * approve the updated notice (the same browser approval install uses).
+ */
+export class ScannerConsentRequired extends Error {
+  constructor() {
+    super('release_consent_required');
+    this.name = 'ScannerConsentRequired';
+  }
+}
 export async function updateScanner(
   options: ScannerServiceOptions,
   source = () => releaseSource('scanner')
@@ -18,6 +30,8 @@ export async function updateScanner(
   let retainedSupervisor = false;
   const before = await store.verifyRuntime('scanner');
   await service.recover();
+  // An update restarts the scanner from its saved state, which a dead install's pause marks paused.
+  if (await resumeAbandonedPause({ ...options, store })) options.onAbandonedPauseResumed?.();
   let replacement = false;
   const checkedSource = async (): Promise<RuntimeSource> => {
     return withLock(join(options.stateDir, 'scanner/enable'), 5000, async () => {
@@ -31,7 +45,7 @@ export async function updateScanner(
       ) {
         // The running release still has valid consent. Reject the new release without
         // suspending indexing that the person already approved.
-        throw new Error('release_consent_required: mnemonik scanner enable');
+        throw new ScannerConsentRequired();
       }
       replacement = candidate.manifest.version !== before.reference.version;
       return candidate;

@@ -1,4 +1,8 @@
-import { windowsCurrentAccountSync } from '@mnemonik/shared/hook-runtime';
+import {
+  verifyWindowsAcl,
+  windowsCurrentAccountSync,
+  type Execute,
+} from '@mnemonik/shared/hook-runtime';
 import { createHash, randomUUID } from 'node:crypto';
 import { execFile as nodeExecFile } from 'node:child_process';
 import fs from 'node:fs';
@@ -99,6 +103,21 @@ export async function windowsCurrentUserAcl(
       }
     );
   });
+}
+/** Runs one native command for the Windows ACL reader; injected by tests. */
+export type WindowsAclRun = Execute;
+/**
+ * The Windows counterpart of POSIX mode 0600/0700: every Allow ACE on `path`
+ * names the current token's SID, so no other user or group (Users, Everyone)
+ * can read it. Throws `acl_permissions` when one does. Reads the DACL through
+ * the shared icacls export, whose temporary file lives under `state`.
+ */
+export async function verifyWindowsCurrentUserOnly(
+  path: string,
+  state: string,
+  run?: WindowsAclRun
+): Promise<void> {
+  await verifyWindowsAcl(path, run, state);
 }
 export async function protectStateFile(
   path: string,

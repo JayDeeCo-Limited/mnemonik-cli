@@ -13,7 +13,7 @@ import {
   type HostPackageImports,
 } from '../src/install/adapters.js';
 import { hostReadinessConditions } from '../src/install/journey.js';
-import { hookStatusConditions, runHosts } from '../src/install/hosts.js';
+import { CODEX_TRUST_MIGRATION, hookStatusConditions, runHosts } from '../src/install/hosts.js';
 import { bytesAt, interrupted, withInstall } from '../src/install/journal.js';
 import { ownershipPath, readOwnership } from '../src/install/ownership.js';
 import { runCli } from '../src/router.js';
@@ -100,6 +100,27 @@ function overrideInspection(
   } as HostPackageImports;
 }
 
+/** The family a hook will run with: Codex keeps it in state beside its launcher (L-86). */
+async function installedFamily(target: {
+  host: string;
+  profilePath: string;
+  runtimePointer: string;
+}) {
+  if (target.host === 'codex') {
+    expect(await readFile(target.profilePath, 'utf8')).not.toContain('--credential-family');
+    const binding = join(dirname(target.runtimePointer), 'binding.json');
+    return (JSON.parse(await readFile(binding, 'utf8')) as { credentialFamily?: string })
+      .credentialFamily;
+  }
+  const families = new Set(
+    [...(await readFile(target.profilePath, 'utf8')).matchAll(/--credential-family ([\w-]+)/g)].map(
+      (match) => match[1]
+    )
+  );
+  expect(families.size).toBe(1);
+  return [...families][0];
+}
+
 async function codexCommands(path: string) {
   const config = JSON.parse(await readFile(path, 'utf8')) as {
     hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>>;
@@ -145,8 +166,7 @@ describe('hook credential convergence', () => {
     expect(owned.map(({ credentialFamily }) => credentialFamily)).toEqual(
       editors.map(() => 'family-1')
     );
-    for (const target of owned)
-      expect(await readFile(target.profilePath, 'utf8')).toContain('--credential-family family-1');
+    for (const target of owned) expect(await installedFamily(target)).toBe('family-1');
   }, 120_000);
 
   it.each(['grok', 'vscode-copilot'])(
@@ -232,10 +252,7 @@ describe('hook credential convergence', () => {
       editors.map(() => 'cursor-family')
     );
     expect(f.deps.credentialFetch).not.toHaveBeenCalled();
-    for (const target of updated)
-      expect(await readFile(target.profilePath, 'utf8')).toContain(
-        '--credential-family cursor-family'
-      );
+    for (const target of updated) expect(await installedFamily(target)).toBe('cursor-family');
   }, 180_000);
 });
 
@@ -267,7 +284,7 @@ describe('joined install journal', () => {
     );
   }, 60_000);
 
-  it.each(['pending', 'partially rolled back'])(
+  it.each(['pending', 'partially rolled back', 'completed but stale'])(
     'Resume replaces a %s host proposal in the original journal',
     async (phase) => {
       const f = await fixture();
@@ -301,7 +318,7 @@ describe('joined install journal', () => {
             group: id,
           });
           await journal.commit(target);
-          if (phase !== 'pending') {
+          if (phase === 'partially rolled back') {
             await journal.restore(target);
             await writeFile(path, '{"foreign":"native app edit"}\n');
           }
@@ -321,8 +338,11 @@ describe('joined install journal', () => {
       });
       expect(result.journal.runId).toBe(runId);
       expect(result.results[0]?.status).toBe('READY');
+      // L-82: a completed step is written again rather than trusted.
       expect(JSON.parse(await readFile(path, 'utf8'))).toMatchObject({
-        foreign: phase === 'pending' ? true : 'native app edit',
+        ...(phase === 'completed but stale'
+          ? { partial: true }
+          : { foreign: phase === 'pending' ? true : 'native app edit' }),
         hooks: expect.any(Object),
       });
       expect((await readOwnership(f.deps.stateDir)).targets).toHaveLength(1);
@@ -843,9 +863,14 @@ describe('host rulings', () => {
     const owned = (await readOwnership(f.deps.stateDir)).targets[0]!;
     const launcher = join(dirname(owned.runtimePointer), 'launcher.mjs');
     const exact = Array(5).fill(
-      `node ${JSON.stringify(launcher)} --credential-family hook-family --server https://api.mnemonik.dev --mnemonik-owner=codex-hooks`
+      `node ${JSON.stringify(launcher)} --server https://api.mnemonik.dev --mnemonik-owner=codex-hooks`
     );
     expect(await codexCommands(owned.profilePath)).toEqual(exact);
+    expect(JSON.parse(await readFile(join(dirname(launcher), 'binding.json'), 'utf8'))).toEqual({
+      credentialFamily: 'hook-family',
+    });
+    const migration = `codex: ${CODEX_TRUST_MIGRATION}`;
+    expect(installed.reports).not.toContain(migration);
 
     trust = 'approved';
     f.deps.source = async () => bump(packed.sources.codex);
@@ -868,6 +893,44 @@ describe('host rulings', () => {
     expect((await new RuntimeStore(f.deps.stateDir).verifyRuntime('codex')).manifest.version).toBe(
       '99.0.0'
     );
+  }, 180_000);
+
+  it('rewrites a Codex command that carries the credential family once, and says so in one line', async () => {
+    const f = await fixture();
+    const user = {
+      ...f.selections.find((selection) => selection.host === 'codex')!,
+      component: 'hooks' as const,
+    };
+    overrideInspection(f.deps, 'codex', () => ({ trustPending: true, trustDeclined: false }));
+    await runHosts('install', [user], f.deps);
+    const owned = (await readOwnership(f.deps.stateDir)).targets[0]!;
+    const exact = await codexCommands(owned.profilePath);
+    expect(exact).toHaveLength(5);
+    expect(exact.join('\n')).not.toContain('--credential-family');
+    const migration = `codex: ${CODEX_TRUST_MIGRATION}`;
+
+    // L-86: an install written before the family left the command is rewritten once, with one line.
+    const legacy = (await readFile(owned.profilePath, 'utf8')).replaceAll(
+      ' --server ',
+      ' --credential-family hook-family --server '
+    );
+    await writeFile(owned.profilePath, legacy);
+    const ownership = await readOwnership(f.deps.stateDir);
+    const file = ownership.targets[0]!.files.find(({ path }) => path === owned.profilePath)!;
+    file.hash = createHash('sha256').update(legacy).digest('hex');
+    await writeFile(ownershipPath(f.deps.stateDir), JSON.stringify(ownership, null, 2) + '\n');
+    const migrated = await runHosts('update', [owned], f.deps);
+    expect(migrated.reports.filter((report) => report === migration)).toHaveLength(1);
+    expect(migrated.reports).toContain(
+      "codex: Mnemonik's Codex hooks no longer change when your sign-in changes. Codex will ask you to trust them one last time."
+    );
+    expect(migrated.reports.indexOf(migration)).toBeLessThan(
+      migrated.reports.findIndex((report) => report.startsWith('codex: Run the codex command'))
+    );
+    expect(await codexCommands(owned.profilePath)).toEqual(exact);
+    const settled = await runHosts('update', [owned], f.deps);
+    expect(settled.reports).not.toContain(migration);
+    expect(await codexCommands(owned.profilePath)).toEqual(exact);
   }, 180_000);
 
   it('preserves native policy and foreign hook entries by value through update and repair', async () => {

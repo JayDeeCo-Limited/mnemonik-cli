@@ -2,7 +2,7 @@ import { messageFor as humanMessageFor } from './humanReason.js';
 export { CODEX_TRUST_MESSAGE } from './humanReason.js';
 import { cliCredentialStatus } from './auth/credentials.js';
 import { readOwnership } from './install/ownership.js';
-import { scannerReceipt } from './scanner/control.js';
+import { pausedForConsent, resumeAbandonedPause, scannerReceipt, } from './scanner/control.js';
 import { scannerService, ScannerServiceLimited, SCANNER_RESTART_MESSAGE, SCANNER_RESTART_ACTION, } from './scanner/service.js';
 import { stateDirectory } from '@mnemonik/local-setup';
 import { scannerAttemptHealthy, SCANNER_HANDOFF_BUDGET_MS, SCANNER_RECEIPT_STALE_MS, } from '@mnemonik/shared';
@@ -10,7 +10,7 @@ import { readFile, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parse as parseToml } from 'smol-toml';
-import { devReadiness } from './runtime/releaseSource.js';
+import { devReadiness, expectedScannerDisclosureVersion } from './runtime/releaseSource.js';
 import { pendingProjectSetup } from '@mnemonik/shared/hook-runtime';
 import { basename, isAbsolute, relative, resolve } from 'node:path';
 import { reduceReadiness, serializeReadiness as baseReadiness, } from '@mnemonik/shared';
@@ -116,7 +116,7 @@ export async function localInstallationConditions(home, stateDir, launcherOption
     const owned = (await readOwnership(stateDir)).targets.map((target) => target.host);
     const editors = (await localEditorStatus(home)).filter((editor) => editor.marked || owned.includes(editor.host));
     if (!editors.length)
-        issue('No editor connections were found.', 'Run mnemonik install to set them up again.');
+        issue('No coding tool connections were found.', 'Run mnemonik install to set them up again.');
     for (const editor of editors) {
         if (!editor.hooks)
             issue(`${editor.name} hooks are missing.`, 'Run mnemonik install to set them up again.', editor.host);
@@ -209,7 +209,7 @@ export function buildStatusDocument(input) {
             kind: 'hook_not_verified',
             component: host,
             reason: 'hook_not_verified',
-            action: 'Start a new session in that editor.',
+            action: 'Start a new session in that coding tool.',
         }));
     const installationConditions = [
         ...input.installationConditions,
@@ -296,6 +296,15 @@ function renderAttention(label, summary, output, rendered, conditions = []) {
     for (const line of lines)
         output.line(line);
 }
+/**
+ * `status` could not tell the console about this machine because this
+ * computer's sign-in is unusable (L-166). Wording decided 2026-09-25; the fix
+ * is the approved renew step.
+ */
+export const REPORT_NOT_SENT = {
+    sentence: 'The console has not heard from this machine because its sign-in no longer works.',
+    nextStep: humanMessageFor('renew').nextStep,
+};
 export function renderStatusSummaries(document, output, options = {}) {
     if (options.diagnostics && document.cliCredential)
         output.line(`CLI credential: store=${document.cliCredential.store ?? 'unknown'} present=${document.cliCredential.present}`);
@@ -350,6 +359,30 @@ export function refusalLines(batches, withPaths = false) {
         ...(withPaths ? [...issues].map((issue) => `  ${issue}`) : []),
     ]);
 }
+/** The plain cause for a failure the scanner reported, by kind. */
+export function scannerFailureCause(failure) {
+    switch (failure.kind) {
+        case 'credential_refused':
+            return "The server refused this computer's indexing sign-in. Run mnemonik repair.";
+        case 'push_rejected':
+            return `The server rejected an upload from this computer.${failure.reason ? ` The server said: ${failure.reason}.` : ''}`;
+        case 'watcher_error':
+            return `A folder could not be watched.${failure.project ? ` Project: ${failure.project}.` : ''}`;
+        default:
+            return 'Background indexing reported a problem.';
+    }
+}
+/**
+ * The cause behind a failing or signed-out scanner, for mnemonik doctor: the
+ * plain cause, then the line the scanner logged beneath it as detail.
+ */
+export async function renderScannerFailure(stateDir, output) {
+    const failure = (await scannerReceipt(stateDir).catch(() => null))?.snapshot?.failure;
+    if (!failure)
+        return;
+    output.line(scannerFailureCause(failure));
+    output.line(`  ${failure.cause}`);
+}
 /** Print the refusal lines from the scanner's last recorded snapshot, if any. */
 export async function renderRefusals(stateDir, output, withPaths = false) {
     const receipt = await scannerReceipt(stateDir).catch(() => null);
@@ -380,6 +413,7 @@ export async function collectStatusDocument(input) {
     let scannerStatus = await input.scannerStatus?.();
     let scannerHeartbeat;
     let scannerReason;
+    let scannerFailing;
     const restarted = !input.scannerStatus &&
         (await scannerService({
             stateDir: statusStateDir,
@@ -387,6 +421,10 @@ export async function collectStatusDocument(input) {
         })
             .recover()
             .catch(() => false));
+    if (!input.scannerStatus &&
+        input.abandonedPause &&
+        (await resumeAbandonedPause({ ...input.abandonedPause, stateDir: statusStateDir }).catch(() => false)))
+        input.abandonedPause.onAbandonedPauseResumed?.();
     const receipt = await scannerReceipt(statusStateDir);
     const attempt = await readFile(join(statusStateDir, 'scanner/service-replacement/result.json'), 'utf8')
         .then((text) => JSON.parse(text))
@@ -407,11 +445,22 @@ export async function collectStatusDocument(input) {
         const heartbeat = snapshot?.heartbeat.lastSuccess;
         if (snapshot?.devReleaseSource || state?.devReleaseSource)
             scannerReason = { kind: 'scanner_not_verified', reason: 'dev_release_source' };
+        // The scanner's own sign-in was refused. Its own reason code: the shared
+        // credential_revoked sentence names an editor, which is the wrong part.
         if (snapshot?.lifecycle.reason === 'credential_revoked')
             scannerReason = {
                 kind: 'login_pending',
-                reason: 'credential_revoked',
-                action: 'mnemonik install',
+                component: 'scanner',
+                reason: 'scanner_signed_out',
+                action: 'mnemonik repair',
+            };
+        // Paused because its consent names an older notice: resume cannot help.
+        else if (pausedForConsent(receipt))
+            scannerReason = {
+                kind: 'login_pending',
+                component: 'scanner',
+                reason: 'scanner_consent_required',
+                action: 'mnemonik scanner enable',
             };
         else if (snapshot?.lifecycle.state === 'paused')
             scannerReason = {
@@ -419,6 +468,17 @@ export async function collectStatusDocument(input) {
                 reason: 'scanner_paused',
                 action: 'mnemonik scanner resume',
             };
+        else if (state?.consent && !scannerReason) {
+            // A newer scanner waits for the same approval; the current one keeps indexing.
+            const expected = await (input.expectedDisclosureVersion ?? expectedScannerDisclosureVersion)().catch(() => undefined);
+            if (expected && state.consent.disclosureVersion !== expected)
+                scannerReason = {
+                    kind: 'login_pending',
+                    component: 'scanner',
+                    reason: 'scanner_update_consent_required',
+                    action: 'mnemonik scanner enable',
+                };
+        }
         if (state &&
             alive &&
             snapshot?.lifecycle.pid === pid &&
@@ -437,6 +497,19 @@ export async function collectStatusDocument(input) {
                 disclosureVersion: state.consent?.disclosureVersion ?? null,
             };
         }
+        // A running scanner that says it is failing. A refused credential already
+        // has its own line above, and a scanner that is not running says so elsewhere.
+        if (snapshot?.failure &&
+            snapshot.failure.kind !== 'credential_refused' &&
+            alive &&
+            snapshot.lifecycle.pid === pid &&
+            (snapshot.lifecycle.state === 'running' || snapshot.lifecycle.state === 'starting'))
+            scannerFailing = {
+                kind: 'selected_component_failed',
+                component: 'scanner',
+                reason: 'scanner_failing',
+                action: 'mnemonik doctor',
+            };
         if (restarted)
             scannerReason = {
                 kind: 'scanner_not_verified',
@@ -448,6 +521,7 @@ export async function collectStatusDocument(input) {
     const installationConditions = [
         ...(input.installationConditions ?? []),
         ...(scannerReason ? [scannerReason] : []),
+        ...(scannerFailing ? [scannerFailing] : []),
         ...(input.preflight.status === 'ready'
             ? []
             : [

@@ -52,15 +52,15 @@ it('configures only the three launch editors when retired editors are also insta
       : Response.json({ id: 'active-session' })
   );
   let text = '';
-
-  expect(
-    await joinedInstall(
+  const install = (hosts: Array<[string, string]>) =>
+    joinedInstall(
       new Map<string, string | true>([
         ['components', 'hooks,mcp'],
         ['without-scanner', true],
         ['accept-limited', true],
         ['apply', true],
         ['non-interactive', true],
+        ...hosts,
       ]),
       {
         cwd: home,
@@ -86,9 +86,20 @@ it('configures only the three launch editors when retired editors are also insta
       new Output({ write: (chunk) => void (text += chunk) }),
       async () => 'owner',
       async () => ({ stateDir: home, account: 'owner', getCliBearer: async () => 'fixture' })
-    )
-  ).toBe(3);
-  expect(text).toContain('3 editors configured');
+    );
+
+  // With nobody at the terminal the editors are the person's choice, and only
+  // the launch editors found here are offered.
+  expect(await install([])).toBe(3);
+  expect(text).toContain(
+    'Ask the person: Which coding tools should Mnemonik connect? Found on this machine: Claude Code, Codex and Cursor.'
+  );
+  expect(text).toContain('for example --hosts claude-code,codex,cursor.');
+  expect(run).not.toHaveBeenCalled();
+
+  text = '';
+  expect(await install([['hosts', 'claude-code,codex,cursor']])).toBe(3);
+  expect(text).toContain('3 coding tools configured');
   expect([...new Set(selected.map(({ host }) => host))]).toEqual([
     'claude-code',
     'codex',
@@ -208,7 +219,8 @@ it.each([
         expect.stringContaining('Move the existing'),
       ]);
     }
-    if (!flags.has('json')) expect(text.match(/One step is left in each editor/g)).toHaveLength(1);
+    if (!flags.has('json'))
+      expect(text.match(/One step is left in each coding tool/g)).toHaveLength(1);
     if (state === 'LIMITED') {
       expect(text).toContain('Indexing was skipped. Run mnemonik install to set it up later.');
       expect(text).not.toContain('thing left');
@@ -322,7 +334,7 @@ it('bounds a black-holed final report and still prints a late installation failu
   ).resolves.toBe(3);
   expect(fetcher).toHaveBeenCalledOnce();
   expect(fetcher.mock.calls[0]?.[1]?.signal?.aborted).toBe(true);
-  expect(text).toContain('  Configuring your editors\n');
+  expect(text).toContain('  Configuring your coding tools\n');
   expect(text).toContain('Installation stopped. Details:');
   expect(text).not.toContain('final installation status could not be uploaded');
 }, 7_000);

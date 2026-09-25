@@ -7,6 +7,7 @@ import { runCli, type CliDependencies } from '../src/router.js';
 import { Output } from '../src/output.js';
 import { renderJourney } from '../src/screens/journey.js';
 import { DiagnosticsError } from '../src/diagnostics.js';
+import { humanReport } from '../src/humanReason.js';
 
 const directories: string[] = [];
 it.each([401, 403])('explains a refused revocation sign-in (%s)', async (status) => {
@@ -99,6 +100,16 @@ it('explains a Windows task failure without the operating-system reason', () => 
   expect(stdout.text).toContain('Background indexing could not be started.');
   expect(stdout.text).toContain('Run mnemonik install to try again.');
   expect(stdout.text).not.toContain('permission');
+});
+
+// bin.ts prints a refused credential (auth status and every command that
+// reads it) through humanReport; status prints the same pair. Install does not
+// remove another account's ACE on Windows, so the step points back to status.
+it('tells a person how to recover from a credential file others can read', () => {
+  expect(humanReport('weak_permissions')).toBe(
+    'A Mnemonik credential file can be read by other users on this computer.\n' +
+      'Set that file to owner-only access, then run mnemonik status again.'
+  );
 });
 
 it('turns an unexpected bare error code into an action at the output boundary', () => {

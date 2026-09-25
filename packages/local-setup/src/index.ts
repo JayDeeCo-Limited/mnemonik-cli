@@ -8,6 +8,7 @@ import {
   type SetupTransport,
   type EnsureOptions,
   type SetupResult,
+  type SetupCancelled,
   type Owner,
 } from './contracts.js';
 import {
@@ -29,6 +30,8 @@ export {
   protectStateFile,
   windowsCurrentUserAcl,
   windowsCurrentAccount,
+  verifyWindowsCurrentUserOnly,
+  type WindowsAclRun,
   atomicWrite,
   withLock,
   type Fault,
@@ -90,6 +93,17 @@ const accessResponseHash = (response: {
       candidates: response.candidates,
     })
   );
+/**
+ * Nothing was reserved, staged or written for this record: at most a question
+ * is waiting. Such a record answers to its context and is replaced, never defended.
+ */
+const pristine = (record: SetupRecord, diskHash: string | null): boolean =>
+  !record.remote &&
+  !record.staged &&
+  !record.steps.remote.started &&
+  !record.steps.identity.started &&
+  !record.steps.rollback.started &&
+  diskHash === record.before.hash;
 const step = (beforeHash: string | null): Step => ({
   complete: false,
   beforeHash,
@@ -184,16 +198,18 @@ export function createProjectSetupExecutor(deps: ExecutorDependencies) {
           (record.remote && hash(JSON.stringify(record.remote)) !== record.steps.remote.afterHash)
         )
           return actionRequired('record_invalid');
-        // A new install of a completed identity is a new local operation. Preserve
-        // today's bytes for rollback and recheck access/evidence on the server.
+        // A new install of a completed identity is a new local operation, whoever
+        // signed in for the earlier one. Preserve today's bytes for rollback and
+        // recheck access/evidence on the server. An undone setup is finished too:
+        // setting the folder up again starts over.
         if (
           mode === 'stage' &&
-          record.scopeKey === hash(deps.scopeKey) &&
-          record.steps.identity.complete &&
-          !record.steps.rollback.started &&
-          resolution.kind === 'ok' &&
-          resolution.identity.projectId === record.remote?.projectId &&
-          (!options.intent || options.intent.projectId === record.remote.projectId)
+          ((record.steps.identity.complete &&
+            !record.steps.rollback.started &&
+            resolution.kind === 'ok' &&
+            resolution.identity.projectId === record.remote?.projectId &&
+            (!options.intent || options.intent.projectId === record.remote.projectId)) ||
+            (record.steps.rollback.complete && diskHash === record.before.hash))
         ) {
           record = freshRecord();
           recordIsNew = true;
@@ -213,14 +229,7 @@ export function createProjectSetupExecutor(deps: ExecutorDependencies) {
             JSON.stringify(record.owner) !== JSON.stringify(options.owner)) ||
           (!settled && JSON.stringify(record.intent) !== JSON.stringify(options.intent))
         ) {
-          const replaceable =
-            !record.remote &&
-            !record.staged &&
-            !record.steps.remote.started &&
-            !record.steps.identity.started &&
-            !record.steps.rollback.started &&
-            diskHash === record.before.hash;
-          if (replaceable) {
+          if (pristine(record, diskHash)) {
             record = freshRecord();
             recordIsNew = true;
           } else {
@@ -364,9 +373,15 @@ export function createProjectSetupExecutor(deps: ExecutorDependencies) {
         diskHash !== record.staged?.hash
       )
         return actionRequired('identity_changed');
+      if (record.evidence && JSON.stringify(record.evidence) !== JSON.stringify(evidence)) {
+        // A question asked about a context that no longer holds is not an operation.
+        // The person's choice to leave the folder out outlives the question.
+        if (!pristine(record, diskHash)) return actionRequired('operation_context_changed');
+        const ignored = record.ignored;
+        record = { ...freshRecord(), ...(ignored ? { ignored } : {}) };
+        recordIsNew = true;
+      }
       if (recordIsNew) await save(); // Operation ID and before-state MUST be durable before any remote request.
-      if (record.evidence && JSON.stringify(record.evidence) !== JSON.stringify(evidence))
-        return actionRequired('operation_context_changed');
       if (record.steps.identity.complete && mode === 'ensure' && record.remote) {
         const validated = await deps.transport.issueSetupRequest({
           ...evidence,
@@ -485,5 +500,78 @@ export function createProjectSetupExecutor(deps: ExecutorDependencies) {
     stage: (options: EnsureOptions) => execute(options, 'stage'),
     apply: (options: EnsureOptions) => execute(options, 'apply'),
     rollback: (options: EnsureOptions) => execute(options, 'rollback'),
+    cancel: async (options: EnsureOptions): Promise<SetupCancelled> => {
+      const resolution = await deps.resolver.resolveProjectIdentity(options.cwd, options);
+      return cancelProjectSetup(
+        'root' in resolution ? resolution.root : options.cwd,
+        deps.stateDir,
+        deps.waitMs
+      );
+    },
   };
+}
+
+/**
+ * The answer `cancel` names. Removes the folder's setup notes, whatever state
+ * they are in, so the next command starts fresh. An unfinished setup that had
+ * already written the identity file puts the earlier bytes back; a finished
+ * setup's file and any project the server reserved are left as they are.
+ */
+export async function cancelProjectSetup(
+  folder: string,
+  stateDir?: string,
+  waitMs = 60_000
+): Promise<SetupCancelled> {
+  const root = await realpath(folder);
+  const path = recordPath(root, stateDir);
+  return withLock(path, waitMs, async (assertOwned) => {
+    const saved = await readBytes(path);
+    if (!saved) return { status: 'cancelled', root, cleared: false, restored: false };
+    let record: Partial<SetupRecord> | null = null;
+    try {
+      record = JSON.parse(saved.toString()) as Partial<SetupRecord>;
+    } catch {
+      // Unreadable notes are exactly what cancel is for.
+    }
+    let restored = false;
+    const staged = record?.staged;
+    const before = record?.before;
+    const settled = !!record?.steps?.identity?.complete && !record.steps.rollback?.started;
+    if (
+      !settled &&
+      staged &&
+      before &&
+      typeof staged.hash === 'string' &&
+      staged.hash !== before.hash
+    ) {
+      const file = join(root, '.mnemonik.json');
+      const earlier =
+        typeof before.base64 === 'string' ? Buffer.from(before.base64, 'base64') : null;
+      if (
+        digest(await readBytes(file)) === staged.hash &&
+        (earlier ? hash(earlier) === before.hash : before.hash === null)
+      ) {
+        await assertOwned();
+        if (earlier) await atomicWrite(file, earlier, undefined, assertOwned);
+        else {
+          await unlink(file);
+          await syncDirectory(root);
+        }
+        restored = true;
+      }
+    }
+    await assertOwned();
+    await unlink(path).catch((error: NodeJS.ErrnoException) => {
+      if (error.code !== 'ENOENT') throw error;
+    });
+    await syncDirectory(dirname(path));
+    const remote = record?.remote?.projectId;
+    return {
+      status: 'cancelled',
+      root,
+      cleared: true,
+      restored,
+      ...(typeof remote === 'string' ? { retainedRemoteUUID: remote } : {}),
+    };
+  });
 }

@@ -77,6 +77,7 @@ export class Output {
     context;
     installationLayout = false;
     lastHumanLineBlank = true;
+    headingNext = false;
     progress;
     constructor(stdout, stderr = stdout, context = {}) {
         this.stdout = stdout;
@@ -94,6 +95,16 @@ export class Output {
     installSection() {
         if (!this.lastHumanLineBlank)
             this.line();
+    }
+    /** A heading that is not a numbered step: flush left, with a blank line above it. */
+    heading(value) {
+        this.headingNext = true;
+        try {
+            return this.line(value);
+        }
+        finally {
+            this.headingNext = false;
+        }
     }
     inputPrefix() {
         if (this.installationLayout)
@@ -165,7 +176,7 @@ export class Output {
             this.stdout.write('\r\u001b[2K');
         let count = 0;
         for (const line of humanLines(value)) {
-            const heading = /^Step \d+ of \d+:/u.test(line.text);
+            const heading = this.headingNext || /^Step \d+ of \d+:/u.test(line.text);
             const approvalLink = line.url?.includes('/oauth/device?user_code=') ?? false;
             if (this.installationLayout && heading && !this.lastHumanLineBlank) {
                 stream.write('\n');

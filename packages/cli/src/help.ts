@@ -15,7 +15,7 @@ Commands
   status                      Show whether Mnemonik is working here.
   add <folder>                Start indexing a project folder.
   remove <folder>             Stop indexing a project folder.
-  connect <editor>            Sign an editor in to Mnemonik.
+  connect <tool>              Sign a coding tool in to Mnemonik.
   project <subcommand>        Manage the project in a folder.
   update                      Update Mnemonik on this machine.
   repair                      Re-apply the installation on this machine.
@@ -44,38 +44,41 @@ Exit codes
   ],
   [
     'install',
-    `Set up Mnemonik on this machine: sign in, connect your editors, choose the
-project folders to index, and start background indexing. Asks before each
-step unless you pass the consent options below.
+    `Set up Mnemonik on this machine: sign in, connect your coding tools, choose
+the project folders to index, and start background indexing. Asks before
+each step unless you pass the consent options below.
 
 Usage: mnemonik install [options]
 
 Options
-  --hosts <list>              Editors to connect: claude-code, codex, cursor.
-                              Default: every editor found on this machine.
+  --hosts <list>              Coding tools to connect: claude-code, codex,
+                              cursor. Default: every one found on this machine.
   --components <list>         Set up only these parts: hooks, mcp, scanner.
                               Default: all three.
   --scan-roots <list>         Project folders to index, comma separated.
   --exclusions <list>         Folders inside those to skip, comma separated.
-  --without-scanner           Connect editors only; do not index anything.
+  --without-scanner           Connect coding tools only; do not index anything.
   --accept-indexing           Agree to index the folders in --scan-roots.
   --accept-limited            Agree to a limited setup with no indexing.
   --apply                     Make the changes. Required with --non-interactive.
   --dry-run                   Show what would happen and change nothing.
   --no-browser                Print the sign-in link instead of opening it.
+  --retry                     When a wait runs out, wait once more.
+  --skip                      When a wait runs out, carry on without it.
 
-With --non-interactive or --json, pass --apply, --scan-roots and either
---accept-indexing or --accept-limited, or the command stops with exit 3.
+With --non-interactive or --json, pass --apply, --hosts, --scan-roots and
+either --accept-indexing or --accept-limited, or the command stops with exit 3
+and names the question to ask.
 
 Example
   mnemonik install --non-interactive --apply --accept-indexing \\
-    --scan-roots ~/projects/app,~/projects/site
+    --hosts claude-code,codex --scan-roots ~/projects/app,~/projects/site
 `,
   ],
   [
     'status',
     `Show whether Mnemonik is installed and working on this machine, which
-editors are connected, and which folders are indexed. Works signed out.
+coding tools are connected, and which folders are indexed. Works signed out.
 When signed in, it updates this machine's status in your account so the
 console shows it.
 
@@ -128,15 +131,15 @@ Example
   ],
   [
     'connect',
-    `Sign an editor in to Mnemonik. For Codex, prints one link; open it in any
-browser, approve, and Codex on this machine is signed in, including over
+    `Sign a coding tool in to Mnemonik. For Codex, prints one link; open it in
+any browser, approve, and Codex on this machine is signed in, including over
 SSH. For Claude Code and Cursor, prints the steps to sign in inside the
-editor.
+coding tool.
 
-Usage: mnemonik connect <editor>
+Usage: mnemonik connect <tool>
 
 Arguments
-  <editor>                    claude-code, codex, or cursor. Required.
+  <tool>                      claude-code, codex, or cursor. Required.
 
 Example
   mnemonik connect codex
@@ -236,6 +239,8 @@ Options
   --owner <team-or-user>      Create the project under this owner.
   --apply                     Make the changes. Required with
                               --non-interactive or --json.
+  --cancel                    Cancel a setup that is waiting for an answer,
+                              so the next one starts fresh.
 
 Example
   mnemonik project setup ~/projects/app
@@ -276,15 +281,15 @@ Example
   ],
   [
     'update',
-    `Update Mnemonik on this machine: the mnemonik command, the editor hooks, and
-background indexing if it is installed. Restarts background indexing when
-its software changes. Safe to run while an editor is open.
+    `Update Mnemonik on this machine: the mnemonik command, the coding tool hooks,
+and background indexing if it is installed. Restarts background indexing
+when its software changes. Safe to run while a coding tool is open.
 
 Usage: mnemonik update [options]
 
 Options
-  --host <editor>             Update one editor's hooks only: claude-code,
-                              codex, cursor.
+  --host <tool>               Update one coding tool's hooks only:
+                              claude-code, codex, cursor.
   --component scanner         Update background indexing only.
   --automatic                 Print nothing. Used by scheduled updates.
 
@@ -295,13 +300,14 @@ Example
   [
     'repair',
     `Re-apply the installation recorded on this machine: the mnemonik command and
-each editor's connection and hooks. Use it when status or doctor reports
-something missing.
+each coding tool's connection and hooks. Use it when status or doctor
+reports something missing.
 
 Usage: mnemonik repair [options]
 
 Options
-  --host <editor>             Repair one editor only: claude-code, codex, cursor.
+  --host <tool>               Repair one coding tool only: claude-code, codex,
+                              cursor.
   --component <name>          Repair one part only: hooks, mcp.
   --apply                     Also switch Codex's hooks back on if Codex has
                               them turned off. Only when repair asks for it.
@@ -313,7 +319,7 @@ Example
   [
     'doctor',
     `Check this machine and explain any problem in plain words: Node version,
-file permissions, the installed files, the editor connections and
+file permissions, the installed files, the coding tool connections and
 background indexing. Changes nothing and sends nothing.
 
 Usage: mnemonik doctor [--json]
@@ -324,15 +330,15 @@ Example
   ],
   [
     'uninstall',
-    `Remove Mnemonik from this machine: editor connections and hooks, background
-indexing, and the mnemonik command. Your account, your projects' memories
-and your consent records are kept; sign in again on any machine to
+    `Remove Mnemonik from this machine: coding tool connections and hooks,
+background indexing, and the mnemonik command. Your account, your projects'
+memories and your consent records are kept; sign in again on any machine to
 continue. Asks first unless you pass --confirm.
 
 Usage: mnemonik uninstall [options]
 
 Options
-  --host <editor>             Disconnect one editor only.
+  --host <tool>               Disconnect one coding tool only.
   --component scanner         Remove background indexing only, and withdraw
                               your indexing consent for this machine. Asks first.
   --confirm                   Skip the question. Required with --non-interactive.
@@ -343,15 +349,15 @@ Example
   ],
   [
     'auth',
-    `Sign this machine in or out, and see which editors are signed in.
+    `Sign this machine in or out, and see which coding tools are signed in.
 
 Usage: mnemonik auth <subcommand> [options]
 
 Subcommands
   login                       Sign this machine in to your account.
   renew                       Sign this computer in again, even if it looks signed in.
-  status [--host <editor>]    Show what is signed in and since when.
-  logout [--host <editor>]    Sign out this machine, or one editor.
+  status [--host <tool>]      Show what is signed in and since when.
+  logout [--host <tool>]      Sign out this machine, or one coding tool.
 
 Run mnemonik auth <subcommand> --help for details.
 
@@ -394,13 +400,13 @@ Example
   ],
   [
     'auth status',
-    `Show what is signed in from this machine: the account, and each editor's
-sign-in with when it was created and last used. Changes nothing.
+    `Show what is signed in from this machine: the account, and each coding
+tool's sign-in with when it was created and last used. Changes nothing.
 
-Usage: mnemonik auth status [--host <editor>]
+Usage: mnemonik auth status [--host <tool>]
 
 Options
-  --host <editor>             One editor only: claude-code, codex, cursor.
+  --host <tool>               One coding tool only: claude-code, codex, cursor.
 
 Example
   mnemonik auth status
@@ -409,13 +415,14 @@ Example
   [
     'auth logout',
     `Sign out. With no options, signs this machine's mnemonik command out and
-leaves editors as they are. With --host, signs one editor out of your
-account so it must sign in again. Asks first unless you pass --confirm.
+leaves coding tools as they are. With --host, signs one coding tool out of
+your account so it must sign in again. Asks first unless you pass --confirm.
 
-Usage: mnemonik auth logout [--host <editor>] [--confirm]
+Usage: mnemonik auth logout [--host <tool>] [--confirm]
 
 Options
-  --host <editor>             Sign out one editor: claude-code, codex, cursor.
+  --host <tool>               Sign out one coding tool: claude-code, codex,
+                              cursor.
   --component scanner         Revoke background indexing's access to your
                               account. Indexing stops on its next upload.
   --confirm                   Skip the question.
@@ -426,8 +433,8 @@ Example
   ],
   [
     'logout',
-    `Sign this machine's mnemonik command out. Editors stay signed in. Same as
-mnemonik auth logout with no options.
+    `Sign this machine's mnemonik command out. Coding tools stay signed in. Same
+as mnemonik auth logout with no options.
 
 Usage: mnemonik logout
 
@@ -471,6 +478,9 @@ Options
   --exclusions <list>         Folders inside those to skip.
   --accept-indexing           Agree to index those folders.
   --apply                     Make the changes.
+  --retry                     If indexing does not start in time, wait once
+                              more.
+  --skip                      If indexing does not start in time, stop waiting.
 
 With --non-interactive or --json, all three of --scan-roots,
 --accept-indexing and --apply are required.
@@ -484,7 +494,12 @@ Example
     `Start background indexing if it is stopped. Says so if it is already
 running.
 
-Usage: mnemonik scanner start [--json]
+Usage: mnemonik scanner start [options]
+
+Options
+  --retry                     If indexing does not start in time, wait once
+                              more.
+  --skip                      If indexing does not start in time, stop waiting.
 
 Example
   mnemonik scanner start
@@ -628,7 +643,7 @@ Usage: mnemonik identity migrate [paths...] [options]
 
 Arguments
   [paths...]                  Extra folders to check, on top of the projects
-                              your editors already know about. Only with
+                              your coding tools already know about. Only with
                               --report and --backup.
 
 Options

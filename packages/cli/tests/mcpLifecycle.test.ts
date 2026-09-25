@@ -128,7 +128,7 @@ it('installs hooks and MCP declarations for three editors without launching or l
   expect(exit, stdout).toBe(0);
   expect(launch).not.toHaveBeenCalled();
   expect(list).not.toHaveBeenCalled();
-  expect(stdout.match(/One step is left in each editor/g)).toHaveLength(1);
+  expect(stdout.match(/One step is left in each coding tool/g)).toHaveLength(1);
   expect(stdout).toContain('Claude Code      type /mcp, choose mnemonik, then Authenticate');
   expect(stdout).toContain('Codex CLI        run codex mcp login mnemonik');
   expect(stdout).toContain(

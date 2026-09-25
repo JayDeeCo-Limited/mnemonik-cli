@@ -95,23 +95,32 @@ const hostPaths = (
   ],
 });
 
+/** The launch editors present on this machine, by their files alone. */
+export async function detectEditors(
+  home: string,
+  root: string,
+  pathExists: (path: string) => Promise<boolean> = hostDiscovery.pathExists
+): Promise<Array<{ host: (typeof launchHosts)[number]; path: string }>> {
+  const found: Array<{ host: (typeof launchHosts)[number]; path: string }> = [];
+  const paths = hostPaths(home, root);
+  for (const host of launchHosts)
+    for (const path of paths[host])
+      if (await pathExists(path)) {
+        found.push({ host, path });
+        break;
+      }
+  return found;
+}
+
 export async function runPreflight(deps: PreflightDependencies = {}): Promise<PreflightResult> {
   const home = deps.home ?? homedir();
   const resolution = await (deps.resolveIdentity ?? resolveProjectIdentity)(
     deps.cwd ?? process.cwd()
   );
   const root = 'root' in resolution ? resolution.root : (deps.cwd ?? process.cwd());
-  const pathExists = deps.pathExists ?? hostDiscovery.pathExists;
-  const hosts: DetectedHost[] = [];
-  const paths = hostPaths(home, root);
-  for (const host of launchHosts) {
-    for (const path of paths[host]) {
-      if (await pathExists(path)) {
-        hosts.push({ name: launchHostLabels[host], supported: true, path });
-        break;
-      }
-    }
-  }
+  const hosts: DetectedHost[] = (
+    await detectEditors(home, root, deps.pathExists ?? hostDiscovery.pathExists)
+  ).map(({ host, path }) => ({ name: launchHostLabels[host], supported: true, path }));
 
   const projectRoot = 'root' in resolution ? resolution.root : undefined;
   const discoveryUrl =
@@ -158,7 +167,7 @@ export function renderPreflight(result: PreflightResult, output: Output): void {
   const hosts = result.hosts.map(
     (host) => `${host.name}${host.supported ? '' : ' (not supported yet)'}`
   );
-  output.line(`  Found      ${hosts.length ? hosts.join(', ') : 'No supported editors'}`);
+  output.line(`  Found      ${hosts.length ? hosts.join(', ') : 'No supported coding tools'}`);
   output.line(
     `  Project    ${result.project.resolution === 'absent' ? 'No project found' : result.project.root}`
   );

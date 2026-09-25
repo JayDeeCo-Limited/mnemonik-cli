@@ -1,4 +1,4 @@
-import { execFile } from 'node:child_process';
+import { execFile, spawnSync } from 'node:child_process';
 import { createHash, generateKeyPairSync, randomBytes, sign } from 'node:crypto';
 import { promisify } from 'node:util';
 import { setImmediate as immediate } from 'node:timers/promises';
@@ -20,7 +20,7 @@ import {
   type EnableOptions,
 } from '../src/scanner/enable.js';
 import { scannerService } from '../src/scanner/service.js';
-import { controlScanner, scannerReceipt } from '../src/scanner/control.js';
+import { ABANDONED_PAUSE_RESUMED, controlScanner, scannerReceipt } from '../src/scanner/control.js';
 import { updateScanner } from '../src/scanner/update.js';
 import { deleteScannerIndex } from '../src/scanner/data.js';
 import { hash, RuntimeStore } from '../src/runtime/store.js';
@@ -243,6 +243,31 @@ it('fresh enable verifies runtime, stores browser consent and credential, starts
     reason: 'unsigned',
   });
 });
+it('the next install and update resume a pause left by an install that died', async () => {
+  await enableScanner(options);
+  // L-73: an install paused the running scanner, then died without resuming it.
+  const deadPid = spawnSync(process.execPath, ['-e', '']).pid;
+  const abandon = () =>
+    controlScanner('pause', { stateDir: state, store }, { session: 'dead', pid: deadPid, at: 1 });
+  const paused = async () =>
+    JSON.parse(await readFile(join(state, 'scanner/state.json'), 'utf8')).paused as boolean;
+  await abandon();
+  expect(await paused()).toBe(true);
+
+  let text = '';
+  allowInstalledCredential = true;
+  await enableScanner({ ...options, output: new Output({ write: (c) => void (text += c) }) });
+  expect(text.split('\n').filter((line) => line === ABANDONED_PAUSE_RESUMED)).toHaveLength(1);
+  expect((await scannerReceipt(state))!.snapshot.lifecycle.state).toBe('running');
+
+  await abandon();
+  const resumed = vi.fn();
+  await updateScanner({ stateDir: state, store, onAbandonedPauseResumed: resumed }, () =>
+    source('2.0.0')
+  );
+  expect(resumed).toHaveBeenCalledOnce();
+  expect(await paused()).toBe(false);
+}, 20000);
 it('sends boundary candidates and configures only the approved subset', async () => {
   const git = promisify(execFile);
   const boundary = join(home, 'Projects');
@@ -276,7 +301,12 @@ it('sends boundary candidates and configures only the approved subset', async ()
       boundary,
       candidates: [
         { path: app, name: 'app', kind: 'git' },
-        { path: notes, name: 'notes', kind: 'folder' },
+        {
+          path: notes,
+          name: 'notes',
+          kind: 'folder',
+          projectId: '33333333-3333-4333-8333-333333333333',
+        },
       ],
     },
     '11111111-1111-4111-8111-111111111111'
@@ -311,13 +341,20 @@ it('uses the repository approval instruction in the joined installer', async () 
   options.input = Readable.from('\n');
   options.roots = [consent.roots[0]!];
   consent.roots = [join(home, 'different')];
+  const order: string[] = [];
+  // L-78: the installer shows it is waiting before the approval poll starts.
+  options.awaitingApproval = () => void order.push('waiting');
   options.authorize = async (selection) => {
-    if (selection) consent.roots = [options.roots![0]!];
+    if (selection) {
+      order.push('approval');
+      consent.roots = [options.roots![0]!];
+    }
     return 'cli-token';
   };
 
   await enableScanner(options);
 
+  expect(order).toEqual(['waiting', 'approval']);
   expect(text).toContain('Open the link below to choose your project folders.');
   expect(text).not.toContain('Waiting for approval');
 });

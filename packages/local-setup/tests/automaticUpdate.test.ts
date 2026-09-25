@@ -1,12 +1,14 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { afterEach, expect, it, vi } from 'vitest';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { SystemdAdapter } from '../../scanner/src/supervisor/systemd.js';
 import {
   maybeStartAutomaticUpdate,
   startAutomaticUpdateForSession,
   type AutomaticUpdateOptions,
+  type SessionUpdateOptions,
 } from '../src/automaticUpdate.js';
 
 const directories: string[] = [];
@@ -130,30 +132,89 @@ it('returns after one stat when the last attempt is younger than 24 hours', asyn
   expect(f.spawn).not.toHaveBeenCalled();
 });
 
-it('bounds a never-settling session update at 50 ms without output', async () => {
-  vi.useFakeTimers();
-  const stdout = vi.spyOn(process.stdout, 'write');
-  const stderr = vi.spyOn(process.stderr, 'write');
-  try {
-    let settled = false;
-    const result = startAutomaticUpdateForSession(() => new Promise(() => {})).then(() => {
-      settled = true;
+describe('session start', () => {
+  const helper = () =>
+    vi.fn<NonNullable<SessionUpdateOptions['spawnHelper']>>(() => ({
+      once: vi.fn(),
+      unref: vi.fn(),
+    }));
+
+  it('does one stat and starts nothing when the day is already claimed', async () => {
+    const f = await fixture();
+    const spawnHelper = helper();
+    const stat = vi.fn(async () => ({ isFile: () => true, mtimeMs: 1 }));
+    await startAutomaticUpdateForSession({
+      stateDir: f.stateDir,
+      home: f.stateDir,
+      now: () => 86_400_000,
+      stat,
+      spawnHelper,
     });
-    await vi.advanceTimersByTimeAsync(49);
-    expect(settled).toBe(false);
-    await vi.advanceTimersByTimeAsync(1);
-    await result;
-    expect(settled).toBe(true);
-    expect(stdout).not.toHaveBeenCalled();
-    expect(stderr).not.toHaveBeenCalled();
-    await expect(
-      startAutomaticUpdateForSession(async () => {
-        throw new Error('slow state directory');
-      })
-    ).resolves.toBeUndefined();
-  } finally {
-    stdout.mockRestore();
-    stderr.mockRestore();
-    vi.useRealTimers();
-  }
+    expect(stat).toHaveBeenCalledOnce();
+    expect(spawnHelper).not.toHaveBeenCalled();
+  });
+
+  it('hands a due claim to a detached helper and does none of it itself', async () => {
+    const f = await fixture();
+    const spawnHelper = helper();
+    const launcher = join(f.stateDir, '.local', 'bin', 'mnemonik');
+    await mkdir(dirname(launcher), { recursive: true });
+    await writeFile(launcher, '#!/bin/sh\n', { mode: 0o755 });
+    await startAutomaticUpdateForSession({
+      stateDir: f.stateDir,
+      home: f.stateDir,
+      platform: 'linux',
+      spawnHelper,
+    });
+    expect(spawnHelper).toHaveBeenCalledWith(
+      process.execPath,
+      [
+        fileURLToPath(new URL('../src/automaticUpdate.ts', import.meta.url)),
+        '--mnemonik-automatic-update',
+        f.stateDir,
+      ],
+      expect.objectContaining({ detached: true, stdio: 'ignore' })
+    );
+    // The claim is the helper's: session start wrote nothing.
+    await expect(stat(join(f.stateDir, 'automatic-update.json'))).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
+  });
+
+  it('starts no helper on a machine without the mnemonik launcher', async () => {
+    const f = await fixture();
+    const spawnHelper = helper();
+    await startAutomaticUpdateForSession({
+      stateDir: f.stateDir,
+      home: f.stateDir,
+      platform: 'linux',
+      spawnHelper,
+    });
+    expect(spawnHelper).not.toHaveBeenCalled();
+  });
+
+  it('is silent and fail-open when the helper cannot start', async () => {
+    const f = await fixture();
+    const stdout = vi.spyOn(process.stdout, 'write');
+    const stderr = vi.spyOn(process.stderr, 'write');
+    try {
+      await expect(
+        startAutomaticUpdateForSession({
+          stateDir: f.stateDir,
+          home: f.stateDir,
+          stat: async () => {
+            throw Object.assign(new Error('gone'), { code: 'ENOENT' });
+          },
+          spawnHelper: () => {
+            throw new Error('spawn refused');
+          },
+        })
+      ).resolves.toBeUndefined();
+      expect(stdout).not.toHaveBeenCalled();
+      expect(stderr).not.toHaveBeenCalled();
+    } finally {
+      stdout.mockRestore();
+      stderr.mockRestore();
+    }
+  });
 });

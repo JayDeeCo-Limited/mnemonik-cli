@@ -1,4 +1,4 @@
-import { windowsCurrentAccountSync } from '@mnemonik/shared/hook-runtime';
+import { windowsCurrentAccountSync, type Execute } from '@mnemonik/shared/hook-runtime';
 export declare const hash: (bytes: string | Buffer) => string;
 export declare const codeIs: (error: unknown, code: string) => boolean;
 export declare function stateDirectory(platform?: NodeJS.Platform, env?: NodeJS.ProcessEnv, home?: string): string;
@@ -15,6 +15,15 @@ export declare function windowsCurrentUserAcl(path: string, directory?: boolean,
     execFile?: ExecFile;
     username?: string;
 }, created?: boolean): Promise<void>;
+/** Runs one native command for the Windows ACL reader; injected by tests. */
+export type WindowsAclRun = Execute;
+/**
+ * The Windows counterpart of POSIX mode 0600/0700: every Allow ACE on `path`
+ * names the current token's SID, so no other user or group (Users, Everyone)
+ * can read it. Throws `acl_permissions` when one does. Reads the DACL through
+ * the shared icacls export, whose temporary file lives under `state`.
+ */
+export declare function verifyWindowsCurrentUserOnly(path: string, state: string, run?: WindowsAclRun): Promise<void>;
 export declare function protectStateFile(path: string, platform?: NodeJS.Platform, aclOptions?: {
     execFile?: ExecFile;
     username?: string;

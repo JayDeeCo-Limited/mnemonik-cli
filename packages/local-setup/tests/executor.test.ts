@@ -31,6 +31,7 @@ import {
 import { RuntimeError } from '@mnemonik/shared/hook-runtime';
 import { runIdentityFixtureSuite } from '../../shared/test-fixtures/identity/runner.mjs';
 import {
+  cancelProjectSetup,
   createProjectSetupExecutor,
   recordPath,
   stateDirectory,
@@ -1084,4 +1085,114 @@ it('rechecks a completed identity on a new stage and refuses a changed fingerpri
   expect(await executor.stage(f.options)).toHaveProperty('state', 'fingerprint_mismatch');
   expect(await readFile(f.file)).toEqual(before);
   expect(f.transport.consumeSetupRequest).toHaveBeenCalledTimes(1);
+});
+
+describe('a setup that waits on a question can always be answered', () => {
+  const confirmation = {
+    status: 'project_setup_required' as const,
+    state: 'confirmation_required',
+    allowedActions: ['link', 'create', 'cancel'],
+    candidates: [{ projectId, displayName: 'repo' }],
+    requestId: randomUUID(),
+  };
+
+  it('cancel clears a waiting confirmation and a fresh setup proceeds', async () => {
+    const f = await fixture();
+    f.transport.issueSetupRequest.mockResolvedValueOnce(confirmation);
+    const executor = createProjectSetupExecutor(f.deps);
+    expect(await executor.stage({ ...f.options, owner: 'personal' })).toBe(confirmation);
+    expect((await f.record()).evidence).toBeDefined();
+
+    expect(await executor.cancel(f.options)).toEqual({
+      status: 'cancelled',
+      root: f.root,
+      cleared: true,
+      restored: false,
+    });
+    await expect(f.record()).rejects.toThrow();
+    expect(await executor.cancel(f.options)).toMatchObject({ cleared: false });
+
+    expect(await executor.stage(f.options)).toMatchObject({ status: 'staged' });
+    expect(await executor.apply(f.options)).toMatchObject({ status: 'done', projectId });
+  });
+
+  it('cancel puts back the file an unfinished setup had written and keeps a finished one', async () => {
+    const f = await fixture();
+    await writeFile(f.file, existing);
+    await expect(
+      createProjectSetupExecutor({
+        ...f.deps,
+        fault: (point) => {
+          if (point === 'after_identity_rename') throw new Error('crash');
+        },
+      }).ensureProject({ ...f.options, intent: { action: 'link', projectId, replace: true } })
+    ).rejects.toThrow('crash');
+    expect(await readFile(f.file)).not.toEqual(existing);
+
+    expect(await cancelProjectSetup(f.root, f.stateDir)).toMatchObject({
+      cleared: true,
+      restored: true,
+      retainedRemoteUUID: projectId,
+    });
+    expect(await readFile(f.file)).toEqual(existing);
+
+    const done = await fixture();
+    await createProjectSetupExecutor(done.deps).ensureProject(done.options);
+    const written = await readFile(done.file);
+    expect(await cancelProjectSetup(done.root, done.stateDir)).toMatchObject({
+      cleared: true,
+      restored: false,
+    });
+    expect(await readFile(done.file)).toEqual(written);
+  });
+
+  it('cancel clears notes Mnemonik cannot read', async () => {
+    const f = await fixture();
+    await mkdir(join(recordPath(f.root, f.stateDir), '..'), { recursive: true });
+    await writeFile(recordPath(f.root, f.stateDir), 'not json');
+    expect(await createProjectSetupExecutor(f.deps).stage(f.options)).toMatchObject({
+      state: 'record_invalid',
+    });
+    expect(await createProjectSetupExecutor(f.deps).cancel(f.options)).toMatchObject({
+      cleared: true,
+    });
+    expect(await createProjectSetupExecutor(f.deps).stage(f.options)).toMatchObject({
+      status: 'staged',
+    });
+  });
+
+  it('replaces a waiting question when the folder context changed', async () => {
+    const f = await fixture();
+    f.transport.issueSetupRequest.mockResolvedValueOnce(confirmation);
+    expect(await createProjectSetupExecutor(f.deps).stage(f.options)).toBe(confirmation);
+    const moved = createProjectSetupExecutor({
+      ...f.deps,
+      bindContext: async () => ({ ...evidence, repositoryFingerprint: evidence.deviceRootContext }),
+    });
+    expect(await moved.stage(f.options)).toMatchObject({ status: 'staged' });
+    expect((await f.record()).evidence?.repositoryFingerprint).toEqual(evidence.deviceRootContext);
+  });
+
+  it('starts a finished setup over for another sign-in and after an undo', async () => {
+    const f = await fixture();
+    const first = createProjectSetupExecutor(f.deps);
+    expect(await first.ensureProject(f.options)).toMatchObject({ status: 'done' });
+    const identity = parseIdentityFile(await readFile(f.file, 'utf8'));
+    if (identity.kind !== 'ok') throw new Error('identity');
+    f.resolver.resolution = {
+      kind: 'ok',
+      root: f.root,
+      repository: { kind: 'plain', root: f.root },
+      nested: [],
+      identity: identity.identity,
+    } as ProjectIdentityResolution;
+    const other = createProjectSetupExecutor({ ...f.deps, scopeKey: 'user:new-device' });
+    expect(await other.stage(f.options)).toMatchObject({ status: 'staged', projectId });
+
+    expect(await other.rollback(f.options)).toMatchObject({ status: 'rolled_back' });
+    expect(await other.ensureProject(f.options)).toMatchObject({
+      state: 'operation_rolled_back',
+    });
+    expect(await other.stage(f.options)).toMatchObject({ status: 'staged', projectId });
+  });
 });

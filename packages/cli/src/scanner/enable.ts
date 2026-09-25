@@ -24,7 +24,12 @@ import { releaseSource, devReadiness } from '../runtime/releaseSource.js';
 import { Output } from '../output.js';
 import { evaluateRoot, repositoryAt } from '../project/eligibility.js';
 import { scannerService, type ScannerServiceOptions } from './service.js';
-import { controlScanner, scannerReceipt } from './control.js';
+import {
+  ABANDONED_PAUSE_RESUMED,
+  controlScanner,
+  resumeAbandonedPause,
+  scannerReceipt,
+} from './control.js';
 import { bytesAt, digest, withInstall, type Journal } from '../install/journal.js';
 import {
   connectedProjectsMessage,
@@ -114,6 +119,8 @@ export interface EnableOptions extends ScannerServiceOptions {
   exclusions?: string[];
   noBrowser?: boolean;
   approvalAnnounced?: boolean;
+  /** Called as the browser approval starts, so the caller can show it is waiting. */
+  awaitingApproval?: () => void;
   fetch?: typeof fetch;
   source?: () => Promise<RuntimeSource>;
   store?: RuntimeStore;
@@ -204,6 +211,10 @@ export async function prepareScanner<T>(
   await mkdir(join(options.stateDir, 'scanner'), { recursive: true, mode: 0o700 });
   return withLock(join(options.stateDir, 'scanner/enable'), 5000, async () => {
     const path = join(options.stateDir, 'scanner/state.json');
+    // Before reading the saved state, which an earlier run's pause still marks paused.
+    if (await resumeAbandonedPause(options))
+      if (options.nonInteractive) options.output.error(ABANDONED_PAUSE_RESUMED);
+      else options.output.line(ABANDONED_PAUSE_RESUMED);
     const saved = JSON.parse(await readFile(path, 'utf8').catch(() => 'null')) as SavedState | null;
 
     const credentials = options.credentials ?? createCliCredentials({ stateDir: options.stateDir });
@@ -273,7 +284,15 @@ export async function prepareScanner<T>(
       });
       await journal.event('service_start_intent', 'scanner');
     }
-    if (restore) await controlScanner('pause', options);
+    // The pause names this run, so a later command can undo it if this run dies.
+    if (restore)
+      await controlScanner(
+        'pause',
+        options,
+        options.journal
+          ? { session: options.journal.data.runId, pid: process.pid, at: Date.now() }
+          : undefined
+      );
     try {
       const picked = options.roots
         ? { roots: options.roots, exclusions: options.exclusions ?? [], repositories: [] }
@@ -332,10 +351,12 @@ export async function prepareScanner<T>(
           (await readInstallation(options.stateDir, listing.account));
         if (!installation) throw new Error('scanner_installation_missing');
         // Browser approval reuses this installation's active session. Never cancel the hosts' session.
-        if (!options.nonInteractive)
+        if (!options.nonInteractive) {
           options.output.line(
             options.approvalAnnounced ? REPOSITORY_APPROVAL_INSTRUCTION : SCANNER_APPROVAL_WAIT
           );
+          options.awaitingApproval?.();
+        }
         bearer = await authorize(consentDraft(picked), installation);
         session = (await request('GET', '/api/v1/install-sessions/current')) as InstallSession;
         remote = (await request('GET', '/api/v1/scanner-consent/current')) as typeof remote;

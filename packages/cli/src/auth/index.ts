@@ -3,7 +3,6 @@ import { readInstallations, saveInstallation } from '../installation.js';
 import { createCliCredentials } from './credentials.js';
 import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
-import { hostname } from 'node:os';
 import { URLSearchParams } from 'node:url';
 import {
   type createCredentialAdapter,
@@ -14,6 +13,7 @@ import {
   isCredentialSessionUnavailableError,
 } from '@mnemonik/credentials';
 import { runDeviceFlow } from './device.js';
+import { machineName } from './machineName.js';
 import { open, OAuthProtocolError } from './pkce.js';
 
 export const CLI_SCOPES = [
@@ -36,6 +36,8 @@ export interface CliAuthOptions {
   env?: NodeJS.ProcessEnv;
   platform?: NodeJS.Platform;
   deviceName?: string;
+  /** Reads the macOS Computer Name; replaced in tests. */
+  computerName?: () => Promise<string>;
   print?: (line: string) => void;
   fetch?: typeof fetch;
   openBrowser?: (url: string) => Promise<void>;
@@ -113,7 +115,9 @@ export function createCliAuth(options: CliAuthOptions = {}) {
       deviceInstallationId,
       deviceInstallationIds,
       clientId,
-      deviceName: options.deviceName ?? hostname(),
+      deviceName:
+        options.deviceName ??
+        (await machineName(options.platform ?? process.platform, options.computerName)),
       print,
       openBrowser,
       fetch: fetchImpl,

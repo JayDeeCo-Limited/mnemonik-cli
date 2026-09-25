@@ -7,7 +7,22 @@ export const CODEX_TRUST_MESSAGE = {
   nextStep: 'Open Codex settings, trust the Mnemonik hooks, then quit and reopen Codex.',
 } satisfies ReadinessMessage;
 
+// The scanner stopped because its saved consent names an older notice (or
+// folders nobody approved). Resume cannot help; enable asks once in the browser.
+export const SCANNER_CONSENT_MESSAGE = {
+  sentence: 'Background indexing is paused until you approve an updated notice.',
+  nextStep: 'Run mnemonik scanner enable.',
+} satisfies ReadinessMessage;
+
+// A newer scanner waits for the same approval while the current one keeps indexing.
+export const SCANNER_UPDATE_CONSENT_MESSAGE = {
+  sentence: 'A scanner update is waiting until you approve an updated notice.',
+  nextStep: 'Run mnemonik scanner enable.',
+} satisfies ReadinessMessage;
+
 const readinessMessages: Array<[RegExp, ReadinessMessage]> = [
+  [/scanner_consent_required/u, SCANNER_CONSENT_MESSAGE],
+  [/scanner_update_consent_required|release_consent_required/u, SCANNER_UPDATE_CONSENT_MESSAGE],
   [
     /^(?:discovery_failed|unreachable)$/u,
     {
@@ -49,15 +64,15 @@ const readinessMessages: Array<[RegExp, ReadinessMessage]> = [
   [
     /vendor_policy_pending|vendor policy/iu,
     {
-      sentence: 'Your editor is waiting for permission to use Mnemonik.',
-      nextStep: 'Open the editor, approve Mnemonik, then start a new session.',
+      sentence: 'Your coding tool is waiting for permission to use Mnemonik.',
+      nextStep: 'Open the coding tool, approve Mnemonik, then start a new session.',
     },
   ],
   [
     /restart_pending|needs? (?:a )?restart/iu,
     {
-      sentence: 'An editor needs to restart before Mnemonik can work.',
-      nextStep: 'Quit and reopen the editor, then start a new session.',
+      sentence: 'A coding tool needs to restart before Mnemonik can work.',
+      nextStep: 'Quit and reopen the coding tool, then start a new session.',
     },
   ],
   [
@@ -77,6 +92,22 @@ const readinessMessages: Array<[RegExp, ReadinessMessage]> = [
     },
   ],
   [
+    // The server refused the scanner's own sign-in (revoked or replaced).
+    /scanner_signed_out/u,
+    {
+      sentence: 'Background indexing has lost its sign-in on this computer.',
+      nextStep: 'Run mnemonik repair.',
+    },
+  ],
+  [
+    // The running scanner reported its own failure (L-155); doctor prints the cause.
+    /scanner_failing/u,
+    {
+      sentence: 'Background indexing is failing on this computer.',
+      nextStep: 'Run mnemonik doctor to see why.',
+    },
+  ],
+  [
     /scanner_not_verified|background_indexing_not_verified|dev_release_source/iu,
     {
       sentence: 'The scanner has not checked in yet.',
@@ -86,29 +117,29 @@ const readinessMessages: Array<[RegExp, ReadinessMessage]> = [
   [
     /hook_not_verified|hooks? (?:still )?needs? verification|could not be inspected/iu,
     {
-      sentence: 'Mnemonik has not received context from an editor hook yet.',
-      nextStep: 'Start a new session in that editor.',
+      sentence: 'Mnemonik has not received context from a coding tool hook yet.',
+      nextStep: 'Start a new session in that coding tool.',
     },
   ],
   [
     /hooks_missing|hook (?:declaration|credential family) is missing|hooks are not installed/iu,
     {
-      sentence: 'The Mnemonik hooks are not installed correctly for an editor.',
-      nextStep: 'Run mnemonik repair on this machine, then restart the editor.',
+      sentence: 'The Mnemonik hooks are not installed correctly for a coding tool.',
+      nextStep: 'Run mnemonik repair on this machine, then restart the coding tool.',
     },
   ],
   [
     /host_grant_unbound|credential_revoked/iu,
     {
-      sentence: 'An editor is signed out of Mnemonik on this machine.',
-      nextStep: 'Sign in to Mnemonik from that editor to restore context.',
+      sentence: 'A coding tool is signed out of Mnemonik on this machine.',
+      nextStep: 'Sign in to Mnemonik from that coding tool to restore context.',
     },
   ],
   [
     /host_not_connected|signed in, not connected yet/iu,
     {
-      sentence: 'An editor is signed in but has not used Mnemonik yet.',
-      nextStep: 'Open the editor and start a session in a connected project.',
+      sentence: 'A coding tool is signed in but has not used Mnemonik yet.',
+      nextStep: 'Open the coding tool and start a session in a connected project.',
     },
   ],
   [
@@ -128,8 +159,8 @@ const readinessMessages: Array<[RegExp, ReadinessMessage]> = [
   [
     /host_skipped/iu,
     {
-      sentence: 'An editor on this machine is not connected to Mnemonik.',
-      nextStep: 'Open that editor and sign in to Mnemonik.',
+      sentence: 'A coding tool on this machine is not connected to Mnemonik.',
+      nextStep: 'Open that coding tool and sign in to Mnemonik.',
     },
   ],
   [
@@ -151,7 +182,7 @@ const readinessMessages: Array<[RegExp, ReadinessMessage]> = [
     /weak_permissions/u,
     {
       sentence: 'A Mnemonik credential file can be read by other users on this computer.',
-      nextStep: 'Set that file to owner-only access, then run mnemonik install again.',
+      nextStep: 'Set that file to owner-only access, then run mnemonik status again.',
     },
   ],
   [
@@ -187,7 +218,7 @@ const readinessMessages: Array<[RegExp, ReadinessMessage]> = [
   [
     /target_read_only/u,
     {
-      sentence: 'An editor settings file cannot be written.',
+      sentence: "A coding tool's settings file cannot be written.",
       nextStep: 'Give yourself write access to that file, then run mnemonik install again.',
     },
   ],

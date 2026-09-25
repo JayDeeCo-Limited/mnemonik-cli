@@ -130,6 +130,22 @@ describe('headless authentication fallback', () => {
     expect(f.stderr.text).toContain('--accept-indexing');
     f.stderr.clear();
     expect(await f.run(['install', '--non-interactive', '--accept-indexing'])).toBe(3);
+    expect(f.stderr.text).toContain('--hosts');
+    f.stderr.clear();
+    expect(
+      await f.run(['install', '--non-interactive', '--accept-indexing', '--hosts=claude-code'])
+    ).toBe(3);
+    expect(f.stderr.text).toContain('--scan-roots');
+    f.stderr.clear();
+    expect(
+      await f.run([
+        'install',
+        '--non-interactive',
+        '--accept-indexing',
+        '--hosts=claude-code',
+        '--scan-roots=/repo',
+      ])
+    ).toBe(3);
     expect(f.stderr.text).toContain('--apply');
   });
 });

@@ -1,5 +1,6 @@
 import type { Readable } from 'node:stream';
 import type { Output } from '../output.js';
+import type { JournalData } from '../install/journal.js';
 export interface JourneyValues {
     scannerFailureMessage?: string;
     total?: number | null;
@@ -21,6 +22,8 @@ export declare const INSTALLATION_STOPPED = "Installation stopped.";
 export declare const SCANNER_FAILURE_MESSAGE = "Background indexing could not be started.";
 export declare const SCANNER_RETRY_MESSAGE = "Run mnemonik install to try again.";
 export declare const ADD_ANOTHER_FOLDER = "To connect a folder somewhere else, run mnemonik add <folder>.";
+/** Step 4's spinner while the browser approval of the project folders is pending. */
+export declare const APPROVAL_WAITING = "Waiting for approval";
 export declare const stepProgress: (output: Output, interactive: boolean, text: string) => {
     complete(result: string): void;
     stop(): void;
@@ -30,7 +33,9 @@ export declare function renderNoSupportedEditors(output: Output): void;
 export declare function editorAuthorizationRows(hosts?: JourneyValues['hosts']): string[];
 /** Browser-owned account, CLI and scanner choices are announced, never duplicated here. */
 export declare function renderJourney(screen: string, output: Output, v?: JourneyValues): number;
-export declare function renderInterrupted(output: Output): void;
+/** The step an unfinished joined install had reached, read from its journal. */
+export declare function interruptedStep(data: Pick<JournalData, 'hostRequest' | 'hostRuns' | 'phase' | 'components'>): number;
+export declare function renderInterrupted(output: Output, data?: Parameters<typeof interruptedStep>[0]): void;
 export declare function renderRollbackResult(removed: boolean, output: Output): void;
 interface SignalSource {
     on(event: 'SIGINT' | 'SIGHUP', listener: () => void): unknown;

@@ -4,11 +4,37 @@ import { createInterface } from 'node:readline';
 import { execFile } from 'node:child_process';
 import { lstat } from 'node:fs/promises';
 import { basename, join } from 'node:path';
-import { createProjectSetupExecutor, } from '@mnemonik/local-setup';
+import { cancelProjectSetup, createProjectSetupExecutor, } from '@mnemonik/local-setup';
 import { resolveProjectIdentity, selectRemote, } from '@mnemonik/shared';
 import { accountActions, createServerTransport, ServerActionRequiredError, signInFailureState, } from './transport/server.js';
 import { evaluateRoot } from './project/eligibility.js';
 import { identityHash, ownerLabel, readExecutorState, saveCommandRecord, } from './project/records.js';
+/** A path as one shell word, quoted only when it needs to be. */
+const shellWord = (value) => /^[\w@%+=:,./-]+$/u.test(value) ? value : `"${value.replace(/(["\\$`])/gu, '\\$1')}"`;
+/**
+ * The command that gives each offered answer, for an agent that reads JSON.
+ * An action no command can give is left out.
+ */
+export function answerCommands(actions, root, details = {}) {
+    const folder = shellWord(root);
+    const linkFlags = (projectId, extra) => `mnemonik project link ${projectId} ${folder}${extra} --non-interactive --apply`;
+    return actions.flatMap((action) => {
+        if (action === 'cancel')
+            return [{ action, command: `mnemonik project setup ${folder} --cancel` }];
+        if (action === 'rerun_with_apply')
+            return [{ action, command: `mnemonik project setup ${folder} --non-interactive --apply` }];
+        if (action === 'link')
+            return (details.candidates ?? []).map((candidate) => ({
+                action,
+                command: linkFlags(candidate.projectId, ''),
+            }));
+        if (action === 'confirm_mismatch' && details.projectId)
+            return [{ action, command: linkFlags(details.projectId, ' --confirm-mismatch') }];
+        if (action === 'replace' && details.projectId)
+            return [{ action, command: linkFlags(details.projectId, ' --replace') }];
+        return [];
+    });
+}
 export async function ensureProjectRoot(root, executor) {
     return executor.ensureProject({ cwd: root, allowCreate: true, allowNestedInherit: false });
 }
@@ -18,7 +44,7 @@ const refusalReasons = {
     temporary_directory: 'Mnemonik does not index the temporary folder.',
     mnemonik_state_directory: 'That folder holds Mnemonik settings.',
     user_data_directory: 'That folder holds program settings.',
-    host_config_directory: 'That folder holds editor settings.',
+    host_config_directory: 'That folder holds coding tool settings.',
     broad_workspace_parent: 'It holds several projects, and Mnemonik would index all of them.',
     not_found: 'Its project file names a project this account cannot open.',
     project_access_denied: 'Its project file names a project this account cannot open.',
@@ -69,7 +95,7 @@ const refusalSteps = {
     nested: 'Run mnemonik project setup in that folder and choose which project it belongs to.',
     conflict: 'Run mnemonik project setup in that folder and choose which project it belongs to.',
     identity_changed: AGAIN,
-    operation_context_changed: 'Run mnemonik project setup in that folder to finish that command.',
+    operation_context_changed: 'Run mnemonik project setup --cancel in that folder, then run the command again.',
     rollback_in_progress: 'Wait for it to finish, then run the command again.',
     operation_rolled_back: 'Run mnemonik project setup in that folder to set it up again.',
     not_staged: AGAIN,
@@ -294,6 +320,16 @@ function showResult(output, json, result, root, owner, record) {
                 : {}),
             ...('manualAction' in result ? { manualAction: result.manualAction } : {}),
             ...('used' in result && 'limit' in result ? { used: result.used, limit: result.limit } : {}),
+            ...('allowedActions' in result
+                ? {
+                    commands: answerCommands(result.allowedActions, root, {
+                        candidates: 'candidates' in result && Array.isArray(result.candidates)
+                            ? result.candidates
+                            : undefined,
+                        projectId: record.projectId ?? undefined,
+                    }),
+                }
+                : {}),
             root,
             owner: ownerLabel(owner),
         });
@@ -396,6 +432,25 @@ async function statusCommand(input, deps) {
             deps.output.line(humanReason(server.state));
         if (executorState && executorState !== 'done' && executorState !== 'unreachable')
             deps.output.line(humanReason(executorState));
+    }
+    return 0;
+}
+/**
+ * `project setup --cancel`: the answer every waiting setup offers. Local only,
+ * so it works signed out and with the server unreachable.
+ */
+async function cancelCommand(input, deps) {
+    const cwd = input.path ?? deps.cwd;
+    const resolution = await (deps.executor ??
+        deps.resolver ?? { resolveProjectIdentity }).resolveProjectIdentity(cwd, { allowNestedInherit: false });
+    const result = await cancelProjectSetup('root' in resolution ? resolution.root : cwd, deps.stateDir);
+    if (input.json)
+        deps.output.json(result);
+    else {
+        const name = basename(result.root);
+        deps.output.line(result.cleared ? `Setup of ${name} was cancelled.` : `Nothing was waiting for ${name}.`);
+        if (result.restored)
+            deps.output.line('Its project file is back as it was.');
     }
     return 0;
 }
@@ -541,6 +596,8 @@ async function runProjectCommandInner(input, deps, prompts) {
     return finish(deps, input, result, decision.root, decision.reason, owner, beforeHash);
 }
 export async function runProjectCommand(input, deps) {
+    if (input.cancel)
+        return cancelCommand(input, deps);
     const prompts = new Prompter(deps.input, deps.output);
     try {
         let effective = deps;

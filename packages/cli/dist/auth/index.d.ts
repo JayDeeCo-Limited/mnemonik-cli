@@ -10,6 +10,8 @@ export interface CliAuthOptions {
     env?: NodeJS.ProcessEnv;
     platform?: NodeJS.Platform;
     deviceName?: string;
+    /** Reads the macOS Computer Name; replaced in tests. */
+    computerName?: () => Promise<string>;
     print?: (line: string) => void;
     fetch?: typeof fetch;
     openBrowser?: (url: string) => Promise<void>;

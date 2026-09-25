@@ -60,7 +60,22 @@ export type SetupResult =
       projectId?: string;
       retainedRemoteUUID?: string;
       permissionStatus: 'private' | 'acl_pending';
-    };
+    }
+  | SetupCancelled;
+/**
+ * A cancelled setup: the folder's notes are gone, and the identity file is back
+ * to its earlier bytes when an unfinished setup had already written it.
+ */
+export interface SetupCancelled {
+  status: 'cancelled';
+  root: string;
+  /** False when nothing was waiting for the folder. */
+  cleared: boolean;
+  /** True when the identity file was put back as it was before the setup. */
+  restored: boolean;
+  /** A project the server had already reserved for the folder; it is kept. */
+  retainedRemoteUUID?: string;
+}
 export const actionRequired = (state: string): ActionRequired => ({
   status: 'ACTION_REQUIRED',
   state,

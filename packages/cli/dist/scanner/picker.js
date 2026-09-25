@@ -3,7 +3,7 @@ import { readdir, realpath } from 'node:fs/promises';
 import { parse, posix, resolve } from 'node:path';
 import { isProtectedLocalPath, protectedLocalPaths, protectedPathsWithinRoot, } from '@mnemonik/shared';
 import { evaluateRoot, repositoryAt } from '../project/eligibility.js';
-import { classifyRepository, discoverRepositories, guessDiscoveryBoundary, repositoryName, repositoryStateLabel, } from './discover.js';
+import { classifyRepository, discoverRepositories, guessDiscoveryBoundary, repositoryName, repositoryStateLabel, scannerCandidate, } from './discover.js';
 export const SCANNER_SELECTION_LIMIT = 32;
 export const SCANNER_SELECTION_LIMIT_MESSAGE = 'You can leave out up to 32 project folders here. Choose a narrower folder, or index only this project.';
 export const scannerBoundaryPrompt = (shown) => shown ? `Where do your projects live? [${shown}]` : 'Where do your projects live?';
@@ -73,11 +73,7 @@ export async function runScannerBoundaryPicker(options) {
                 continue;
             }
             const found = await (options.discover ?? discoverRepositories)(boundary);
-            const candidates = found.repositories.map((repository) => ({
-                path: repository.path,
-                name: repositoryName(found.root, repository.path),
-                kind: repository.kind ?? 'git',
-            }));
+            const candidates = found.repositories.map((repository) => scannerCandidate(found.root, repository));
             if (!candidates.length) {
                 options.output.line('No project folders were found there. Choose another folder.');
                 continue;

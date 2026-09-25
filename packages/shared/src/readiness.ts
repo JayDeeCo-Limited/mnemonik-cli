@@ -125,11 +125,18 @@ export interface LimitedModeStatus {
   enableScannerAction: string;
 }
 
+/** The last `mnemonik update` on the machine, automatic or by hand. */
+export interface ReadinessUpdateCheck {
+  checkedAt: string;
+  result: 'updated' | 'current' | 'failed';
+}
+
 /** Optional receipt metadata; older schema-1 installers omit these observations. */
 export interface ReadinessVersions {
   cli?: string;
   scanner?: string;
   hosts?: Array<{ host: string; editor?: string; hooks?: string }>;
+  update?: ReadinessUpdateCheck;
 }
 
 export interface ReadinessDocumentInput {
@@ -292,9 +299,16 @@ const versionString = (value: unknown): value is string =>
   value.length > 0 &&
   value.length <= 128 &&
   /^[\x20-\x7e]+$/u.test(value);
+const validUpdateCheck = (value: unknown): boolean =>
+  record(value) &&
+  exact(value, ['checkedAt', 'result']) &&
+  typeof value.checkedAt === 'string' &&
+  Number.isFinite(Date.parse(value.checkedAt)) &&
+  ['updated', 'current', 'failed'].includes(String(value.result));
 const validVersions = (value: unknown): boolean =>
   record(value) &&
-  Object.keys(value).every((key) => ['cli', 'scanner', 'hosts'].includes(key)) &&
+  Object.keys(value).every((key) => ['cli', 'scanner', 'hosts', 'update'].includes(key)) &&
+  (value.update === undefined || validUpdateCheck(value.update)) &&
   (value.cli === undefined || versionString(value.cli)) &&
   (value.scanner === undefined || versionString(value.scanner)) &&
   (value.hosts === undefined ||

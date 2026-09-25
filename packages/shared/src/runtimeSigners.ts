@@ -10,7 +10,6 @@ import {
 } from 'node:crypto';
 import { execFile, execFileSync } from 'node:child_process';
 import { promisify } from 'node:util';
-import { hostname } from 'node:os';
 
 export type Signer =
   | { platform: 'darwin'; identity: string }
@@ -136,12 +135,24 @@ export async function verifyWindowsPermission(
 }
 
 const identityArgs = ['/user', '/fo', 'csv', '/nh'];
+const groupArgs = ['/groups', '/fo', 'csv', '/nh'];
+/** A RID-500 account: some account domain's built-in Administrator. */
+const ADMINISTRATOR_RID = /^S-1-5-21-\d+-\d+-\d+-500$/;
 function windowsCommand(file: string): string {
   const root = process.env.SystemRoot;
   if (!root || !win32.isAbsolute(root)) throw new Error('acl_system_root_unavailable');
   return win32.join(root, 'System32', file);
 }
-type HookIdentity = { name: string; sid: string };
+type HookIdentity = {
+  name: string;
+  sid: string;
+  /**
+   * The SID the SDDL alias `LA` stands for on this machine: its own account
+   * domain's RID 500. Resolved only for a RID-500 token (no other account can
+   * be LA); `null` when that token is not a local account, so LA is someone else.
+   */
+  localAdministratorSid?: string | null;
+};
 let currentIdentity: HookIdentity | undefined;
 const receipts = new Map<string, { identity: HookIdentity; paths: Record<string, number> }>();
 const ttl = 10 * 60_000;
@@ -153,16 +164,34 @@ function readIdentity(stdout: string): HookIdentity {
     throw new Error('acl_identity_unavailable');
   return { name: match[1], sid: match[2] };
 }
+/**
+ * The token's user and, for a RID-500 token, the SID of `LA`. Every local
+ * account's token carries S-1-5-113 (NT AUTHORITY\Local account), so its
+ * account domain is this machine's and LA is `<that domain>-500`: its own SID.
+ * Decided by SIDs alone; names and the host name play no part.
+ */
+function* readWindowsIdentity(): Generator<NativeCommand, HookIdentity, string> {
+  const user = readIdentity(yield [windowsCommand('whoami.exe'), identityArgs]);
+  if (!ADMINISTRATOR_RID.test(user.sid)) return user;
+  const groups = yield [windowsCommand('whoami.exe'), groupArgs];
+  const local = /^"[^"\r\n]*","[^"\r\n]*","S-1-5-113",/m.test(groups);
+  return {
+    ...user,
+    localAdministratorSid: local ? `${user.sid.slice(0, user.sid.lastIndexOf('-'))}-500` : null,
+  };
+}
 export function windowsCurrentAccountSync(): HookIdentity {
-  return (currentIdentity ??= readIdentity(
-    hookExecuteSync(windowsCommand('whoami.exe'), identityArgs)
-  ));
+  if (currentIdentity) return currentIdentity;
+  const commands = readWindowsIdentity();
+  let step = commands.next();
+  while (!step.done) step = commands.next(hookExecuteSync(...step.value));
+  return (currentIdentity = step.value);
 }
 let identityPending: Promise<HookIdentity> | undefined;
 async function windowsIdentity(run: Execute): Promise<HookIdentity> {
   if (currentIdentity) return currentIdentity;
-  identityPending ??= run(windowsCommand('whoami.exe'), identityArgs)
-    .then((result) => (currentIdentity = readIdentity(stdout(result))))
+  identityPending ??= drive(readWindowsIdentity(), run)
+    .then((identity) => (currentIdentity = identity))
     .finally(() => {
       identityPending = undefined;
     });
@@ -273,13 +302,9 @@ function privateEntries(
         line
       );
     if (!ace) throw new Error('acl_unavailable');
-    const ownAlias =
-      ace[3] === 'LA' &&
-      user.sid.endsWith('-500') &&
-      user.name.toLowerCase().startsWith(hostname().toLowerCase() + '\\');
-    return (
-      (!directory || !ace[2]?.includes('ID')) && (ace[1] === 'D' || ace[3] === user.sid || ownAlias)
-    );
+    // SDDL writes this machine's RID-500 account as LA, never as its SID.
+    const sid = ace[3] === 'LA' ? user.localAdministratorSid : ace[3];
+    return (!directory || !ace[2]?.includes('ID')) && (ace[1] === 'D' || sid === user.sid);
   });
 }
 
@@ -301,7 +326,7 @@ function* prepareAclDirectory(state: string): Generator<NativeCommand, string, s
   const stat = lstatSync(directory);
   if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error('acl_permissions');
   if (!auditDirectories.has(directory)) {
-    currentIdentity ??= readIdentity(yield [windowsCommand('whoami.exe'), identityArgs]);
+    currentIdentity ??= yield* readWindowsIdentity();
     yield [windowsCommand('icacls.exe'), aclArgs(directory, currentIdentity.sid, created)];
     if (!created) {
       const temp = join(directory, `.acl-${randomUUID()}.tmp`);
@@ -446,7 +471,10 @@ function* hookPermission(
         !receipt.paths ||
         !receipt.identity ||
         !/^S-1-(?:\d+-)+\d+$/.test(receipt.identity.sid) ||
-        typeof receipt.identity.name !== 'string'
+        typeof receipt.identity.name !== 'string' ||
+        // Written before LA was resolved by SID: re-read the token instead.
+        (ADMINISTRATOR_RID.test(receipt.identity.sid) &&
+          receipt.identity.localAdministratorSid === undefined)
       )
         receipt = undefined;
     } catch {
@@ -460,7 +488,7 @@ function* hookPermission(
     receipts.set(session, receipt);
     return;
   }
-  currentIdentity ??= readIdentity(yield [windowsCommand('whoami.exe'), identityArgs]);
+  currentIdentity ??= yield* readWindowsIdentity();
   const user = currentIdentity;
   if (receipt && receipt.identity.sid !== user.sid) receipt = undefined;
   // cmd is needed only for its built-in dir. Reject expansion/quote characters;

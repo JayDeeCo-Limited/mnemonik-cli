@@ -93,6 +93,11 @@ export interface LimitedModeStatus {
     acknowledgement: string | null;
     enableScannerAction: string;
 }
+/** The last `mnemonik update` on the machine, automatic or by hand. */
+export interface ReadinessUpdateCheck {
+    checkedAt: string;
+    result: 'updated' | 'current' | 'failed';
+}
 /** Optional receipt metadata; older schema-1 installers omit these observations. */
 export interface ReadinessVersions {
     cli?: string;
@@ -102,6 +107,7 @@ export interface ReadinessVersions {
         editor?: string;
         hooks?: string;
     }>;
+    update?: ReadinessUpdateCheck;
 }
 export interface ReadinessDocumentInput {
     versions?: ReadinessVersions;

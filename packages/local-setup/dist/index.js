@@ -7,7 +7,7 @@ import { atomicWrite, hash, readBytes, recordPath, syncDirectory, withLock, } fr
 export * from './contracts.js';
 export * from './windowsPath.js';
 export * from './automaticUpdate.js';
-export { stateDirectory, recordPath, protectStateFile, windowsCurrentUserAcl, windowsCurrentAccount, atomicWrite, withLock, } from './storage.js';
+export { stateDirectory, recordPath, protectStateFile, windowsCurrentUserAcl, windowsCurrentAccount, verifyWindowsCurrentUserOnly, atomicWrite, withLock, } from './storage.js';
 const MAX_ORIGINAL_BYTES = 64 * 1024;
 const validDisplayName = (value) => typeof value === 'string' && value.length <= 200 && !/[\p{C}\p{Zl}\p{Zp}@]/u.test(value);
 const digest = (bytes) => (bytes === null ? null : hash(bytes));
@@ -17,6 +17,16 @@ const accessResponseHash = (response) => hash(JSON.stringify({
     allowedActions: [...response.allowedActions].sort(),
     candidates: response.candidates,
 }));
+/**
+ * Nothing was reserved, staged or written for this record: at most a question
+ * is waiting. Such a record answers to its context and is replaced, never defended.
+ */
+const pristine = (record, diskHash) => !record.remote &&
+    !record.staged &&
+    !record.steps.remote.started &&
+    !record.steps.identity.started &&
+    !record.steps.rollback.started &&
+    diskHash === record.before.hash;
 const step = (beforeHash) => ({
     complete: false,
     beforeHash,
@@ -102,15 +112,17 @@ export function createProjectSetupExecutor(deps) {
                     (record.staged && hash(record.staged.content) !== record.staged.hash) ||
                     (record.remote && hash(JSON.stringify(record.remote)) !== record.steps.remote.afterHash))
                     return actionRequired('record_invalid');
-                // A new install of a completed identity is a new local operation. Preserve
-                // today's bytes for rollback and recheck access/evidence on the server.
+                // A new install of a completed identity is a new local operation, whoever
+                // signed in for the earlier one. Preserve today's bytes for rollback and
+                // recheck access/evidence on the server. An undone setup is finished too:
+                // setting the folder up again starts over.
                 if (mode === 'stage' &&
-                    record.scopeKey === hash(deps.scopeKey) &&
-                    record.steps.identity.complete &&
-                    !record.steps.rollback.started &&
-                    resolution.kind === 'ok' &&
-                    resolution.identity.projectId === record.remote?.projectId &&
-                    (!options.intent || options.intent.projectId === record.remote.projectId)) {
+                    ((record.steps.identity.complete &&
+                        !record.steps.rollback.started &&
+                        resolution.kind === 'ok' &&
+                        resolution.identity.projectId === record.remote?.projectId &&
+                        (!options.intent || options.intent.projectId === record.remote.projectId)) ||
+                        (record.steps.rollback.complete && diskHash === record.before.hash))) {
                     record = freshRecord();
                     recordIsNew = true;
                 }
@@ -126,13 +138,7 @@ export function createProjectSetupExecutor(deps) {
                     (options.owner !== undefined &&
                         JSON.stringify(record.owner) !== JSON.stringify(options.owner)) ||
                     (!settled && JSON.stringify(record.intent) !== JSON.stringify(options.intent))) {
-                    const replaceable = !record.remote &&
-                        !record.staged &&
-                        !record.steps.remote.started &&
-                        !record.steps.identity.started &&
-                        !record.steps.rollback.started &&
-                        diskHash === record.before.hash;
-                    if (replaceable) {
+                    if (pristine(record, diskHash)) {
                         record = freshRecord();
                         recordIsNew = true;
                     }
@@ -249,10 +255,17 @@ export function createProjectSetupExecutor(deps) {
                 record.steps.identity.complete &&
                 diskHash !== record.staged?.hash)
                 return actionRequired('identity_changed');
+            if (record.evidence && JSON.stringify(record.evidence) !== JSON.stringify(evidence)) {
+                // A question asked about a context that no longer holds is not an operation.
+                // The person's choice to leave the folder out outlives the question.
+                if (!pristine(record, diskHash))
+                    return actionRequired('operation_context_changed');
+                const ignored = record.ignored;
+                record = { ...freshRecord(), ...(ignored ? { ignored } : {}) };
+                recordIsNew = true;
+            }
             if (recordIsNew)
                 await save(); // Operation ID and before-state MUST be durable before any remote request.
-            if (record.evidence && JSON.stringify(record.evidence) !== JSON.stringify(evidence))
-                return actionRequired('operation_context_changed');
             if (record.steps.identity.complete && mode === 'ensure' && record.remote) {
                 const validated = await deps.transport.issueSetupRequest({
                     ...evidence,
@@ -374,6 +387,69 @@ export function createProjectSetupExecutor(deps) {
         stage: (options) => execute(options, 'stage'),
         apply: (options) => execute(options, 'apply'),
         rollback: (options) => execute(options, 'rollback'),
+        cancel: async (options) => {
+            const resolution = await deps.resolver.resolveProjectIdentity(options.cwd, options);
+            return cancelProjectSetup('root' in resolution ? resolution.root : options.cwd, deps.stateDir, deps.waitMs);
+        },
     };
+}
+/**
+ * The answer `cancel` names. Removes the folder's setup notes, whatever state
+ * they are in, so the next command starts fresh. An unfinished setup that had
+ * already written the identity file puts the earlier bytes back; a finished
+ * setup's file and any project the server reserved are left as they are.
+ */
+export async function cancelProjectSetup(folder, stateDir, waitMs = 60_000) {
+    const root = await realpath(folder);
+    const path = recordPath(root, stateDir);
+    return withLock(path, waitMs, async (assertOwned) => {
+        const saved = await readBytes(path);
+        if (!saved)
+            return { status: 'cancelled', root, cleared: false, restored: false };
+        let record = null;
+        try {
+            record = JSON.parse(saved.toString());
+        }
+        catch {
+            // Unreadable notes are exactly what cancel is for.
+        }
+        let restored = false;
+        const staged = record?.staged;
+        const before = record?.before;
+        const settled = !!record?.steps?.identity?.complete && !record.steps.rollback?.started;
+        if (!settled &&
+            staged &&
+            before &&
+            typeof staged.hash === 'string' &&
+            staged.hash !== before.hash) {
+            const file = join(root, '.mnemonik.json');
+            const earlier = typeof before.base64 === 'string' ? Buffer.from(before.base64, 'base64') : null;
+            if (digest(await readBytes(file)) === staged.hash &&
+                (earlier ? hash(earlier) === before.hash : before.hash === null)) {
+                await assertOwned();
+                if (earlier)
+                    await atomicWrite(file, earlier, undefined, assertOwned);
+                else {
+                    await unlink(file);
+                    await syncDirectory(root);
+                }
+                restored = true;
+            }
+        }
+        await assertOwned();
+        await unlink(path).catch((error) => {
+            if (error.code !== 'ENOENT')
+                throw error;
+        });
+        await syncDirectory(dirname(path));
+        const remote = record?.remote?.projectId;
+        return {
+            status: 'cancelled',
+            root,
+            cleared: true,
+            restored,
+            ...(typeof remote === 'string' ? { retainedRemoteUUID: remote } : {}),
+        };
+    });
 }
 //# sourceMappingURL=index.js.map

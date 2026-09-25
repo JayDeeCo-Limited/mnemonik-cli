@@ -5,9 +5,11 @@ import { basename, dirname, isAbsolute, join, parse, relative, resolve, sep } fr
 import {
   atomicWrite,
   stateDirectory,
+  verifyWindowsCurrentUserOnly,
   windowsCurrentUserAcl,
   type ExecFile,
   type Fault,
+  type WindowsAclRun,
 } from '@mnemonik/local-setup';
 
 export { stateDirectory };
@@ -36,6 +38,8 @@ export interface SecureFileOptions {
   fault?: Fault;
   execFile?: ExecFile;
   username?: string;
+  /** Native runner for the Windows ACL reader; tests inject fixture output. */
+  aclRun?: WindowsAclRun;
 }
 
 const digest = (value: string): string => createHash('sha256').update(value).digest('hex');
@@ -69,6 +73,7 @@ export class SecureFiles {
   private readonly fault?: Fault;
   private readonly execFile?: ExecFile;
   private readonly username?: string;
+  private readonly aclRun?: WindowsAclRun;
 
   constructor(options: SecureFileOptions = {}) {
     this.stateDir = resolve(options.stateDir ?? stateDirectory());
@@ -78,6 +83,7 @@ export class SecureFiles {
     this.fault = options.fault;
     this.execFile = options.execFile;
     this.username = options.username;
+    this.aclRun = options.aclRun;
   }
 
   private assertInsideState(path: string): string {
@@ -114,15 +120,31 @@ export class SecureFiles {
       if (value.isSymbolicLink()) throw new CredentialError('symlink_rejected');
       const protectedComponent =
         component === this.stateDir || component.startsWith(`${this.stateDir}${sep}`);
-      if (!protectedComponent || this.platform === 'win32') continue;
-      if (this.uid !== undefined && value.uid !== this.uid)
-        throw new CredentialError('wrong_owner');
+      if (!protectedComponent) continue;
       const final = component === absolute;
-      const allowed = final && expectFile ? 0o600 : 0o700;
-      if ((value.mode & 0o777 & ~allowed) !== 0) throw new CredentialError('weak_permissions');
+      if (this.platform === 'win32') {
+        // Windows has no uid or mode bits to read; the DACL is the permission.
+        // Only the path being used is read, one icacls export per call (L-131).
+        if (final) await this.verifyWindowsPrivate(component);
+      } else {
+        if (this.uid !== undefined && value.uid !== this.uid)
+          throw new CredentialError('wrong_owner');
+        const allowed = final && expectFile ? 0o600 : 0o700;
+        if ((value.mode & 0o777 & ~allowed) !== 0) throw new CredentialError('weak_permissions');
+      }
       if (final && expectFile && !value.isFile()) throw new CredentialError('not_regular_file');
       if (final && !expectFile && !value.isDirectory())
         throw new CredentialError('not_regular_file');
+    }
+  }
+
+  private async verifyWindowsPrivate(path: string): Promise<void> {
+    try {
+      await verifyWindowsCurrentUserOnly(path, this.stateDir, this.aclRun);
+    } catch (error) {
+      if ((error as Error).message === 'acl_permissions')
+        throw new CredentialError('weak_permissions');
+      throw error;
     }
   }
 

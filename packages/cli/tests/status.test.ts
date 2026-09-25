@@ -97,8 +97,8 @@ describe('installation and project status', () => {
       'Installation: Needs attention.',
       'The scanner has not checked in yet.',
       'Wait a minute for indexing to start.',
-      'Mnemonik has not received context from an editor hook yet.',
-      'Start a new session in that editor.',
+      'Mnemonik has not received context from a coding tool hook yet.',
+      'Start a new session in that coding tool.',
     ]);
   });
 });
@@ -136,14 +136,14 @@ it('hides launcher paths, credential diagnostics and readiness reason codes', ()
     { line: (line = '') => lines.push(line) }
   );
 
-  expect(lines).toContain('An editor is signed out of Mnemonik on this machine.');
-  expect(lines).toContain('Sign in to Mnemonik from that editor to restore context.');
+  expect(lines).toContain('A coding tool is signed out of Mnemonik on this machine.');
+  expect(lines).toContain('Sign in to Mnemonik from that coding tool to restore context.');
   // A code with no words says a failure plainly; the old catch-all sentence is gone.
   expect(lines).not.toContain('This machine needs attention before Mnemonik can work fully.');
   expect(lines).toEqual([
     'Installation: Needs attention.',
-    'An editor is signed out of Mnemonik on this machine.',
-    'Sign in to Mnemonik from that editor to restore context.',
+    'A coding tool is signed out of Mnemonik on this machine.',
+    'Sign in to Mnemonik from that coding tool to restore context.',
     'Mnemonik stopped before it finished.',
     'Run mnemonik repair.',
   ]);
@@ -1062,7 +1062,7 @@ it('says nothing under a heading it cannot fill', () => {
     kind: 'hook_not_verified',
     component: 'codex',
     reason: 'hook_not_verified',
-    action: 'Start a new session in that editor.',
+    action: 'Start a new session in that coding tool.',
   };
   // The same hook condition reaches both sections; the second copy is dropped.
   renderStatusSummaries(
@@ -1076,8 +1076,8 @@ it('says nothing under a heading it cannot fill', () => {
   );
   expect(lines).toEqual([
     'Installation: Needs attention.',
-    'Mnemonik has not received context from an editor hook yet.',
-    'Start a new session in that editor.',
+    'Mnemonik has not received context from a coding tool hook yet.',
+    'Start a new session in that coding tool.',
     'Connected: work',
   ]);
   expect(lines).not.toContain('This project: Needs attention.');

@@ -1,5 +1,5 @@
-  One step is left in each editor: Authorize the Mnemonik MCP connection.
-  You may need to restart your editor after authorizing.
+  One step is left in each coding tool: Authorize the Mnemonik MCP connection.
+  You may need to restart your coding tool after authorizing.
 
   Claude Code      type /mcp, choose mnemonik, then Authenticate
   Codex CLI        run codex mcp login mnemonik

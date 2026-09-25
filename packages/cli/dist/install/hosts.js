@@ -16,6 +16,10 @@ export function codexTrustAction(resolvedPath) {
         : 'Run the codex command in a terminal and use its hook trust prompt to allow the Mnemonik hooks; then quit and reopen Codex.';
 }
 export const CODEX_TRUST_ACTION = codexTrustAction();
+/** L-86: shown once, when an install drops the family from Codex's hook command. */
+export const CODEX_TRUST_MIGRATION = "Mnemonik's Codex hooks no longer change when your sign-in changes. Codex will ask you to trust them one last time.";
+// A command written before L-86: the credential family sat inside the text Codex fingerprints.
+const LEGACY_CODEX_COMMAND = / --credential-family [A-Za-z0-9_-]+(?: --server \S+)? --mnemonik-owner=codex-hooks/;
 const identity = (t) => `${t.host}:${t.component ?? 'hooks'}:${t.scope}:${t.profilePath ?? (t.scope === 'user' ? t.home : t.projectRoot)}`;
 export async function hostSource(host, packagePath = new URL('../../package.json', import.meta.url)) {
     const pkg = JSON.parse(await readFile(packagePath, 'utf8'));
@@ -200,14 +204,15 @@ export async function runHosts(command, selections, deps, allowMigration = false
                     await saveOwnership(deps.stateDir, journal, run);
                     run.status = 'complete';
                 }
-                results.push({
-                    target: run.id,
-                    elapsedMs: run.elapsedMs ?? 0,
-                    status: run.reason === 'codex_trust_pending' ? 'ACTION_REQUIRED' : 'READY',
-                    reason: run.reason ?? 'declaration installed',
-                });
+                // Hooks and the MCP entry are cheap to write again, and the earlier
+                // run's result may be stale, so Resume re-applies them rather than
+                // trusting it. Their journal targets stay for a full rollback.
+                for (const target of journal.data.targets)
+                    if (target.group === run.id)
+                        target.group = `superseded:${target.id}:${run.id}`;
             }
-            selections = request.selections.filter((selection) => !completed.some((run) => run.id === identity(selection)));
+            journal.data.hostRuns = journal.data.hostRuns.filter((run) => !completed.includes(run));
+            selections = request.selections;
         }
         else if (pending) {
             const request = pending.data.hostRequest;
@@ -263,6 +268,7 @@ export async function runHosts(command, selections, deps, allowMigration = false
             journal.data.hostRuns.push(run);
             await journal.save();
             let freshRuntimeVersion;
+            let codexCommandMigration = false;
             let runtimeChanged = false;
             try {
                 const pointer = store.pointerPath(selection.host);
@@ -415,7 +421,12 @@ export async function runHosts(command, selections, deps, allowMigration = false
                     if (plan.version !== runtime.manifest.version ||
                         plan.artifactDigest !== runtime.reference.manifestSha256)
                         throw new Error('adapter_provenance_mismatch');
-                    profilePath = plan.changes.at(-1)?.path;
+                    const hooksFile = plan.changes.at(-1);
+                    profilePath = hooksFile?.path;
+                    if (selection.host === 'codex' && target.component === 'hooks' && hooksFile)
+                        codexCommandMigration =
+                            LEGACY_CODEX_COMMAND.test((await bytesAt(hooksFile.path))?.toString() ?? '') &&
+                                !LEGACY_CODEX_COMMAND.test(hooksFile.content.toString());
                     if (command === 'repair' &&
                         selection.host === 'codex' &&
                         target.component === 'hooks' &&
@@ -473,8 +484,11 @@ export async function runHosts(command, selections, deps, allowMigration = false
                         : target.component === 'hooks'
                             ? 'hooks installed'
                             : 'MCP entry declared';
-                    if (inspection.trustPending)
+                    if (inspection.trustPending) {
+                        if (codexCommandMigration)
+                            journal.data.reports.push(`codex: ${CODEX_TRUST_MIGRATION}`);
                         journal.data.reports.push(`codex: ${codexTrustAction(inspection.resolvedPath)}`);
+                    }
                 }
                 await journal.event('host_observed', run.id);
                 // Keep the old scope until the requested scope has passed its native probe.
@@ -587,10 +601,14 @@ export async function runHosts(command, selections, deps, allowMigration = false
                                 delete result.action;
                             else
                                 result.action = `mnemonik repair --host ${selection.host} --component hooks`;
-                            const report = `codex: ${codexTrustAction(reread.resolvedPath)}`;
-                            const index = journal.data.reports.indexOf(report);
-                            if (index >= 0)
-                                journal.data.reports.splice(index, 1);
+                            for (const report of [
+                                `codex: ${CODEX_TRUST_MIGRATION}`,
+                                `codex: ${codexTrustAction(reread.resolvedPath)}`,
+                            ]) {
+                                const index = journal.data.reports.indexOf(report);
+                                if (index >= 0)
+                                    journal.data.reports.splice(index, 1);
+                            }
                         }
                     });
             }

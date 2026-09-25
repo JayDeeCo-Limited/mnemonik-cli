@@ -51,7 +51,12 @@ export async function classifyRepository(path, options = {}) {
         ? 'git'
         : 'folder';
     if (resolution.kind === 'ok') {
-        return { path: resolvedPath, state: 'existing_project', kind };
+        return {
+            path: resolvedPath,
+            state: 'existing_project',
+            kind,
+            projectId: resolution.identity.projectId,
+        };
     }
     if (resolution.kind !== 'absent') {
         return { path: resolvedPath, state: 'action_required', kind, reason: resolution.kind };
@@ -152,13 +157,15 @@ export async function scannerCandidates(boundary) {
         boundary: discovered.root,
         repositories: discovered.repositories,
         omitted: discovered.omitted,
-        candidates: discovered.repositories.map((repository) => ({
-            path: repository.path,
-            name: repositoryName(discovered.root, repository.path),
-            kind: repository.kind ?? 'git',
-        })),
+        candidates: discovered.repositories.map((repository) => scannerCandidate(discovered.root, repository)),
     };
 }
+export const scannerCandidate = (root, repository) => ({
+    path: repository.path,
+    name: repositoryName(root, repository.path),
+    kind: repository.kind ?? 'git',
+    ...(repository.projectId ? { projectId: repository.projectId } : {}),
+});
 export async function guessDiscoveryBoundary(cwd, home) {
     const current = resolve(cwd);
     const unsafe = current === resolve(home) || current === parse(current).root;

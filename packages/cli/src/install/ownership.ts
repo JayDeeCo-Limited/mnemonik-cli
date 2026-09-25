@@ -2,6 +2,7 @@ import { readFile } from 'node:fs/promises';
 import type { ReadinessVersions } from '@mnemonik/shared';
 import { saveInstallation } from '../installation.js';
 import { devReleaseActive } from '../runtime/releaseSource.js';
+import { readUpdateCheck } from '../runtime/updateCheck.js';
 import { join } from 'node:path';
 import { atomicWrite } from '@mnemonik/local-setup';
 import type { Grant, Target as AdapterTarget } from './adapters.js';
@@ -86,7 +87,13 @@ export async function readInstallVersions(
   const cli = JSON.parse(
     await readFile(new URL('../../package.json', import.meta.url), 'utf8')
   ) as { version: string };
-  return { cli: cli.version, hosts: [...hosts.values()], ...(scanner ? { scanner } : {}) };
+  const update = await readUpdateCheck(state);
+  return {
+    cli: cli.version,
+    hosts: [...hosts.values()],
+    ...(scanner ? { scanner } : {}),
+    ...(update ? { update } : {}),
+  };
 }
 
 export async function assertGeneration(state: string, journal: Journal) {

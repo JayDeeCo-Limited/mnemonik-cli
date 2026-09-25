@@ -191,7 +191,14 @@ it('CLI installs the three launch-host adapters with planned bytes, verified ent
     for (const change of (await adapter.plan()).changes)
       expect(await readFile(change.path)).toEqual(change.content);
     const bytes = await readFile(target.profilePath, 'utf8');
-    expect(bytes).toContain('--credential-family ' + target.credentialFamily);
+    if (target.host === 'codex') {
+      // Codex fingerprints the command; the family is state beside the launcher (L-86).
+      expect(bytes).not.toContain('--credential-family');
+      const binding = join(dirname(store.pointerPath('codex')), 'binding.json');
+      expect(JSON.parse(await readFile(binding, 'utf8'))).toEqual({
+        credentialFamily: target.credentialFamily,
+      });
+    } else expect(bytes).toContain('--credential-family ' + target.credentialFamily);
     expect(JSON.stringify(journal!.data)).not.toContain('hook-access');
     expect(JSON.stringify(journal!.data)).not.toContain('hook-refresh');
     const entry =
@@ -366,6 +373,42 @@ it('updates independently with mixed digests and unchanged Codex command on corr
   expect(result.results.find((r) => r.target === codex.id)!.reason).toBe('digest_mismatch');
   expect(result.results.filter((r) => r.status === 'READY')).toHaveLength(2);
   expect(result.reports.some((r) => r.includes('shared runtime'))).toBe(true);
+}, 120_000);
+
+it('a hook update that fails its check puts the previous runtime back and reports the failure', async () => {
+  const f = await fixture();
+  const selection = f.selections.find((t) => t.host === 'claude-code')!;
+  await runHosts('install', [selection], f.deps);
+  const store = new RuntimeStore(f.deps.stateDir);
+  const before = await store.verifyRuntime('claude-code');
+  const pointer = await readFile(store.pointerPath('claude-code'));
+  const owned = (await readOwnership(f.deps.stateDir)).targets;
+  f.deps.source = async (host) => bump(packed.sources[host]);
+  // The new runtime installs and its entry is written, then the editor does not
+  // see the hooks: the update must not leave the editor on a runtime nobody checked.
+  f.deps.imports = {
+    ...hostPackageImports,
+    'claude-code': async (runtime) => {
+      const module = await hostPackageImports['claude-code'](runtime);
+      return {
+        createHostAdapter: (deps) => {
+          const adapter = module.createHostAdapter(deps);
+          const verify = adapter.verify.bind(adapter);
+          adapter.verify = async (target) => ({
+            ...(await verify(target)),
+            declarationPresent: false,
+          });
+          return adapter;
+        },
+      };
+    },
+  };
+  const result = await runHosts('update', owned, f.deps);
+  expect(result.results).toMatchObject([{ status: 'ACTION_REQUIRED', reason: 'hooks_missing' }]);
+  expect(await readFile(store.pointerPath('claude-code'))).toEqual(pointer);
+  const after = await store.verifyRuntime('claude-code');
+  expect(after.reference).toEqual(before.reference);
+  expect((await readOwnership(f.deps.stateDir)).targets[0]?.version).toBe(before.manifest.version);
 }, 120_000);
 
 it('installs editor entries at user level even when a project selection reaches the host boundary', async () => {

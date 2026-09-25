@@ -1,6 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { saveInstallation } from '../installation.js';
 import { devReleaseActive } from '../runtime/releaseSource.js';
+import { readUpdateCheck } from '../runtime/updateCheck.js';
 import { join } from 'node:path';
 import { atomicWrite } from '@mnemonik/local-setup';
 import { bytesAt, digest } from './journal.js';
@@ -37,7 +38,13 @@ export async function readInstallVersions(state, scanner) {
         hosts.set(target.host, version);
     }
     const cli = JSON.parse(await readFile(new URL('../../package.json', import.meta.url), 'utf8'));
-    return { cli: cli.version, hosts: [...hosts.values()], ...(scanner ? { scanner } : {}) };
+    const update = await readUpdateCheck(state);
+    return {
+        cli: cli.version,
+        hosts: [...hosts.values()],
+        ...(scanner ? { scanner } : {}),
+        ...(update ? { update } : {}),
+    };
 }
 export async function assertGeneration(state, journal) {
     await journal.assertOwned?.();

@@ -323,13 +323,23 @@ export async function npmReleaseSource(fetcher = fetch, view = async () => {
     };
 }
 const tarballFilesSize = (files) => Object.values(files).reduce((sum, b) => sum + b.length, 0);
+const trustedScannerRelease = async () => JSON.parse(await readFile(process.env.MNEMONIK_DEV_RELEASE_DIR
+    ? join(process.env.MNEMONIK_DEV_RELEASE_DIR, 'scanner-release.json')
+    : new URL('../scanner-release.json', import.meta.url), 'utf8'));
 /** Supply this as runtimeUpdate.source; the update path restarts managed services. */
 export async function releaseSource(artifact) {
     if (artifact === 'cli')
         return npmReleaseSource();
-    const trusted = JSON.parse(await readFile(process.env.MNEMONIK_DEV_RELEASE_DIR
-        ? join(process.env.MNEMONIK_DEV_RELEASE_DIR, 'scanner-release.json')
-        : new URL('../scanner-release.json', import.meta.url), 'utf8'));
-    return scannerReleaseSource(trusted);
+    return scannerReleaseSource(await trustedScannerRelease());
+}
+/**
+ * The disclosure version the scanner this CLI installs expects its consent to
+ * carry, read from the release manifest bundled with the CLI (no download).
+ * Undefined when the manifest predates the field or cannot be read.
+ */
+export async function expectedScannerDisclosureVersion(platform = `${process.platform === 'win32' ? 'win' : process.platform}-${process.arch}`) {
+    const trusted = await trustedScannerRelease().catch(() => undefined);
+    const version = trusted?.platforms?.[platform]?.disclosureVersion;
+    return typeof version === 'string' ? version : undefined;
 }
 //# sourceMappingURL=releaseSource.js.map

@@ -490,6 +490,87 @@ describe('project link and setup', () => {
     expect(await readFile(join(f.root, '.mnemonik.json'))).toEqual(before);
   });
 
+  it('answers a waiting confirmation with --cancel, then a fresh setup proceeds', async () => {
+    const f = await baseFixture();
+    await gitRoot(f.root);
+    const transport: SetupTransport = {
+      issueSetupRequest: vi
+        .fn()
+        .mockResolvedValueOnce({
+          status: 'project_setup_required' as const,
+          state: 'confirmation_required',
+          allowedActions: ['link', 'create', 'cancel'],
+          candidates: [{ projectId, displayName: 'repo' }],
+        })
+        .mockResolvedValue({
+          status: 'project_setup_required' as const,
+          state: 'missing',
+          allowedActions: ['create', 'cancel'],
+          requestId: randomUUID(),
+        }),
+      consumeSetupRequest: vi.fn(async () => ({
+        status: 'complete' as const,
+        projectId: otherId,
+        displayName: 'repo',
+      })),
+    };
+    const deps = commandDeps(f, { transport });
+    const setup = ['project', 'setup', '--json', '--non-interactive', '--apply'];
+    expect(await runCli(setup, deps)).toBe(3);
+    const waiting = JSON.parse(f.stdout.text);
+    expect(waiting).toMatchObject({ state: 'confirmation_required' });
+    expect(waiting.commands).toEqual([
+      {
+        action: 'link',
+        command: `mnemonik project link ${projectId} ${f.root} --non-interactive --apply`,
+      },
+      { action: 'cancel', command: `mnemonik project setup ${f.root} --cancel` },
+    ]);
+    const records = join(f.stateDir, 'project-setup');
+    expect(await readdir(records)).toHaveLength(1);
+
+    f.stdout.text = '';
+    expect(await runCli(['project', 'setup', '--cancel', '--json'], deps)).toBe(0);
+    expect(JSON.parse(f.stdout.text)).toEqual({
+      status: 'cancelled',
+      root: f.root,
+      cleared: true,
+      restored: false,
+    });
+    expect(await readdir(records)).toEqual([]);
+
+    f.stdout.text = '';
+    expect(await runCli(setup, deps)).toBe(0);
+    expect(JSON.parse(await readFile(join(f.root, '.mnemonik.json'), 'utf8')).projectId).toBe(
+      otherId
+    );
+  });
+
+  it('cancel frees a folder a half-finished setup holds, with no sign-in', async () => {
+    const f = await baseFixture();
+    await gitRoot(f.root);
+    const deps = commandDeps(f);
+    expect(
+      await deps.projectExecutor!.stage({
+        cwd: f.root,
+        owner: 'personal',
+        allowCreate: true,
+        allowNestedInherit: false,
+      })
+    ).toMatchObject({ status: 'staged' });
+    const team = ['project', 'setup', `--owner=team:${otherId}`, '--non-interactive', '--apply'];
+    expect(await runCli(team, deps)).toBe(3);
+    expect(f.stdout.text).toContain(
+      'Run mnemonik project setup --cancel in that folder, then run the command again.'
+    );
+
+    f.stdout.text = '';
+    const signedOut = { ...deps, getCliBearer: async () => undefined } as CliDependencies;
+    expect(await runCli(['project', 'setup', f.root, '--cancel'], signedOut)).toBe(0);
+    expect(f.stdout.text).toBe('Setup of repo was cancelled.\n');
+    expect(await runCli(team, deps)).toBe(0);
+  });
+
   it('setup shows its plan and does not stage non-interactively without --apply', async () => {
     const f = await baseFixture();
     await gitRoot(f.root);

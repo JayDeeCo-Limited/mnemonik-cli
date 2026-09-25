@@ -1,4 +1,4 @@
-import { windowsCurrentAccountSync } from '@mnemonik/shared/hook-runtime';
+import { verifyWindowsAcl, windowsCurrentAccountSync, } from '@mnemonik/shared/hook-runtime';
 import { createHash, randomUUID } from 'node:crypto';
 import { execFile as nodeExecFile } from 'node:child_process';
 import fs from 'node:fs';
@@ -70,6 +70,15 @@ export async function windowsCurrentUserAcl(path, directory = false, options = {
                 resolve();
         });
     });
+}
+/**
+ * The Windows counterpart of POSIX mode 0600/0700: every Allow ACE on `path`
+ * names the current token's SID, so no other user or group (Users, Everyone)
+ * can read it. Throws `acl_permissions` when one does. Reads the DACL through
+ * the shared icacls export, whose temporary file lives under `state`.
+ */
+export async function verifyWindowsCurrentUserOnly(path, state, run) {
+    await verifyWindowsAcl(path, run, state);
 }
 export async function protectStateFile(path, platform = process.platform, aclOptions) {
     if (platform === 'win32')

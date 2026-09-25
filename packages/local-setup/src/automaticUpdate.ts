@@ -1,7 +1,9 @@
 import { spawn as nodeSpawn } from 'node:child_process';
+import { realpathSync } from 'node:fs';
 import { stat as nodeStat, utimes } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { atomicWrite, readBytes, stateDirectory, withLock } from './storage.js';
 
 const DAY_MS = 86_400_000;
@@ -124,23 +126,59 @@ export async function maybeStartAutomaticUpdate(
   }
 }
 
+const HELPER_FLAG = '--mnemonik-automatic-update';
+type HelperSpawn = (
+  file: string,
+  args: string[],
+  options: { detached: true; stdio: 'ignore'; windowsHide: true }
+) => { once(event: 'error', listener: () => void): unknown; unref(): void };
+
+export interface SessionUpdateOptions extends Omit<AutomaticUpdateOptions, 'spawn'> {
+  /** Starts the detached helper that claims the day and launches the updater. */
+  spawnHelper?: HelperSpawn;
+}
+
+/**
+ * Session start's share of the daily update is one stat. When a day has passed,
+ * the claim and the updater launch go to a detached helper process: the claim
+ * takes tens of milliseconds of locking and syncing, a hook that answers its
+ * editor exits at once, and an exit in the middle of a claim used to spend the
+ * day without starting an update. The hook never waits on update work.
+ */
 export async function startAutomaticUpdateForSession(
-  start: () => Promise<unknown> = maybeStartAutomaticUpdate,
-  timeoutMs = 50
+  options: SessionUpdateOptions = {}
 ): Promise<void> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    await Promise.race([
-      Promise.resolve()
-        .then(start)
-        .catch(() => {}),
-      new Promise<void>((resolve) => {
-        timer = setTimeout(resolve, timeoutMs);
-      }),
-    ]);
+    const stateDir =
+      options.stateDir ?? stateDirectory(options.platform, options.env, options.home);
+    const now = (options.now ?? Date.now)();
+    const stat = options.stat ?? nodeStat;
+    try {
+      if (now - (await stat(statePath(stateDir))).mtimeMs < DAY_MS) return;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return;
+    }
+    // No launcher, no update: never start a helper that can only give up.
+    if (!(await stat(cliLauncherPath(options))).isFile()) return;
+    const child = (options.spawnHelper ?? (nodeSpawn as HelperSpawn))(
+      process.execPath,
+      [fileURLToPath(import.meta.url), HELPER_FLAG, stateDir],
+      { detached: true, stdio: 'ignore', windowsHide: true }
+    );
+    child.once('error', () => {});
+    child.unref();
   } catch {
     // Session start is fail-open.
-  } finally {
-    if (timer) clearTimeout(timer);
   }
 }
+
+function isHelperInvocation(): boolean {
+  if (process.argv[2] !== HELPER_FLAG || !process.argv[3] || !process.argv[1]) return false;
+  try {
+    return realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+}
+
+if (isHelperInvocation()) void maybeStartAutomaticUpdate({ stateDir: process.argv[3] });

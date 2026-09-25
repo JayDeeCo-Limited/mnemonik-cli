@@ -99,7 +99,7 @@ describe('repository discovery', () => {
     const discovered = await scannerCandidates(boundary);
     expect(discovered.candidates).toEqual([
       { path: app, name: 'app', kind: 'git' },
-      { path: notes, name: 'notes', kind: 'folder' },
+      { path: notes, name: 'notes', kind: 'folder', projectId: uuid('1') },
     ]);
 
     const stream = capture();
@@ -137,8 +137,30 @@ describe('repository discovery', () => {
     const discovered = await scannerCandidates(boundary);
 
     expect(discovered.candidates).toEqual([
-      { path: repository, name: 'devops', kind: 'git' },
+      { path: repository, name: 'devops', kind: 'git', projectId: uuid('1') },
       { path: nested, name: 'devops/dokploy-mcp-server', kind: 'git' },
+    ]);
+  });
+
+  it('carries the project a non-Git folder names, and nothing for a folder without one', async () => {
+    const boundary = await temporaryDirectory();
+    const project = join(boundary, 'memories');
+    const broken = join(boundary, 'broken');
+    await fs.mkdir(project);
+    await identity(project, uuid('3'));
+    await fs.mkdir(broken);
+    await identity(broken, 'not-a-project');
+
+    const discovered = await scannerCandidates(boundary);
+
+    expect(discovered.repositories).toMatchObject([
+      { path: broken, state: 'action_required', kind: 'folder' },
+      { path: project, state: 'existing_project', kind: 'folder', projectId: uuid('3') },
+    ]);
+    expect(discovered.repositories[0]).not.toHaveProperty('projectId');
+    expect(discovered.candidates).toEqual([
+      { path: broken, name: 'broken', kind: 'folder' },
+      { path: project, name: 'memories', kind: 'folder', projectId: uuid('3') },
     ]);
   });
 

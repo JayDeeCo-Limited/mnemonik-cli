@@ -15,11 +15,14 @@ export declare class Output {
     private context;
     private installationLayout;
     private lastHumanLineBlank;
+    private headingNext;
     private progress?;
     constructor(stdout: Writable, stderr?: Writable, context?: OutputContext);
     setContext(context: OutputContext): void;
     beginInstallation(): void;
     installSection(): void;
+    /** A heading that is not a numbered step: flush left, with a blank line above it. */
+    heading(value: string): number;
     inputPrefix(): void;
     line(value?: string): number;
     write(value: string): void;
