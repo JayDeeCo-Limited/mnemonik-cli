@@ -21,6 +21,7 @@ export * from './repositoryRoot.js';
 export * from './protectedPaths.js';
 export * from './readiness.js';
 export * from './hostAdapter.js';
+export * from './grantHost.js';
 export * from './hostBinary.js';
 export { apiOrigin } from './apiOrigin.js';
 export { WINDOWS_SERVICE_BUDGET_MS, SCANNER_STARTUP_BUDGET_MS, SCANNER_RAPID_FAILURE_LIMIT, SCANNER_HANDOFF_BUDGET_MS, SCANNER_RECEIPT_STALE_MS, SCANNER_MAC_COMMAND_BUDGET_MS, SCANNER_STOP_BUDGET_MS, SCANNER_REMOVAL_BUDGET_MS, scannerAttemptHealthy, } from './scannerSupervisor.js';

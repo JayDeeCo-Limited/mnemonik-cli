@@ -793,9 +793,18 @@ async function fakeEditor(
   };
 }
 
+/** The server's listing of this machine's sign-ins: none for any coding tool yet. */
+const noSignInsHere = (async () =>
+  Response.json({
+    account: 'owner',
+    deviceInstallationId: 'c8553445-83f4-47f6-a84d-4eb7804eb6e6',
+    grants: [],
+  })) as typeof fetch;
+
 async function readyCodexHome(deps: CliDependencies) {
   const { mkdir, writeFile } = await import('node:fs/promises');
   const { join } = await import('node:path');
+  deps.grantFetch ??= noSignInsHere;
   await mkdir(join(deps.home as string, '.codex'), { recursive: true });
   await writeFile(
     join(deps.home as string, '.codex/config.toml'),
@@ -827,6 +836,42 @@ it('connect signs codex in on a machine the browser cannot reach', async () => {
         'Codex is signed in to Mnemonik.\n'
     );
     expect(editor.received).toEqual([`/callback?code=editor-code&state=${state}`]);
+  } finally {
+    await editor.close();
+  }
+});
+
+// An agent runs connect for the person, often with --json and never on a
+// terminal: it gets the link to hand over first, then the outcome.
+it('connect --json signs codex in too: the link first, as its own line, then the outcome', async () => {
+  const { deps, stdout } = fixture();
+  await readyCodexHome(deps);
+  const state = 'state-connect-json-link';
+  const editor = await fakeEditor(state);
+  try {
+    deps.editorLogin = {
+      spawn: editor.spawn,
+      sleep: async () => undefined,
+      fetch: (async (input: unknown) => {
+        const url = String(input);
+        if (!url.includes('/api/v1/auth/editor-callback/')) return globalThis.fetch(url);
+        return Response.json({ url: editor.callbackUrl });
+      }) as typeof fetch,
+    };
+    expect(await runCli(['connect', 'codex', '--json'], deps)).toBe(0);
+    const lines = stdout.text
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+    expect(lines).toEqual([
+      {
+        status: 'SIGN_IN_LINK',
+        url: editor.authorizeUrl,
+        reason:
+          'Give this link to the person to approve the Codex sign-in. This command finishes when they do.',
+      },
+      { status: 'READY', reason: 'Codex is signed in to Mnemonik.' },
+    ]);
   } finally {
     await editor.close();
   }
@@ -947,6 +992,7 @@ it('connect reports local editor setup consistently in plain text and JSON', asy
   try {
     const { deps, stdout } = fixture();
     deps.home = home;
+    deps.grantFetch = noSignInsHere;
     const { EventEmitter } = await import('node:events');
     // An editor with no login command on this machine keeps its own instructions.
     deps.editorLogin = {
@@ -993,7 +1039,13 @@ describe('connect with the editor signed in on another machine', () => {
   const HERE = 'c8553445-83f4-47f6-a84d-4eb7804eb6e6';
   const MAC = '9b7404c8-6e39-46bb-a4b4-f2d7fdabf06a';
   const hoursAgo = (hours: number) => new Date(Date.now() - hours * 3_600_000).toISOString();
-  const cursorGrant = (installation: string, lastUsed: string, clientName = 'Cursor') => ({
+  const cursorGrant = (
+    installation: string,
+    lastUsed: string,
+    clientName = 'Cursor',
+    status?: 'connected' | 'disconnected' | 'expired'
+  ) => ({
+    ...(status ? { status } : {}),
     id: `${clientName}-${installation}`,
     clientId: 'nc7RI7SR2S3N1kzpaNqRF3kBRrWVASBzQ0oCrNv0G60',
     clientName,
@@ -1026,7 +1078,10 @@ describe('connect with the editor signed in on another machine', () => {
   const connectCursor = (grants: unknown[], args: string[] = []) => connect('cursor', grants, args);
 
   it('says Cursor is already signed in from another machine, and exits 0', async () => {
-    const grants = [cursorGrant(HERE, hoursAgo(50)), cursorGrant(MAC, hoursAgo(3))];
+    const grants = [
+      cursorGrant(HERE, hoursAgo(50), 'Cursor', 'expired'),
+      cursorGrant(MAC, hoursAgo(3)),
+    ];
     expect(await connectCursor(grants)).toEqual({
       code: 0,
       stdout: 'Cursor is already signed in to Mnemonik from another of your machines.\n',
@@ -1039,8 +1094,15 @@ describe('connect with the editor signed in on another machine', () => {
     });
   });
 
-  it('still asks for Authenticate when the other sign-in was last used two days ago', async () => {
+  it('a valid sign-in there, idle for two days, is still signed in: nothing to do', async () => {
     expect(await connectCursor([cursorGrant(MAC, hoursAgo(48))])).toEqual({
+      code: 0,
+      stdout: 'Cursor is already signed in to Mnemonik from another of your machines.\n',
+    });
+  });
+
+  it('still asks for Authenticate when the sign-in there no longer works', async () => {
+    expect(await connectCursor([cursorGrant(MAC, hoursAgo(3), 'Cursor', 'expired')])).toEqual({
       code: 3,
       stdout:
         'Finish signing in to Mnemonik in the coding tool.\n' +
@@ -1050,7 +1112,7 @@ describe('connect with the editor signed in on another machine', () => {
 
   it('Claude Code signs in where its hooks run: connect still asks it to sign in', async () => {
     const grants = [
-      cursorGrant(HERE, hoursAgo(50), 'Claude Code'),
+      cursorGrant(HERE, hoursAgo(50), 'Claude Code', 'disconnected'),
       cursorGrant(MAC, hoursAgo(3), 'Claude Code'),
     ];
     const result = await connect('claude-code', grants);
@@ -1059,6 +1121,101 @@ describe('connect with the editor signed in on another machine', () => {
       'Finish signing in to Mnemonik in the coding tool.\n' +
         'Claude Code      type /mcp, choose mnemonik, then Authenticate\n'
     );
+  });
+});
+
+// 2026-09-28: after 45 hours away, connect told a person whose Claude Code was
+// signed in to sign in again. A valid sign-in here is done.
+describe('connect with the coding tool already signed in on this machine', () => {
+  const HERE = 'c8553445-83f4-47f6-a84d-4eb7804eb6e6';
+  const signIn = (
+    clientName: string,
+    status: 'connected' | 'disconnected' | 'expired' | 'incomplete',
+    lastUsedAt: string | null
+  ) => ({
+    id: `${clientName}-${status}`,
+    clientId: 'https://claude.ai/oauth/claude-code-client-metadata',
+    clientName,
+    softwareId: null,
+    scopes: ['mcp:use'],
+    resource: 'https://api.mnemonik.dev/mcp',
+    deviceInstallationId: HERE,
+    createdAt: '2026-09-21T04:32:15.890Z',
+    activatedAt: status === 'incomplete' ? null : '2026-09-21T04:32:15.890Z',
+    lastUsedAt,
+    status,
+  });
+
+  async function connect(host: 'claude-code' | 'codex', grants: unknown[], args: string[] = []) {
+    const { mkdir, writeFile } = await import('node:fs/promises');
+    const { deps, stdout } = fixture();
+    if (host === 'codex') {
+      await mkdir(join(deps.home!, '.codex'), { recursive: true });
+      await writeFile(
+        join(deps.home!, '.codex/config.toml'),
+        '[mcp_servers.mnemonik]\nenabled = true\n'
+      );
+    } else
+      await writeFile(
+        join(deps.home!, '.claude.json'),
+        JSON.stringify({ mcpServers: { mnemonik: { url: 'https://api.mnemonik.dev/mcp' } } })
+      );
+    const asked: string[] = [];
+    deps.grantFetch = vi.fn(async (input: unknown) => {
+      asked.push(`${new URL(String(input)).pathname}${new URL(String(input)).search}`);
+      return Response.json({ deviceInstallationId: HERE, account: 'owner', grants });
+    }) as typeof fetch;
+    deps.editorLogin = {
+      spawn: (() => {
+        throw new Error('a signed-in coding tool must not be signed in again');
+      }) as unknown as NonNullable<CliDependencies['editorLogin']>['spawn'],
+    };
+    const code = await runCli(['connect', host, ...args], deps);
+    return { code, stdout: stdout.text, asked };
+  }
+
+  it('Claude Code signed in, last renewed 45 hours ago: says so and exits 0', async () => {
+    const lastUsed = new Date(Date.now() - 45 * 3_600_000).toISOString();
+    const result = await connect('claude-code', [signIn('Claude Code', 'connected', lastUsed)]);
+    expect(result).toMatchObject({
+      code: 0,
+      stdout:
+        'Claude Code is already signed in to Mnemonik on this computer, last used 1 day ago.\n',
+    });
+    expect(result.asked).toContain('/api/v1/auth/grants?installation=current');
+    const json = await connect(
+      'claude-code',
+      [signIn('Claude Code', 'connected', lastUsed)],
+      ['--json']
+    );
+    expect(json.code).toBe(0);
+    expect(JSON.parse(json.stdout)).toEqual({
+      status: 'READY',
+      signIn: 'signed_in',
+      lastUsedAt: lastUsed,
+      reason: 'Claude Code is already signed in to Mnemonik on this computer, last used 1 day ago.',
+    });
+  });
+
+  it('Codex signed in here: no second sign-in', async () => {
+    const result = await connect('codex', [signIn('Codex', 'connected', null)]);
+    expect(result).toMatchObject({
+      code: 0,
+      stdout: 'Codex is already signed in to Mnemonik on this computer.\n',
+    });
+  });
+
+  it('only a revoked or expired sign-in here: Claude Code is asked to sign in inside Claude Code', async () => {
+    const result = await connect('claude-code', [
+      signIn('Claude Code', 'disconnected', null),
+      signIn('Claude Code', 'expired', null),
+    ]);
+    expect(result).toMatchObject({
+      code: 3,
+      stdout:
+        'Finish signing in to Mnemonik in the coding tool.\n' +
+        'Claude Code      type /mcp, choose mnemonik, then Authenticate\n',
+    });
   });
 });
 

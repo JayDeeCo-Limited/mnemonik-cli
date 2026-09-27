@@ -1,5 +1,6 @@
 export { CODEX_TRUST_MESSAGE } from './humanReason.js';
 import { cliCredentialStatus } from './auth/credentials.js';
+import type { CodingToolSignInState } from './auth/status.js';
 import { type ScannerReceipt } from './scanner/control.js';
 import { type ScannerServiceOptions } from './scanner/service.js';
 import type { Readable } from 'node:stream';
@@ -112,7 +113,64 @@ export declare function renderRefusals(stateDir: string, output: Pick<Output, 'l
 export declare function statusExitCode(document: ReadinessDocument): number;
 export declare function readProjectStatus(input: ReadProjectStatusInput): Promise<ProjectStatusResult>;
 export declare function collectStatusDocument(input: CollectStatusInput): Promise<ReadinessDocument & {
+    conditions?: ReadinessCondition[];
     cliCredential: Awaited<ReturnType<typeof cliCredentialStatus>>;
     launcher: LauncherStatus;
 }>;
+/** One installed coding tool on this machine, for `mnemonik status`. */
+export interface CodingToolStatus {
+    host: string;
+    name: string;
+    /** From this machine's own files and the tool's own trust records. */
+    hooks: 'installed' | 'missing' | 'approval_pending';
+    /**
+     * From the server, by the console's rule. `unknown` when it could not be
+     * read (Mnemonik unreachable, or this computer's own sign-in unusable).
+     */
+    signIn: CodingToolSignInState | 'unknown';
+    /** When the tool last renewed its sign-in; dates use, never decides it. */
+    lastUsedAt: string | null;
+    /** Commands the agent runs to fix what is wrong with this tool, in order; empty when none. */
+    actions: string[];
+    /**
+     * Steps only the person can take, inside the coding tool, in plain words
+     * (Claude Code and Cursor sign in only there); empty when none.
+     */
+    personSteps: string[];
+}
+/** The coding tools installed on this machine: chosen at install or marked in their own settings. */
+export declare function installedCodingTools(home: string, stateDir: string): Promise<{
+    host: "claude-code" | "codex" | "cursor";
+    name: "Claude Code" | "Codex" | "Cursor";
+    marked: boolean;
+    hooks: boolean;
+    mcp: string;
+}[]>;
+export declare function codingToolStatuses(editors: ReadonlyArray<{
+    host: string;
+    name: string;
+    hooks: boolean;
+}>, conditions: readonly ReadinessCondition[], signIns: ReadonlyMap<string, {
+    state: CodingToolSignInState;
+    lastUsedAt: string | null;
+}> | undefined): CodingToolStatus[];
+/**
+ * The status document with each tool's sign-in added. A tool signed out on
+ * this machine is a condition of the installation: status never says the
+ * machine is working while one is. A tool never signed in here is not (it may
+ * simply be unused); its line says how to sign in.
+ */
+export declare function withCodingTools<T extends ReadinessDocument & {
+    conditions?: readonly ReadinessCondition[];
+}>(document: T, tools: readonly CodingToolStatus[]): T & {
+    codingTools: CodingToolStatus[];
+};
+/**
+ * One line per tool, for a person, at a glance: signed in or not, and the one
+ * short command when there is something to do. Hooks, last use and the rest
+ * are in `--json`. A signed-out tool is already the installation's attention
+ * line, with its command, so it is not said twice; a tool whose sign-in could
+ * not be read gets no line.
+ */
+export declare function codingToolLines(tools: readonly CodingToolStatus[]): string[];
 //# sourceMappingURL=status.d.ts.map

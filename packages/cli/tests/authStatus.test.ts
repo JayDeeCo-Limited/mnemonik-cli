@@ -2,7 +2,12 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { grantHost, signedInElsewhere, type AccountGrant } from '../src/auth/status.js';
+import {
+  codingToolSignIn,
+  grantHost,
+  signedInElsewhere,
+  type AccountGrant,
+} from '../src/auth/status.js';
 import { runCli, type CliDependencies } from '../src/router.js';
 
 // Plain `mnemonik auth status` is one row per host; the per-grant detail is
@@ -144,23 +149,111 @@ describe('an editor signed in on another machine', () => {
     expect(result.stdout).toContain('Cursor  signed in, last used 3 hours ago (1 sign-in)');
   });
 
-  it('counts only an activated sign-in on another installation used within the day', () => {
-    expect(signedInElsewhere(listing(on(MAC, 3 * 60)), 'cursor', NOW)).toBe(true);
-    expect(signedInElsewhere(listing(on(MAC, 48 * 60)), 'cursor', NOW)).toBe(false);
-    expect(signedInElsewhere(listing(on(HERE, 5)), 'cursor', NOW)).toBe(false);
-    expect(signedInElsewhere(listing(on(MAC, 5)), 'codex', NOW)).toBe(false);
+  it('counts only a valid sign-in on another installation, however long it sat idle', () => {
+    expect(signedInElsewhere(listing(on(MAC, 3 * 60)), 'cursor')).toBe(true);
+    // Idle is not signed out: the sign-in renews the next time Cursor uses it.
+    expect(signedInElsewhere(listing(on(MAC, 48 * 60)), 'cursor')).toBe(true);
+    expect(signedInElsewhere(listing({ ...on(MAC, 5), status: 'expired' }), 'cursor')).toBe(false);
+    expect(signedInElsewhere(listing({ ...on(MAC, 5), status: 'disconnected' }), 'cursor')).toBe(
+      false
+    );
+    expect(signedInElsewhere(listing(on(HERE, 5)), 'cursor')).toBe(false);
+    expect(signedInElsewhere(listing(on(MAC, 5)), 'codex')).toBe(false);
     // Only editors that can run away from their hooks.
     const elsewhere = (clientName: string) =>
       signedInElsewhere(
         listing({ ...grant(clientName, 5), deviceInstallationId: MAC }),
-        grantHost(grant(clientName, 5))!,
-        NOW
+        grantHost(grant(clientName, 5))!
       );
     expect(elsewhere('GitHub Copilot')).toBe(true);
     expect(elsewhere('Claude Code')).toBe(false);
     expect(elsewhere('Codex')).toBe(false);
-    expect(signedInElsewhere(listing({ ...on(MAC, 5), activatedAt: null }), 'cursor', NOW)).toBe(
-      false
-    );
+    expect(signedInElsewhere(listing({ ...on(MAC, 5), activatedAt: null }), 'cursor')).toBe(false);
+  });
+});
+
+// 2026-09-28: after 45 hours away every tool was still signed in. Only the
+// server's validity decides signed out; last use only dates it.
+describe('codingToolSignIn: one tool on this machine', () => {
+  const HERE = 'c8553445-83f4-47f6-a84d-4eb7804eb6e6';
+  const MAC = '9b7404c8-6e39-46bb-a4b4-f2d7fdabf06a';
+  const at = (
+    clientName: string,
+    status: AccountGrant['status'],
+    minutesAgo: number,
+    installation = HERE
+  ): AccountGrant => ({
+    ...grant(clientName, minutesAgo),
+    deviceInstallationId: installation,
+    status,
+  });
+  const here = (...grants: AccountGrant[]) => ({
+    account: 'owner',
+    deviceInstallationId: HERE,
+    grants,
+  });
+
+  it('a valid sign-in idle for 45 hours is signed in, with its last use', () => {
+    const idle = at('Claude Code', 'connected', 45 * 60);
+    expect(codingToolSignIn('claude-code', here(idle))).toEqual({
+      state: 'signed_in',
+      lastUsedAt: idle.lastUsedAt,
+    });
+  });
+
+  it('revoked or expired sign-ins and nothing valid: signed out', () => {
+    expect(
+      codingToolSignIn(
+        'codex',
+        here(
+          at('Codex', 'disconnected', 5),
+          at('Codex', 'expired', 60),
+          at('Claude Code', 'connected', 1)
+        )
+      )
+    ).toEqual({ state: 'signed_out', lastUsedAt: null });
+  });
+
+  it('one valid sign-in beside dead ones is signed in, dated by the newest valid use', () => {
+    const valid = at('Codex', 'connected', 90);
+    expect(codingToolSignIn('codex', here(at('Codex', 'expired', 5), valid))).toEqual({
+      state: 'signed_in',
+      lastUsedAt: valid.lastUsedAt,
+    });
+  });
+
+  it('no sign-in here ever: not set up; a sign-in never finished is not set up either', () => {
+    expect(codingToolSignIn('cursor', here())).toEqual({ state: 'not_set_up', lastUsedAt: null });
+    expect(codingToolSignIn('cursor', here(at('Cursor', 'incomplete', 5)))).toEqual({
+      state: 'not_set_up',
+      lastUsedAt: null,
+    });
+  });
+
+  it('Cursor signed in on another machine counts, for the tools that can run remotely', () => {
+    const mac = at('Cursor', 'connected', 48 * 60, MAC);
+    const everywhere = { account: 'owner', deviceInstallationId: HERE, grants: [mac] };
+    expect(codingToolSignIn('cursor', here(), everywhere)).toEqual({
+      state: 'signed_in_elsewhere',
+      lastUsedAt: mac.lastUsedAt,
+    });
+    const codexMac = at('Codex', 'connected', 5, MAC);
+    expect(codingToolSignIn('codex', here(), { ...everywhere, grants: [codexMac] })).toEqual({
+      state: 'not_set_up',
+      lastUsedAt: null,
+    });
+  });
+});
+
+describe('auth status counts only valid sign-ins as signed in', () => {
+  it('leaves an expired or revoked sign-in out of the signed-in rows', async () => {
+    const result = await status([
+      { ...grant('Codex', 5), status: 'expired' },
+      { ...grant('Claude Code', 30), status: 'connected' },
+      { ...grant('Cursor', 10), status: 'disconnected' },
+    ]);
+    expect(result.stdout.split('\n').slice(1, -2)).toEqual([
+      'Claude Code  signed in, last used 30 minutes ago (1 sign-in)',
+    ]);
   });
 });

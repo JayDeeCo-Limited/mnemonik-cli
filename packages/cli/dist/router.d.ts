@@ -31,6 +31,10 @@ export declare const identityFileKeptLine = "This folder's .mnemonik.json still 
 export declare const CODEX_SIGNED_IN_MESSAGE = "Codex is signed in to Mnemonik.";
 /** An editor signed in on another of the person's machines (L-182). */
 export declare const signedInElsewhereMessage: (editor: string) => string;
+/** A coding tool with a valid sign-in on this machine; `mnemonik connect` has nothing to do. */
+export declare const alreadySignedInMessage: (editor: string, lastUsedAt: string | null) => string;
+/** For the agent running `connect --json`: what to do with the link it was given. */
+export declare const SIGN_IN_LINK_REASON = "Give this link to the person to approve the Codex sign-in. This command finishes when they do.";
 export declare const CONNECT_NOT_APPROVED_MESSAGE = "Sign-in timed out. Run mnemonik connect codex to try again.";
 export declare function maintenanceExitCode(results: readonly Pick<HostResult, 'status'>[]): number;
 export declare const help: string;

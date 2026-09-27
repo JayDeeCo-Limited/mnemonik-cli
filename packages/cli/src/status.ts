@@ -1,6 +1,7 @@
 import { messageFor as humanMessageFor } from './humanReason.js';
 export { CODEX_TRUST_MESSAGE } from './humanReason.js';
 import { cliCredentialStatus } from './auth/credentials.js';
+import type { CodingToolSignInState } from './auth/status.js';
 import { readOwnership } from './install/ownership.js';
 import {
   pausedForConsent,
@@ -17,6 +18,7 @@ import {
 } from './scanner/service.js';
 import { stateDirectory } from '@mnemonik/local-setup';
 import {
+  CODING_TOOL_SIGN_IN,
   scannerAttemptHealthy,
   SCANNER_HANDOFF_BUDGET_MS,
   SCANNER_RECEIPT_STALE_MS,
@@ -619,6 +621,7 @@ async function approvedFoldersGone(roots: readonly string[]): Promise<number> {
 
 export async function collectStatusDocument(input: CollectStatusInput): Promise<
   ReadinessDocument & {
+    conditions?: ReadinessCondition[];
     cliCredential: Awaited<ReturnType<typeof cliCredentialStatus>>;
     launcher: LauncherStatus;
   }
@@ -896,3 +899,143 @@ export async function collectStatusDocument(input: CollectStatusInput): Promise<
 }
 
 const serializeReadiness: typeof baseReadiness = (input) => devReadiness(baseReadiness(input));
+
+/** One installed coding tool on this machine, for `mnemonik status`. */
+export interface CodingToolStatus {
+  host: string;
+  name: string;
+  /** From this machine's own files and the tool's own trust records. */
+  hooks: 'installed' | 'missing' | 'approval_pending';
+  /**
+   * From the server, by the console's rule. `unknown` when it could not be
+   * read (Mnemonik unreachable, or this computer's own sign-in unusable).
+   */
+  signIn: CodingToolSignInState | 'unknown';
+  /** When the tool last renewed its sign-in; dates use, never decides it. */
+  lastUsedAt: string | null;
+  /** Commands the agent runs to fix what is wrong with this tool, in order; empty when none. */
+  actions: string[];
+  /**
+   * Steps only the person can take, inside the coding tool, in plain words
+   * (Claude Code and Cursor sign in only there); empty when none.
+   */
+  personSteps: string[];
+}
+
+/**
+ * How a signed-out tool signs in again: a step inside the coding tool for the
+ * tools only the person can sign in (Claude Code, Cursor), else the short
+ * command an agent runs and hands the person the link it prints (Codex).
+ */
+function signInFix(host: string): { command: string } | { step: string } {
+  const signIn = CODING_TOOL_SIGN_IN[host as keyof typeof CODING_TOOL_SIGN_IN];
+  return signIn?.kind === 'in_tool'
+    ? { step: signIn.step }
+    : { command: `mnemonik connect ${host}` };
+}
+
+/** The coding tools installed on this machine: chosen at install or marked in their own settings. */
+export async function installedCodingTools(home: string, stateDir: string) {
+  const owned = (await readOwnership(stateDir)).targets.map((target) => target.host);
+  return (await localEditorStatus(home)).filter(
+    (editor) => editor.marked || owned.includes(editor.host)
+  );
+}
+
+export function codingToolStatuses(
+  editors: ReadonlyArray<{ host: string; name: string; hooks: boolean }>,
+  conditions: readonly ReadinessCondition[],
+  signIns:
+    ReadonlyMap<string, { state: CodingToolSignInState; lastUsedAt: string | null }> | undefined
+): CodingToolStatus[] {
+  return editors.map((editor) => {
+    const trust = conditions.find(
+      (condition) => condition.kind === 'host_trust_pending' && condition.component === editor.host
+    );
+    const hooks: CodingToolStatus['hooks'] = trust
+      ? 'approval_pending'
+      : editor.hooks &&
+          !conditions.some(
+            (condition) => condition.kind === 'hooks_missing' && condition.component === editor.host
+          )
+        ? 'installed'
+        : 'missing';
+    const signIn = signIns?.get(editor.host);
+    const signInNeeded = signIn?.state === 'signed_out' || signIn?.state === 'not_set_up';
+    const fix = signInFix(editor.host);
+    return {
+      host: editor.host,
+      name: editor.name,
+      hooks,
+      signIn: signIn?.state ?? 'unknown',
+      lastUsedAt: signIn?.lastUsedAt ?? null,
+      actions: [
+        ...(hooks === 'missing' ? ['mnemonik repair'] : []),
+        ...(hooks === 'approval_pending' && trust?.action ? [trust.action] : []),
+        ...(signInNeeded && 'command' in fix ? [fix.command] : []),
+      ],
+      personSteps: signInNeeded && 'step' in fix ? [fix.step] : [],
+    };
+  });
+}
+
+const stateRank: Record<ReadinessDocument['installation']['state'], number> = {
+  READY: 0,
+  LIMITED: 1,
+  ACTION_REQUIRED: 2,
+  FAILED: 3,
+};
+
+/**
+ * The status document with each tool's sign-in added. A tool signed out on
+ * this machine is a condition of the installation: status never says the
+ * machine is working while one is. A tool never signed in here is not (it may
+ * simply be unused); its line says how to sign in.
+ */
+export function withCodingTools<
+  T extends ReadinessDocument & { conditions?: readonly ReadinessCondition[] },
+>(document: T, tools: readonly CodingToolStatus[]): T & { codingTools: CodingToolStatus[] } {
+  const signedOut: ReadinessCondition[] = tools
+    .filter((tool) => tool.signIn === 'signed_out')
+    .map((tool) => {
+      const fix = signInFix(tool.host);
+      return {
+        kind: 'login_pending',
+        component: tool.host,
+        reason: `${tool.name} is signed out of Mnemonik.`,
+        action: 'step' in fix ? fix.step : fix.command,
+      };
+    });
+  if (!signedOut.length) return { ...document, codingTools: [...tools] };
+  const added = reduceReadiness(signedOut);
+  const installation = document.installation;
+  return {
+    ...document,
+    installation: {
+      state:
+        stateRank[added.state] > stateRank[installation.state] ? added.state : installation.state,
+      reasons: [...installation.reasons, ...added.reasons],
+      actions: [...installation.actions, ...added.actions],
+    },
+    conditions: [...(document.conditions ?? []), ...signedOut],
+    codingTools: [...tools],
+  };
+}
+
+/**
+ * One line per tool, for a person, at a glance: signed in or not, and the one
+ * short command when there is something to do. Hooks, last use and the rest
+ * are in `--json`. A signed-out tool is already the installation's attention
+ * line, with its command, so it is not said twice; a tool whose sign-in could
+ * not be read gets no line.
+ */
+export function codingToolLines(tools: readonly CodingToolStatus[]): string[] {
+  return tools.flatMap((tool) => {
+    if (tool.signIn === 'signed_in') return [`${tool.name}: signed in.`];
+    if (tool.signIn === 'signed_in_elsewhere')
+      return [`${tool.name}: signed in on another of your machines.`];
+    if (tool.signIn !== 'not_set_up') return [];
+    const fix = signInFix(tool.host);
+    return [`${tool.name}: not signed in. ${'step' in fix ? fix.step : `Run ${fix.command}.`}`];
+  });
+}

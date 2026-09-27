@@ -81,6 +81,7 @@ export * from './protectedPaths.js';
 export * from './readiness.js';
 
 export * from './hostAdapter.js';
+export * from './grantHost.js';
 export * from './hostBinary.js';
 
 export type {

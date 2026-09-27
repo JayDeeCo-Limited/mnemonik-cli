@@ -488,9 +488,13 @@ async function localMachine() {
       start: [{ command: `node ${JSON.stringify(target)} --mnemonik-owner=${host}-hooks` }],
     },
   });
-  const invoke = async (command = 'status', extra: Partial<CliDependencies> = {}) => {
+  const invoke = async (
+    command = 'status',
+    extra: Partial<CliDependencies> = {},
+    args: string[] = []
+  ) => {
     let text = '';
-    const code = await runCli([command], {
+    const code = await runCli([command, ...args], {
       home,
       cwd,
       installStateDir: stateDir,
@@ -559,11 +563,13 @@ it('keeps the same verdict and words when the network cannot be reached', async 
     text: expect.stringContaining('Mnemonik is installed and working.'),
   });
   expect(offline.text).not.toContain('could not be uploaded');
-  // The readiness upload is the only authenticated call status makes: no
-  // credential rotation, no grant listing, no server verification.
-  expect(reached.filter((path) => path !== '/api/v1/installations/current/readiness')).toEqual([
-    '/%40mnemonik%2Fcli/latest',
-  ]);
+  // Besides the readiness upload, status reads only this machine's sign-ins:
+  // no credential rotation, no server verification. Unanswered, it claims nothing.
+  expect(
+    reached.filter(
+      (path) => path !== '/api/v1/installations/current/readiness' && path !== '/api/v1/auth/grants'
+    )
+  ).toEqual(['/%40mnemonik%2Fcli/latest']);
   // A reachable network reaches exactly the same verdict, word for word.
   vi.stubGlobal('fetch', async () => Response.json({}));
   const online = await machine.invoke('status', {
@@ -577,6 +583,168 @@ it('keeps the same verdict and words when the network cannot be reached', async 
   expect(online.code).toBe(offline.code);
   expect(online.text).toBe(offline.text);
 }, 20_000);
+
+// 2026-09-28: after 45 hours away, status could not say whether Claude Code was
+// signed in. It asks the server, by the console's rule, and says it per tool.
+describe('status says each coding tool sign-in on this machine', () => {
+  const HERE = 'c8553445-83f4-47f6-a84d-4eb7804eb6e6';
+  const hoursAgo = (hours: number) => new Date(Date.now() - hours * 3_600_000).toISOString();
+  const claudeSignIn = (
+    status: 'connected' | 'disconnected' | 'expired' | 'incomplete',
+    lastUsedAt: string | null
+  ) => ({
+    id: `claude-${status}`,
+    clientId: 'https://claude.ai/oauth/claude-code-client-metadata',
+    clientName: null,
+    softwareId: null,
+    scopes: ['mcp:use'],
+    resource: 'https://api.mnemonik.dev/mcp',
+    deviceInstallationId: HERE,
+    createdAt: '2026-09-21T04:32:15.890Z',
+    activatedAt: status === 'incomplete' ? null : '2026-09-21T04:32:15.890Z',
+    lastUsedAt,
+    status,
+  });
+  const server = (grants: unknown[]) => {
+    const uploads: Array<{ readiness: { installation: { reasons: string[] } } }> = [];
+    const asked: string[] = [];
+    const deps: Partial<CliDependencies> = {
+      cliAuth: {
+        signIn: async () => undefined,
+        getCliBearer: async () => 'access-token',
+        logout: async () => undefined,
+      },
+      grantFetch: async (input, init) => {
+        const url = new URL(String(input));
+        asked.push(`${url.pathname}${url.search}`);
+        if (url.pathname === '/api/v1/auth/grants')
+          return Response.json({ account: 'owner', deviceInstallationId: HERE, grants });
+        if (url.pathname === '/api/v1/installations/current/readiness')
+          uploads.push(JSON.parse(String(init?.body)));
+        return Response.json({ status: 'recorded' });
+      },
+    };
+    return { deps, uploads, asked };
+  };
+
+  it('a valid sign-in last renewed 45 hours ago: working, signed in, and when', async () => {
+    vi.stubGlobal('fetch', async () => Response.json({}));
+    const machine = await claudeCodeOnly();
+    const { deps, asked } = server([claudeSignIn('connected', hoursAgo(45))]);
+    const human = await machine.invoke('status', deps);
+    expect(human.code).toBe(0);
+    expect(human.text).toContain('Mnemonik is installed and working.');
+    expect(human.text).toBe('Mnemonik is installed and working.\nClaude Code: signed in.\n');
+    expect(asked).toContain('/api/v1/auth/grants?installation=current');
+    const json = await machine.invoke(
+      'status',
+      server([claudeSignIn('connected', hoursAgo(45))]).deps,
+      ['--json']
+    );
+    expect(json.code).toBe(0);
+    expect(JSON.parse(json.text).codingTools).toEqual([
+      {
+        host: 'claude-code',
+        name: 'Claude Code',
+        hooks: 'installed',
+        signIn: 'signed_in',
+        lastUsedAt: expect.any(String),
+        actions: [],
+        personSteps: [],
+      },
+    ]);
+  }, 20_000);
+
+  it('signed out: never says working, names the tool and the command', async () => {
+    vi.stubGlobal('fetch', async () => Response.json({}));
+    const machine = await claudeCodeOnly();
+    const { deps, uploads } = server([
+      claudeSignIn('disconnected', hoursAgo(3)),
+      claudeSignIn('expired', hoursAgo(90 * 24)),
+    ]);
+    const human = await machine.invoke('status', deps);
+    expect(human.code).toBe(3);
+    // Claude Code signs in only inside Claude Code: the person gets that step,
+    // never a terminal command.
+    expect(human.text).toBe(
+      'Installation: Needs attention.\nClaude Code is signed out of Mnemonik.\nIn Claude Code, type /mcp, choose mnemonik, then Authenticate.\n'
+    );
+    // The console reads sign-ins live; the machine report carries only local evidence.
+    expect(uploads).toHaveLength(1);
+    expect(uploads[0]!.readiness.installation.reasons).not.toContain(
+      'Claude Code is signed out of Mnemonik.'
+    );
+    const json = JSON.parse(
+      (await machine.invoke('status', server([claudeSignIn('expired', null)]).deps, ['--json']))
+        .text
+    );
+    expect(json.installation.state).toBe('ACTION_REQUIRED');
+    expect(json.codingTools).toEqual([
+      expect.objectContaining({
+        host: 'claude-code',
+        signIn: 'signed_out',
+        lastUsedAt: null,
+        actions: [],
+        personSteps: ['In Claude Code, type /mcp, choose mnemonik, then Authenticate.'],
+      }),
+    ]);
+  }, 20_000);
+
+  it('never signed in here: still working, and says how to sign in', async () => {
+    vi.stubGlobal('fetch', async () => Response.json({}));
+    const machine = await claudeCodeOnly();
+    const human = await machine.invoke('status', server([]).deps);
+    expect(human.code).toBe(0);
+    expect(human.text).toContain('Mnemonik is installed and working.');
+    expect(human.text).toBe(
+      'Mnemonik is installed and working.\nClaude Code: not signed in. In Claude Code, type /mcp, choose mnemonik, then Authenticate.\n'
+    );
+  }, 20_000);
+
+  it('Codex signed out: the short connect command, which the agent can run for the person', async () => {
+    vi.stubGlobal('fetch', async () => Response.json({}));
+    const { join } = await import('node:path');
+    const { ensureLauncher } = await import('../src/launcher.js');
+    const machine = await localMachine();
+    await machine.put(machine.hookEntry, '// hook');
+    await machine.put(join(machine.home, '.codex/hooks.json'), machine.hooksFile('codex'));
+    await machine.put(
+      join(machine.home, '.codex/config.toml'),
+      '[mcp_servers.mnemonik]\nurl = "https://api.mnemonik.dev/mcp"\n'
+    );
+    await ensureLauncher({ home: machine.home, stateDir: machine.stateDir });
+    const codex = {
+      ...claudeSignIn('expired', null),
+      id: 'codex',
+      clientId: 'https://chatgpt.com/codex',
+    };
+    const human = await machine.invoke('status', {
+      ...server([codex]).deps,
+      codexTrustConditions: async () => [],
+    });
+    expect(human.code).toBe(3);
+    expect(human.text).toBe(
+      'Installation: Needs attention.\nCodex is signed out of Mnemonik.\nRun mnemonik connect codex.\n'
+    );
+    const json = JSON.parse(
+      (
+        await machine.invoke(
+          'status',
+          { ...server([codex]).deps, codexTrustConditions: async () => [] },
+          ['--json']
+        )
+      ).text
+    );
+    expect(json.codingTools).toEqual([
+      expect.objectContaining({
+        host: 'codex',
+        signIn: 'signed_out',
+        actions: ['mnemonik connect codex'],
+        personSteps: [],
+      }),
+    ]);
+  }, 20_000);
+});
 
 it('reports a hook entry whose launcher is gone', async () => {
   const { join } = await import('node:path');

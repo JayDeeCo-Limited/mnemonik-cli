@@ -73,7 +73,15 @@ import {
   type ReadinessCondition,
   resolveProjectIdentity,
 } from '@mnemonik/shared';
-import { grantTransport, grantHost, grantSummaryLines, signedInElsewhere } from './auth/status.js';
+import {
+  codingToolSignIn,
+  grantTransport,
+  grantHost,
+  grantSummaryLines,
+  relativeTime,
+  validGrant,
+  type GrantStatus,
+} from './auth/status.js';
 import { createCliAuth } from './auth/index.js';
 import { runEditorLogin, type EditorLoginOverrides } from './auth/pkce.js';
 import { currentInstallSession, ensureInstallSession } from './auth/installSession.js';
@@ -88,7 +96,10 @@ import {
 import { chooseHostProfile, simulatedInstall, terminalInstallUI } from './install/ui.js';
 import {
   CODEX_TRUST_MESSAGE,
+  codingToolLines,
+  codingToolStatuses,
   collectStatusDocument,
+  installedCodingTools,
   localEditorStatus,
   localInstallationConditions,
   mcpTurnOnAction,
@@ -97,6 +108,7 @@ import {
   REPORT_NOT_SENT,
   renderScannerFailure,
   statusExitCode,
+  withCodingTools,
   type StatusDocumentInput,
 } from './status.js';
 import { editorAuthorizationRows } from './screens/journey.js';
@@ -206,6 +218,14 @@ export const CODEX_SIGNED_IN_MESSAGE = 'Codex is signed in to Mnemonik.';
 /** An editor signed in on another of the person's machines (L-182). */
 export const signedInElsewhereMessage = (editor: string) =>
   `${editor} is already signed in to Mnemonik from another of your machines.`;
+/** A coding tool with a valid sign-in on this machine; `mnemonik connect` has nothing to do. */
+export const alreadySignedInMessage = (editor: string, lastUsedAt: string | null) =>
+  `${editor} is already signed in to Mnemonik on this computer${
+    lastUsedAt ? `, last used ${relativeTime(Date.parse(lastUsedAt), Date.now())}` : ''
+  }.`;
+/** For the agent running `connect --json`: what to do with the link it was given. */
+export const SIGN_IN_LINK_REASON =
+  'Give this link to the person to approve the Codex sign-in. This command finishes when they do.';
 export const CONNECT_NOT_APPROVED_MESSAGE =
   'Sign-in timed out. Run mnemonik connect codex to try again.';
 
@@ -1249,6 +1269,38 @@ function refusalStateDir(deps: CliDependencies): string {
   );
 }
 
+/**
+ * Each coding tool's sign-in on this machine, as the server holds it and by the
+ * console's validity rule. Undefined when it cannot be read (this computer's
+ * own sign-in is unusable, or Mnemonik cannot be reached): then nothing is
+ * claimed either way. Bounded like the readiness upload.
+ */
+async function codingToolSignIns(
+  deps: CliDependencies,
+  output: Output,
+  hosts: readonly (typeof hostOrder)[number][]
+): Promise<Map<string, ReturnType<typeof codingToolSignIn>> | undefined> {
+  if (!hosts.length) return new Map();
+  const bearer = await auth(deps, output, false)
+    .getCliBearer()
+    .catch(() => undefined);
+  if (typeof bearer !== 'string') return undefined;
+  const send = deps.grantFetch ?? globalThis.fetch;
+  const grants = grantTransport(
+    async () => bearer,
+    (url, options) => send(url, { ...options, signal: AbortSignal.timeout(2500) })
+  );
+  const here = await grants.list({ here: true }).catch(() => undefined);
+  if (!here) return undefined;
+  const result = new Map(hosts.map((host) => [host, codingToolSignIn(host, here)] as const));
+  // Only an editor that can run on another machine is looked for there.
+  if ([...result].some(([host, signIn]) => host === 'cursor' && signIn.state !== 'signed_in')) {
+    const everywhere: GrantStatus | undefined = await grants.list().catch(() => undefined);
+    if (everywhere) result.set('cursor', codingToolSignIn('cursor', here, everywhere));
+  }
+  return result;
+}
+
 async function doctorCommand(
   parsed: Parsed,
   deps: CliDependencies,
@@ -2018,25 +2070,51 @@ export async function runCli(args: string[], deps: CliDependencies = {}): Promis
       output,
       parsed.flags.has('json') ? undefined : (line) => output.line(line)
     );
+    // Each installed coding tool's sign-in, from the server by the console's rule.
+    const editors = await installedCodingTools(
+      deps.home ?? homedir(),
+      deps.hostManagement?.stateDir ??
+        deps.installStateDir ??
+        stateDirectory(process.platform, process.env, deps.home)
+    );
+    const shown = withCodingTools(
+      document,
+      codingToolStatuses(
+        editors,
+        document.conditions ?? [],
+        await codingToolSignIns(
+          deps,
+          output,
+          editors
+            .map((editor) => editor.host)
+            .filter((host): host is (typeof hostOrder)[number] =>
+              hostOrder.includes(host as (typeof hostOrder)[number])
+            )
+        )
+      )
+    );
     const version = await packageVersion();
     const store = new RuntimeStore(
       deps.installStateDir ?? stateDirectory(process.platform, process.env, deps.home)
     );
     if (!parsed.flags.has('json')) {
-      renderStatusSummaries(document, output);
+      renderStatusSummaries(shown, output);
+      for (const line of codingToolLines(shown.codingTools)) output.line(line);
       await renderRefusals(refusalStateDir(deps), output);
     }
     const hint = await cliUpdateHint(store, version);
     if (parsed.flags.has('json'))
-      output.json({ ...document, cli: { version, ...(hint ? { updateAvailable: hint } : {}) } });
+      output.json({ ...shown, cli: { version, ...(hint ? { updateAvailable: hint } : {}) } });
     else if (hint) output.line(hint);
+    // The console reads sign-ins live, so the machine report keeps only what
+    // this machine itself showed: a sign-in line stored there would go stale.
     const reported = await reportCurrentInstallation(deps, output, document);
     if (reported === 'signed_out' && !parsed.flags.has('json')) {
       output.line(REPORT_NOT_SENT.sentence);
       output.line(REPORT_NOT_SENT.nextStep);
     } else if (typeof reported === 'object' && !parsed.flags.has('json'))
       output.line(humanReason(reported.refused));
-    return statusExitCode(document);
+    return statusExitCode(shown);
   }
   if (command === 'connect') {
     const invalid = allowed(parsed, []);
@@ -2049,9 +2127,38 @@ export async function runCli(args: string[], deps: CliDependencies = {}): Promis
     const editor = (await localEditorStatus(deps.home ?? homedir())).find(
       (candidate) => candidate.host === host
     );
+    // A coding tool already holding a valid sign-in on this machine (or, for an
+    // editor that opens this machine from another one, there) needs nothing.
+    // Idle time is not signed out: the tool renews its sign-in when next used.
+    // An unreachable server says nothing, and sign-in goes ahead as before.
+    const signIn =
+      editor?.mcp === 'ready' ? await codingToolSignIns(deps, output, [host]) : undefined;
+    const current = signIn?.get(host);
+    if (current?.state === 'signed_in' || current?.state === 'signed_in_elsewhere') {
+      const message =
+        current.state === 'signed_in_elsewhere'
+          ? signedInElsewhereMessage(launchHostLabels[host])
+          : alreadySignedInMessage(launchHostLabels[host], current.lastUsedAt);
+      if (parsed.flags.has('json'))
+        output.json(
+          current.state === 'signed_in'
+            ? {
+                status: 'READY',
+                signIn: current.state,
+                lastUsedAt: current.lastUsedAt,
+                reason: message,
+              }
+            : { status: 'READY', reason: message }
+        );
+      else output.line(message);
+      return 0;
+    }
     // Only Codex has a headless login command, so only Codex can be signed in
-    // from here; the others print their own instructions as before.
-    if (host === 'codex' && editor?.mcp === 'ready' && !parsed.flags.has('json')) {
+    // from here; the others print their own instructions as before. An agent
+    // runs this for the person, with --json and without a terminal, so under
+    // --json the link comes first as its own line for the agent to hand over.
+    const json = parsed.flags.has('json');
+    if (host === 'codex' && editor?.mcp === 'ready') {
       const bearer = await auth(deps, output, false)
         .getCliBearer()
         .catch(() => undefined);
@@ -2061,38 +2168,31 @@ export async function runCli(args: string[], deps: CliDependencies = {}): Promis
           apiOrigin: apiOrigin(),
           issuer: process.env.MNEMONIK_OAUTH_ISSUER ?? 'https://auth.mnemonik.ai',
           bearer: () => Promise.resolve(bearer),
-          print: (line) => void output.line(line),
+          print: (line) => {
+            if (!json) output.line(line);
+            else if (/^https?:\/\//u.test(line))
+              output.json({ status: 'SIGN_IN_LINK', url: line, reason: SIGN_IN_LINK_REASON });
+          },
           fetch: deps.grantFetch,
           ...deps.editorLogin,
         });
-        if (outcome === 'signed_in') return (output.line(CODEX_SIGNED_IN_MESSAGE), 0);
-        if (outcome === 'not_approved') return (output.line(CONNECT_NOT_APPROVED_MESSAGE), 1);
+        if (outcome === 'signed_in') {
+          if (json) output.json({ status: 'READY', reason: CODEX_SIGNED_IN_MESSAGE });
+          else output.line(CODEX_SIGNED_IN_MESSAGE);
+          return 0;
+        }
+        if (outcome === 'not_approved') {
+          if (json)
+            output.json({
+              status: 'ACTION_REQUIRED',
+              reason: CONNECT_NOT_APPROVED_MESSAGE,
+              actions: ['mnemonik connect codex'],
+            });
+          else output.line(CONNECT_NOT_APPROVED_MESSAGE);
+          return 1;
+        }
       }
       // An editor that could not be started at all still has its own instructions.
-    }
-    // An editor that opens this machine from another one (Cursor over SSH) is
-    // signed in there; asking for Authenticate here would send the person to an
-    // editor that is already signed in.
-    if (editor?.mcp === 'ready') {
-      const bearer = await auth(deps, output, false)
-        .getCliBearer()
-        .catch(() => undefined);
-      const send = deps.grantFetch ?? globalThis.fetch;
-      const grants =
-        typeof bearer === 'string'
-          ? await grantTransport(
-              async () => bearer,
-              (url, options) => send(url, { ...options, signal: AbortSignal.timeout(2500) })
-            )
-              .list()
-              .catch(() => undefined)
-          : undefined;
-      if (grants && signedInElsewhere(grants, host)) {
-        const message = signedInElsewhereMessage(launchHostLabels[host]);
-        if (parsed.flags.has('json')) output.json({ status: 'READY', reason: message });
-        else output.line(message);
-        return 0;
-      }
     }
     const reason =
       editor?.mcp === 'disabled'
@@ -2572,8 +2672,10 @@ export async function runCli(args: string[], deps: CliDependencies = {}): Promis
           );
         })
         .map((g) => ({ ...g, host: grantHost(g) ?? g.clientName ?? g.clientId }));
+      // Revoked, expired and unfinished sign-ins stay in --json with their status.
+      const signedIn = grants.filter(validGrant);
       if (parsed.flags.has('json')) output.json({ account: status.account, grants });
-      else if (!grants.length)
+      else if (!signedIn.length)
         output.line(
           host
             ? `${launchHostLabels[host as keyof typeof launchHostLabels]} is not signed in.`
@@ -2581,7 +2683,7 @@ export async function runCli(args: string[], deps: CliDependencies = {}): Promis
         );
       else {
         output.signedInAs(status.email);
-        for (const line of grantSummaryLines(grants, launchHostLabels)) output.line(line);
+        for (const line of grantSummaryLines(signedIn, launchHostLabels)) output.line(line);
         output.line(
           'Older sign-ins stay valid until `mnemonik auth logout`. `mnemonik auth status --json` lists every one.'
         );

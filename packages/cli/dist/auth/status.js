@@ -1,46 +1,58 @@
-import { apiOrigin } from '@mnemonik/shared';
+import { apiOrigin, hostForGrantClient } from '@mnemonik/shared';
 // Display metadata is self-asserted. Account evidence comes only from the authenticated route.
-const hosts = {
-    'claude code': 'claude-code',
-    'claude-code': 'claude-code',
-    codex: 'codex',
-    'codex cli': 'codex',
-    cursor: 'cursor',
-    grok: 'grok',
-    'grok build': 'grok',
-    'github copilot': 'vscode-copilot',
-    'vs code copilot': 'vscode-copilot',
-    'vscode-copilot': 'vscode-copilot',
-};
-export const grantHost = (grant) => hosts[grant.softwareId?.toLowerCase() ?? ''] ??
-    hosts[grant.clientName?.toLowerCase() ?? ''] ??
-    { 'claude.ai': 'claude-code', 'chatgpt.com': 'codex' }[URL.parse(grant.clientId)?.hostname ?? ''];
+export const grantHost = (grant) => hostForGrantClient(grant);
+/** A sign-in that works: the server's status, or activated on a server too old to say. */
+export const validGrant = (grant) => grant.status ? grant.status === 'connected' : grant.activatedAt !== null;
 /**
  * Editors that can run on one machine while their hooks run on another (Cursor
  * over SSH, VS Code with Copilot over Remote SSH). Claude Code and Codex sign in
  * where their hooks run, so a sign-in elsewhere says nothing about this machine.
  */
 const REMOTE_EDITOR_HOSTS = new Set(['cursor', 'vscode-copilot']);
-/** How recently a sign-in on another machine must have been used to count here. */
-export const SIGNED_IN_ELSEWHERE_WITHIN_MS = 24 * 60 * 60 * 1000;
+const newest = (grants) => grants
+    .map((grant) => grant.lastUsedAt)
+    .filter((at) => !!at)
+    .sort((a, b) => Date.parse(b) - Date.parse(a))[0] ?? null;
+const elsewhereGrants = (status, host) => {
+    const here = status.deviceInstallationId;
+    return REMOTE_EDITOR_HOSTS.has(host) && here
+        ? status.grants.filter((grant) => grantHost(grant) === host &&
+            validGrant(grant) &&
+            !!grant.deviceInstallationId &&
+            grant.deviceInstallationId !== here)
+        : [];
+};
 /**
  * An editor that opens this machine remotely (Cursor on a Mac over SSH) signs in
- * where it runs, while its hooks run here. A sign-in for the host on another of
- * the account's installations, activated and used within the last day, is that
- * editor's sign-in, for the editors above only (L-182; the server's
- * computeMachineHealth reads the same rule).
- * The listing already leaves out revoked grants.
+ * where it runs, while its hooks run here. A valid sign-in for the host on
+ * another of the account's installations is that editor's sign-in, for the
+ * editors above only (L-182; the server's computeMachineHealth reads the same
+ * rule). How long ago it was used says nothing about whether it is valid.
  */
-export function signedInElsewhere(status, host, now = Date.now()) {
-    const here = status.deviceInstallationId;
-    return (REMOTE_EDITOR_HOSTS.has(host) &&
-        !!here &&
-        status.grants.some((grant) => grantHost(grant) === host &&
-            grant.activatedAt !== null &&
-            !!grant.deviceInstallationId &&
-            grant.deviceInstallationId !== here &&
-            grant.lastUsedAt !== null &&
-            now - Date.parse(grant.lastUsedAt) <= SIGNED_IN_ELSEWHERE_WITHIN_MS));
+export function signedInElsewhere(status, host) {
+    return elsewhereGrants(status, host).length > 0;
+}
+/**
+ * One coding tool's sign-in on this machine, from the server's listing of this
+ * installation's sign-ins (`?installation=current`, revoked ones included).
+ * Signed out only when it had sign-ins here and none of them is valid; never
+ * because of idle time. `everywhere`, the account-wide listing, is read only
+ * for editors that can sign in on another machine.
+ */
+export function codingToolSignIn(host, here, everywhere) {
+    // A server too old to filter lists every machine's sign-ins: keep this one's.
+    const mine = here.grants.filter((grant) => grantHost(grant) === host &&
+        (!here.deviceInstallationId || grant.deviceInstallationId === here.deviceInstallationId));
+    const valid = mine.filter(validGrant);
+    if (valid.length)
+        return { state: 'signed_in', lastUsedAt: newest(valid) };
+    const remote = everywhere ? elsewhereGrants(everywhere, host) : [];
+    if (remote.length)
+        return { state: 'signed_in_elsewhere', lastUsedAt: newest(remote) };
+    // A sign-in started and never used to reach Mnemonik is one not finished yet.
+    return mine.some((grant) => grant.status !== 'incomplete' && grant.activatedAt !== null)
+        ? { state: 'signed_out', lastUsedAt: null }
+        : { state: 'not_set_up', lastUsedAt: null };
 }
 /** "just now", "5 minutes ago", "1 hour ago", "3 days ago", or "never". */
 export function relativeTime(time, now) {
@@ -93,8 +105,9 @@ export function grantTransport(getBearer, fetcher = fetch) {
         return response.json();
     }
     return {
-        async list() {
-            const body = (await request('/api/v1/auth/grants'));
+        /** Every machine's unrevoked sign-ins, or with `here` every sign-in on this one. */
+        async list(options = {}) {
+            const body = (await request(options.here ? '/api/v1/auth/grants?installation=current' : '/api/v1/auth/grants'));
             if (!body ||
                 typeof body.account !== 'string' ||
                 !body.account ||
@@ -108,7 +121,9 @@ export function grantTransport(getBearer, fetcher = fetch) {
                     !Array.isArray(g.scopes) ||
                     !g.scopes.every((s) => typeof s === 'string') ||
                     !Number.isFinite(Date.parse(g.createdAt)) ||
-                    ![g.clientName, g.softwareId, g.activatedAt, g.lastUsedAt].every((v) => v === null || typeof v === 'string')))
+                    ![g.clientName, g.softwareId, g.activatedAt, g.lastUsedAt].every((v) => v === null || typeof v === 'string') ||
+                    (g.status !== undefined &&
+                        !['connected', 'disconnected', 'expired', 'incomplete'].includes(g.status))))
                 throw new Error('invalid_grant_status');
             return body;
         },
