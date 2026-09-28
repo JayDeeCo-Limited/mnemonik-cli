@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   describeReadiness,
+  isReadinessDocument,
   reduceReadiness,
   serializeReadiness,
   type ReadinessCondition,
@@ -175,4 +176,35 @@ test('a scanner receipt may count approved folders gone from disk, and nothing e
   for (const invalid of [0, -1, 1.5, '1', null])
     assert.equal(isReadinessDocument(document({ missingApprovedRoots: invalid })), false);
   assert.equal(isReadinessDocument(document({ missingRootPaths: ['/x'] })), false);
+});
+
+test('a scanner update held for approval leaves the machine ready and still names its step', () => {
+  const action = 'mnemonik scanner enable --accept-indexing --apply';
+  assert.deepEqual(
+    reduceReadiness([
+      {
+        kind: 'update_pending',
+        component: 'scanner',
+        reason: 'scanner_update_consent_required',
+        action,
+      },
+    ]),
+    { state: 'READY', reasons: ['scanner_update_consent_required'], actions: [action] }
+  );
+  // A scanner paused for approval is not indexing: that needs the person.
+  assert.equal(
+    reduceReadiness([
+      { kind: 'consent_pending', reason: 'scanner_consent_required', action },
+      { kind: 'update_pending', reason: 'scanner_update_consent_required', action },
+    ]).state,
+    'ACTION_REQUIRED'
+  );
+});
+
+test('an update held for approval is its own recorded result', () => {
+  const document = serializeReadiness({
+    installation: { conditions: [] },
+    versions: { update: { checkedAt: '2026-09-28T00:00:00.000Z', result: 'consent_pending' } },
+  });
+  assert.equal(isReadinessDocument(document), true);
 });

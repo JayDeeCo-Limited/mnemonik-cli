@@ -7,18 +7,51 @@ export const CODEX_TRUST_MESSAGE = {
   nextStep: 'Run codex, then approve the Mnemonik hooks when it asks.',
 } satisfies ReadinessMessage;
 
+/**
+ * What an agent runs with `--json` or no terminal to redo the scanner setup
+ * over the folders already approved. Machine surfaces only: a person is
+ * never shown flags.
+ */
+export const SCANNER_ENABLE_ACTION = 'mnemonik scanner enable --accept-indexing --apply';
+
+/**
+ * An updated notice waits for the person's approval (only the approval
+ * is theirs). The agent runs this for them: it starts the browser approval over
+ * the folders already approved, and completes the update once approved.
+ */
+export const SCANNER_APPROVAL_ACTION = 'mnemonik update';
+/** What an agent needs to know to run SCANNER_APPROVAL_ACTION for the person. */
+export const SCANNER_APPROVAL_NOTE =
+  'Prints a link for the person to approve the updated notice in their browser at once ' +
+  '(with --json, a first line {"status":"awaiting_approval","approvalUrl":...}) and finishes ' +
+  'when they approve; each link lasts up to 10 minutes. Give the person the link; run the ' +
+  'command in the background if your shell stops commands sooner.';
+/** The step a person reads: nothing to run, only an approval their agent brings them. */
+const PERSON_APPROVAL_STEP = 'Your coding agent will ask you to approve it.';
+/** The same step as the agent running the command reads it (no terminal). */
+export const AGENT_APPROVAL_STEP =
+  'Run mnemonik update and give the person the approval link it prints; it finishes when they approve.';
+
 // The scanner stopped because its saved consent names an older notice (or
-// folders nobody approved). Resume cannot help; enable asks once in the browser.
+// folders nobody approved). Resume cannot help; the update asks in the browser.
 export const SCANNER_CONSENT_MESSAGE = {
   sentence: 'Background indexing is paused until you approve an updated notice.',
-  nextStep: 'Run mnemonik scanner enable.',
+  nextStep: PERSON_APPROVAL_STEP,
 } satisfies ReadinessMessage;
 
 // A newer scanner waits for the same approval while the current one keeps indexing.
 export const SCANNER_UPDATE_CONSENT_MESSAGE = {
   sentence: 'A scanner update is waiting until you approve an updated notice.',
-  nextStep: 'Run mnemonik scanner enable.',
+  nextStep: PERSON_APPROVAL_STEP,
 } satisfies ReadinessMessage;
+
+/** The consent reasons whose step is an approval the agent brings to the person. */
+export const APPROVAL_REASONS = /^(?:scanner_consent_required|scanner_update_consent_required)$/u;
+
+/** A consent message as its reader needs it: a person, or the agent running the command. */
+export function approvalMessage(message: ReadinessMessage, agent: boolean): ReadinessMessage {
+  return agent ? { ...message, nextStep: AGENT_APPROVAL_STEP } : message;
+}
 
 // An earlier install run stopped part-way and holds the install journal, so
 // nothing that needs it can proceed until install finishes or removes it.
@@ -269,6 +302,11 @@ const readinessMessages: Array<[RegExp, ReadinessMessage]> = [
   ],
 ];
 
+/** The table's words for a reason, or undefined when the table has none. */
+export function knownReason(reason: string): ReadinessMessage | undefined {
+  return readinessMessages.find(([pattern]) => pattern.test(reason))?.[1];
+}
+
 /** A condition's own action, said as a step rather than as a command on its own. */
 const stepFrom = (action: string | undefined): string =>
   !action ? '' : /^[A-Z].*[.!?]$/u.test(action) ? action : `Run ${action}.`;
@@ -291,7 +329,7 @@ export function messageFor(
   actions: readonly string[] = [],
   action?: string
 ): ReadinessMessage {
-  const matched = readinessMessages.find(([pattern]) => pattern.test(reason))?.[1];
+  const matched = knownReason(reason);
   if (matched) return matched;
   // Older summaries carry reasons and actions apart; one action belongs to one reason.
   return writtenForPeople(reason)

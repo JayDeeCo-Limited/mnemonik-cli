@@ -9,6 +9,11 @@ export interface DeviceOptions {
     clientId: string;
     deviceName: string;
     print: (line: string) => void;
+    /**
+     * Receives each approval link instead of `print`, the moment it exists, with
+     * when it expires; a caller that relays the link (an agent's run) says it itself.
+     */
+    onLink?: (url: string, expiresAt: number) => void;
     openBrowser?: (url: string) => Promise<void>;
     fetch?: typeof fetch;
     sleep?: (milliseconds: number) => Promise<void>;

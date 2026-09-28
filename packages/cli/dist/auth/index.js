@@ -73,6 +73,7 @@ export function createCliAuth(options = {}) {
             deviceName: options.deviceName ??
                 (await machineName(options.platform ?? process.platform, options.computerName)),
             print,
+            ...(options.onApprovalLink ? { onLink: options.onApprovalLink } : {}),
             openBrowser,
             fetch: fetchImpl,
             sleep: options.sleep,

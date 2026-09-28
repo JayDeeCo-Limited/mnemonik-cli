@@ -4,17 +4,44 @@ export const CODEX_TRUST_MESSAGE = {
     sentence: 'Codex is not running the Mnemonik hooks until you trust them.',
     nextStep: 'Run codex, then approve the Mnemonik hooks when it asks.',
 };
+/**
+ * What an agent runs with `--json` or no terminal to redo the scanner setup
+ * over the folders already approved. Machine surfaces only: a person is
+ * never shown flags.
+ */
+export const SCANNER_ENABLE_ACTION = 'mnemonik scanner enable --accept-indexing --apply';
+/**
+ * An updated notice waits for the person's approval (only the approval
+ * is theirs). The agent runs this for them: it starts the browser approval over
+ * the folders already approved, and completes the update once approved.
+ */
+export const SCANNER_APPROVAL_ACTION = 'mnemonik update';
+/** What an agent needs to know to run SCANNER_APPROVAL_ACTION for the person. */
+export const SCANNER_APPROVAL_NOTE = 'Prints a link for the person to approve the updated notice in their browser at once ' +
+    '(with --json, a first line {"status":"awaiting_approval","approvalUrl":...}) and finishes ' +
+    'when they approve; each link lasts up to 10 minutes. Give the person the link; run the ' +
+    'command in the background if your shell stops commands sooner.';
+/** The step a person reads: nothing to run, only an approval their agent brings them. */
+const PERSON_APPROVAL_STEP = 'Your coding agent will ask you to approve it.';
+/** The same step as the agent running the command reads it (no terminal). */
+export const AGENT_APPROVAL_STEP = 'Run mnemonik update and give the person the approval link it prints; it finishes when they approve.';
 // The scanner stopped because its saved consent names an older notice (or
-// folders nobody approved). Resume cannot help; enable asks once in the browser.
+// folders nobody approved). Resume cannot help; the update asks in the browser.
 export const SCANNER_CONSENT_MESSAGE = {
     sentence: 'Background indexing is paused until you approve an updated notice.',
-    nextStep: 'Run mnemonik scanner enable.',
+    nextStep: PERSON_APPROVAL_STEP,
 };
 // A newer scanner waits for the same approval while the current one keeps indexing.
 export const SCANNER_UPDATE_CONSENT_MESSAGE = {
     sentence: 'A scanner update is waiting until you approve an updated notice.',
-    nextStep: 'Run mnemonik scanner enable.',
+    nextStep: PERSON_APPROVAL_STEP,
 };
+/** The consent reasons whose step is an approval the agent brings to the person. */
+export const APPROVAL_REASONS = /^(?:scanner_consent_required|scanner_update_consent_required)$/u;
+/** A consent message as its reader needs it: a person, or the agent running the command. */
+export function approvalMessage(message, agent) {
+    return agent ? { ...message, nextStep: AGENT_APPROVAL_STEP } : message;
+}
 // An earlier install run stopped part-way and holds the install journal, so
 // nothing that needs it can proceed until install finishes or removes it.
 export const INTERRUPTED_INSTALL = /^(?:resolve_interrupted_install_first|Resolve interrupted install first)$/u;
@@ -261,6 +288,10 @@ const readinessMessages = [
         },
     ],
 ];
+/** The table's words for a reason, or undefined when the table has none. */
+export function knownReason(reason) {
+    return readinessMessages.find(([pattern]) => pattern.test(reason))?.[1];
+}
 /** A condition's own action, said as a step rather than as a command on its own. */
 const stepFrom = (action) => !action ? '' : /^[A-Z].*[.!?]$/u.test(action) ? action : `Run ${action}.`;
 /** A code with no words still stopped something, so the failure is said plainly. */
@@ -275,7 +306,7 @@ const writtenForPeople = (reason) => /\s/u.test(reason) && /\.$/u.test(reason);
  * sentence and its own step, so nothing reaches a person as a reason code.
  */
 export function messageFor(reason, actions = [], action) {
-    const matched = readinessMessages.find(([pattern]) => pattern.test(reason))?.[1];
+    const matched = knownReason(reason);
     if (matched)
         return matched;
     // Older summaries carry reasons and actions apart; one action belongs to one reason.

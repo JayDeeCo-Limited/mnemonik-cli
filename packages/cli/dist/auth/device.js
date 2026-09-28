@@ -66,7 +66,10 @@ export async function runDeviceFlow(options) {
             !validVerificationUris(issuer, issued.user_code, issued.verification_uri, issued.verification_uri_complete))
             throw new OAuthProtocolError('invalid_device_response');
         const completeUri = issued.verification_uri_complete;
-        options.print(completeUri);
+        if (options.onLink)
+            options.onLink(completeUri, now() + issued.expires_in * 1000);
+        else
+            options.print(completeUri);
         options.print(DEVICE_WARNING);
         void Promise.resolve()
             .then(() => options.openBrowser?.(completeUri))

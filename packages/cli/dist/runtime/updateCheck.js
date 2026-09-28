@@ -1,6 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { atomicWrite } from '@mnemonik/local-setup';
+import { UPDATE_CHECK_RESULTS } from '@mnemonik/shared';
 /**
  * The last full `mnemonik update` on this machine, automatic or by hand. The
  * readiness report carries it, so the console can say when an automatic update
@@ -22,7 +23,7 @@ export async function readUpdateCheck(stateDir) {
         const { checkedAt, result } = (value ?? {});
         if (typeof checkedAt !== 'string' ||
             !Number.isFinite(Date.parse(checkedAt)) ||
-            !['updated', 'current', 'failed'].includes(String(result)))
+            !UPDATE_CHECK_RESULTS.includes(String(result)))
             return undefined;
         return { checkedAt, result: result };
     }

@@ -12,6 +12,11 @@ export interface DeviceOptions {
   clientId: string;
   deviceName: string;
   print: (line: string) => void;
+  /**
+   * Receives each approval link instead of `print`, the moment it exists, with
+   * when it expires; a caller that relays the link (an agent's run) says it itself.
+   */
+  onLink?: (url: string, expiresAt: number) => void;
   openBrowser?: (url: string) => Promise<void>;
   fetch?: typeof fetch;
   sleep?: (milliseconds: number) => Promise<void>;
@@ -110,7 +115,8 @@ export async function runDeviceFlow(options: DeviceOptions): Promise<DeviceResul
       throw new OAuthProtocolError('invalid_device_response');
 
     const completeUri = issued.verification_uri_complete;
-    options.print(completeUri);
+    if (options.onLink) options.onLink(completeUri, now() + issued.expires_in * 1000);
+    else options.print(completeUri);
     options.print(DEVICE_WARNING);
     void Promise.resolve()
       .then(() => options.openBrowser?.(completeUri))

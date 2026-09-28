@@ -8,6 +8,7 @@ import { detectEditors, nodeVersionHelp, runPreflight } from '../preflight.js';
 import { createRealProjectRuntime, folderRefusalMessage, projectLimitMessage, repositoryFingerprint, } from '../project.js';
 import { classifyRepository } from '../scanner/discover.js';
 import { prepareScanner, restoreScannerInstall } from '../scanner/enable.js';
+import { folderList } from '../scanner/picker.js';
 import { ScannerServiceLimited } from '../scanner/service.js';
 import { collectStatusDocument } from '../status.js';
 import { devReadiness } from '../runtime/releaseSource.js';
@@ -222,9 +223,7 @@ export async function joinedInstall(flags, deps, output, authorize, management) 
             mode: 0o600,
         });
     };
-    let roots = String(flags.get('scan-roots') ?? previous?.data.roots.join(',') ?? '')
-        .split(',')
-        .filter(Boolean);
+    let roots = folderList(String(flags.get('scan-roots') ?? previous?.data.roots.join(',') ?? ''), home);
     output.setContext({ home, projectRoot: root });
     if (!names.length && !indexingOnly)
         names = preflight.hosts
@@ -847,9 +846,7 @@ export async function joinedInstall(flags, deps, output, authorize, management) 
                             if (!automatic)
                                 startProgress(APPROVAL_WAITING);
                         },
-                        exclusions: String(flags.get('exclusions') ?? '')
-                            .split(',')
-                            .filter(Boolean),
+                        exclusions: folderList(String(flags.get('exclusions') ?? ''), home),
                         ...deps.scannerService,
                         ...deps.scannerEnable,
                         projectExecutor: executor,

@@ -1,9 +1,17 @@
 export const READINESS_SCHEMA_VERSION = 1;
+export const UPDATE_CHECK_RESULTS = ['updated', 'current', 'consent_pending', 'failed'];
+/**
+ * `update_pending` alone leaves a machine READY: what runs works, and a newer
+ * version waits on a step the condition names (a scanner update held for the
+ * person's approval of an updated notice).
+ */
 const stateFor = {
     selected_component_failed: 'FAILED',
     host_trust_pending: 'ACTION_REQUIRED',
     vendor_policy_pending: 'ACTION_REQUIRED',
     login_pending: 'ACTION_REQUIRED',
+    consent_pending: 'ACTION_REQUIRED',
+    update_pending: 'READY',
     restart_pending: 'ACTION_REQUIRED',
     project_identity_choice_pending: 'ACTION_REQUIRED',
     scanner_not_verified: 'LIMITED',
@@ -117,7 +125,7 @@ const validUpdateCheck = (value) => record(value) &&
     exact(value, ['checkedAt', 'result']) &&
     typeof value.checkedAt === 'string' &&
     Number.isFinite(Date.parse(value.checkedAt)) &&
-    ['updated', 'current', 'failed'].includes(String(value.result));
+    UPDATE_CHECK_RESULTS.includes(String(value.result));
 const validVersions = (value) => record(value) &&
     Object.keys(value).every((key) => ['cli', 'scanner', 'hosts', 'update'].includes(key)) &&
     (value.update === undefined || validUpdateCheck(value.update)) &&

@@ -7,6 +7,7 @@ import { atomicWrite, withLock } from '@mnemonik/local-setup';
 import { type ComponentCredentialResponse } from '@mnemonik/credentials';
 import {
   apiOrigin,
+  disclosureCovers,
   serializeReadiness,
   type SupervisorStatus,
   type ServiceDefinition,
@@ -121,6 +122,8 @@ export interface EnableOptions extends ScannerServiceOptions {
   approvalAnnounced?: boolean;
   /** Called as the browser approval starts, so the caller can show it is waiting. */
   awaitingApproval?: () => void;
+  /** Receives the browser approval link as it is issued, instead of it being printed. */
+  onApprovalLink?: (url: string, expiresAt: number) => void;
   fetch?: typeof fetch;
   source?: () => Promise<RuntimeSource>;
   store?: RuntimeStore;
@@ -229,6 +232,7 @@ export async function prepareScanner<T>(
           deviceInstallationId: installation,
           print: (line) =>
             options.nonInteractive ? options.output.error(line) : options.output.line(line),
+          ...(options.onApprovalLink ? { onApprovalLink: options.onApprovalLink } : {}),
           fetch: options.fetch,
         });
         if (selection) await auth.signIn();
@@ -330,7 +334,7 @@ export async function prepareScanner<T>(
       // Approved means the account's accepted consent already covers every
       // folder asked for, at the current disclosure. Asking again adds nothing.
       const matches = () =>
-        remote.consent?.disclosureVersion === remote.disclosure.version &&
+        disclosureCovers(remote.consent?.disclosureVersion, remote.disclosure.version) &&
         (picked.candidates
           ? !!remote.consent?.roots.length &&
             remote.consent.roots.every((root) =>
@@ -465,7 +469,7 @@ export async function prepareScanner<T>(
           const source = await (options.source ?? (() => releaseSource('scanner')))();
           if (
             source.manifest.disclosureVersion &&
-            source.manifest.disclosureVersion !== state.consent?.disclosureVersion
+            !disclosureCovers(state.consent?.disclosureVersion, source.manifest.disclosureVersion)
           )
             throw new Error('release_consent_required');
           if (process.env.MNEMONIK_DEV_RELEASE_DIR)

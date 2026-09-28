@@ -62,6 +62,8 @@ export interface EnableOptions extends ScannerServiceOptions {
     approvalAnnounced?: boolean;
     /** Called as the browser approval starts, so the caller can show it is waiting. */
     awaitingApproval?: () => void;
+    /** Receives the browser approval link as it is issued, instead of it being printed. */
+    onApprovalLink?: (url: string, expiresAt: number) => void;
     fetch?: typeof fetch;
     source?: () => Promise<RuntimeSource>;
     store?: RuntimeStore;

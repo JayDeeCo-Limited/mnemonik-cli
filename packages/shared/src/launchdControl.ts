@@ -131,7 +131,9 @@ export async function removeMacScanner(
     );
     return;
   }
-  if (present || launcherPresent) await run('sudo', ['-n', '/bin/rm', '-f', plist, launcher]);
+  // The launcher's protocol record goes with it (packages/scanner launchd.ts).
+  if (present || launcherPresent)
+    await run('sudo', ['-n', '/bin/rm', '-f', plist, launcher, `${launcher}.protocol`]);
   for (const label of ['ai.mnemonik.scanner', 'ai.mnemonik.scanner.replacement'])
     await rm(join(home, 'Library/LaunchAgents', `${label}.plist`), { force: true });
   await rm(join(state, 'scanner/assets'), { recursive: true, force: true });

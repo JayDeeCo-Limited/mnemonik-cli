@@ -417,6 +417,37 @@ describe('device fallback', () => {
     expect(lines).toEqual([]);
   });
 
+  it('hands each approval link to a caller that relays it, the moment it is issued', async () => {
+    let now = 1000;
+    const lines: string[] = [];
+    const links: Array<[string, number]> = [];
+    await runDeviceFlow({
+      scannerRoots,
+      issuer,
+      resource,
+      scopes: CLI_SCOPES,
+      clientId,
+      deviceName: 'box',
+      print: (line) => lines.push(line),
+      onLink: (url, expiresAt) => {
+        // Before the first poll: the person can approve while the command waits.
+        expect(now).toBe(1000);
+        links.push([url, expiresAt]);
+      },
+      fetch: vi
+        .fn()
+        .mockResolvedValueOnce(new Response(JSON.stringify(issued), { status: 200 }))
+        .mockResolvedValueOnce(token()),
+      now: () => now,
+      sleep: async (ms) => {
+        now += ms;
+      },
+    });
+    expect(links).toEqual([[issued.verification_uri_complete, 1000 + issued.expires_in * 1000]]);
+    expect(lines).not.toContain(issued.verification_uri_complete);
+    expect(lines).toContain(DEVICE_WARNING);
+  });
+
   it('backs off transport timeouts', async () => {
     let now = 0;
     const sleeps: number[] = [];

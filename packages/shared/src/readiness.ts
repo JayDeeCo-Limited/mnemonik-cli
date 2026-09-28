@@ -7,6 +7,8 @@ export type ReadinessConditionKind =
   | 'host_trust_pending'
   | 'vendor_policy_pending'
   | 'login_pending'
+  | 'consent_pending'
+  | 'update_pending'
   | 'restart_pending'
   | 'project_identity_choice_pending'
   | 'scanner_not_verified'
@@ -25,6 +27,11 @@ export interface ReadinessCondition {
   component?: string;
   reason: string;
   action?: string;
+  /**
+   * For an agent: `action` finishes only once the person approves in the
+   * browser, and how it hands the agent the link to give them.
+   */
+  approval?: string;
 }
 
 export interface ReadinessSummary {
@@ -127,11 +134,16 @@ export interface LimitedModeStatus {
   enableScannerAction: string;
 }
 
-/** The last `mnemonik update` on the machine, automatic or by hand. */
+/**
+ * The last `mnemonik update` on the machine, automatic or by hand.
+ * `consent_pending`: a scanner update is held until the person approves its
+ * updated notice; the running scanner keeps indexing.
+ */
 export interface ReadinessUpdateCheck {
   checkedAt: string;
-  result: 'updated' | 'current' | 'failed';
+  result: (typeof UPDATE_CHECK_RESULTS)[number];
 }
+export const UPDATE_CHECK_RESULTS = ['updated', 'current', 'consent_pending', 'failed'] as const;
 
 /** Optional receipt metadata; older schema-1 installers omit these observations. */
 export interface ReadinessVersions {
@@ -174,11 +186,18 @@ export interface ReadinessDocument {
   generatedAt: string;
 }
 
-const stateFor: Record<ReadinessConditionKind, Exclude<ReadinessState, 'READY'>> = {
+/**
+ * `update_pending` alone leaves a machine READY: what runs works, and a newer
+ * version waits on a step the condition names (a scanner update held for the
+ * person's approval of an updated notice).
+ */
+const stateFor: Record<ReadinessConditionKind, ReadinessState> = {
   selected_component_failed: 'FAILED',
   host_trust_pending: 'ACTION_REQUIRED',
   vendor_policy_pending: 'ACTION_REQUIRED',
   login_pending: 'ACTION_REQUIRED',
+  consent_pending: 'ACTION_REQUIRED',
+  update_pending: 'READY',
   restart_pending: 'ACTION_REQUIRED',
   project_identity_choice_pending: 'ACTION_REQUIRED',
   scanner_not_verified: 'LIMITED',
@@ -306,7 +325,7 @@ const validUpdateCheck = (value: unknown): boolean =>
   exact(value, ['checkedAt', 'result']) &&
   typeof value.checkedAt === 'string' &&
   Number.isFinite(Date.parse(value.checkedAt)) &&
-  ['updated', 'current', 'failed'].includes(String(value.result));
+  (UPDATE_CHECK_RESULTS as readonly string[]).includes(String(value.result));
 const validVersions = (value: unknown): boolean =>
   record(value) &&
   Object.keys(value).every((key) => ['cli', 'scanner', 'hosts', 'update'].includes(key)) &&

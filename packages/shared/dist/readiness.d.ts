@@ -1,11 +1,16 @@
 export declare const READINESS_SCHEMA_VERSION: 1;
 export type ReadinessState = 'READY' | 'LIMITED' | 'ACTION_REQUIRED' | 'FAILED';
-export type ReadinessConditionKind = 'selected_component_failed' | 'host_trust_pending' | 'vendor_policy_pending' | 'login_pending' | 'restart_pending' | 'project_identity_choice_pending' | 'scanner_not_verified' | 'hook_not_verified' | 'hooks_missing' | 'scanner_omitted' | 'project_uncovered' | 'host_skipped' | 'windows_task_creation_failed' | 'post_commit_upload_failed' | 'indexing_failed' | 'indexing_stalled';
+export type ReadinessConditionKind = 'selected_component_failed' | 'host_trust_pending' | 'vendor_policy_pending' | 'login_pending' | 'consent_pending' | 'update_pending' | 'restart_pending' | 'project_identity_choice_pending' | 'scanner_not_verified' | 'hook_not_verified' | 'hooks_missing' | 'scanner_omitted' | 'project_uncovered' | 'host_skipped' | 'windows_task_creation_failed' | 'post_commit_upload_failed' | 'indexing_failed' | 'indexing_stalled';
 export interface ReadinessCondition {
     kind: ReadinessConditionKind;
     component?: string;
     reason: string;
     action?: string;
+    /**
+     * For an agent: `action` finishes only once the person approves in the
+     * browser, and how it hands the agent the link to give them.
+     */
+    approval?: string;
 }
 export interface ReadinessSummary {
     state: ReadinessState;
@@ -95,11 +100,16 @@ export interface LimitedModeStatus {
     acknowledgement: string | null;
     enableScannerAction: string;
 }
-/** The last `mnemonik update` on the machine, automatic or by hand. */
+/**
+ * The last `mnemonik update` on the machine, automatic or by hand.
+ * `consent_pending`: a scanner update is held until the person approves its
+ * updated notice; the running scanner keeps indexing.
+ */
 export interface ReadinessUpdateCheck {
     checkedAt: string;
-    result: 'updated' | 'current' | 'failed';
+    result: (typeof UPDATE_CHECK_RESULTS)[number];
 }
+export declare const UPDATE_CHECK_RESULTS: readonly ['updated', 'current', 'consent_pending', 'failed'];
 /** Optional receipt metadata; older schema-1 installers omit these observations. */
 export interface ReadinessVersions {
     cli?: string;

@@ -1,4 +1,10 @@
-import { messageFor as humanMessageFor } from './humanReason.js';
+import {
+  APPROVAL_REASONS,
+  approvalMessage,
+  messageFor as humanMessageFor,
+  SCANNER_APPROVAL_ACTION,
+  SCANNER_APPROVAL_NOTE,
+} from './humanReason.js';
 export { CODEX_TRUST_MESSAGE } from './humanReason.js';
 import { cliCredentialStatus } from './auth/credentials.js';
 import type { CodingToolSignInState } from './auth/status.js';
@@ -19,6 +25,7 @@ import {
 import { stateDirectory } from '@mnemonik/local-setup';
 import {
   CODING_TOOL_SIGN_IN,
+  disclosureCovers,
   scannerAttemptHealthy,
   SCANNER_HANDOFF_BUDGET_MS,
   SCANNER_RECEIPT_STALE_MS,
@@ -428,15 +435,32 @@ function renderAttention(
   summary: ReadinessSummary,
   output: Pick<Output, 'line'>,
   rendered: Set<string>,
-  conditions: readonly ReadinessCondition[] = []
+  conditions: readonly ReadinessCondition[] = [],
+  agent = false
 ): void {
+  const lines = attentionLines(summary, rendered, conditions, agent);
+  // A heading with nothing under it tells a person nothing, so it is not printed.
+  if (!lines.length) return;
+  output.line(`${label}: Needs attention.`);
+  for (const line of lines) output.line(line);
+}
+
+/** One sentence and its step per reason, each said once across the whole report. */
+function attentionLines(
+  summary: ReadinessSummary,
+  rendered: Set<string>,
+  conditions: readonly ReadinessCondition[] = [],
+  agent = false
+): string[] {
   const lines: string[] = [];
   for (const reason of summary.reasons) {
-    const message = messageFor(
+    const said = messageFor(
       reason,
       summary.actions,
       conditions.find((c) => c.reason === reason)?.action
     );
+    // An approval step reads as a command only for the agent running this.
+    const message = APPROVAL_REASONS.test(reason) ? approvalMessage(said, agent) : said;
     const key = `${message.sentence}\n${message.nextStep}`;
     if (!message.sentence || rendered.has(key)) continue;
     rendered.add(key);
@@ -444,10 +468,7 @@ function renderAttention(
     // Some states leave nothing for the person to do, and say so on one line.
     if (message.nextStep) lines.push(message.nextStep);
   }
-  // A heading with nothing under it tells a person nothing, so it is not printed.
-  if (!lines.length) return;
-  output.line(`${label}: Needs attention.`);
-  for (const line of lines) output.line(line);
+  return lines;
 }
 
 /**
@@ -467,7 +488,8 @@ export function renderStatusSummaries(
     conditions?: readonly ReadinessCondition[];
   },
   output: Pick<Output, 'line'>,
-  options: { diagnostics?: boolean } = {}
+  /** agent: no person at a terminal; an approval step names what the agent runs. */
+  options: { diagnostics?: boolean; agent?: boolean } = {}
 ): void {
   if (options.diagnostics && document.cliCredential)
     output.line(
@@ -496,9 +518,25 @@ export function renderStatusSummaries(
     );
   }
   const rendered = new Set<string>();
-  if (document.installation.state === 'READY') output.line('Mnemonik is installed and working.');
-  else
-    renderAttention('Installation', document.installation, output, rendered, document.conditions);
+  if (document.installation.state === 'READY') {
+    output.line('Mnemonik is installed and working.');
+    // What works still names a step that is waiting, such as a held scanner update.
+    for (const line of attentionLines(
+      document.installation,
+      rendered,
+      document.conditions,
+      options.agent
+    ))
+      output.line(line);
+  } else
+    renderAttention(
+      'Installation',
+      document.installation,
+      output,
+      rendered,
+      document.conditions,
+      options.agent
+    );
   // One folder per project, in the order a person would read them.
   const connected = [...new Set(document.scanner?.roots?.map((root) => basename(root)) ?? [])].sort(
     (left, right) => left.toLocaleLowerCase().localeCompare(right.toLocaleLowerCase())
@@ -700,10 +738,11 @@ export async function collectStatusDocument(input: CollectStatusInput): Promise<
     // Paused because its consent names an older notice: resume cannot help.
     else if (pausedForConsent(receipt))
       scannerReason = {
-        kind: 'login_pending',
+        kind: 'consent_pending',
         component: 'scanner',
         reason: 'scanner_consent_required',
-        action: 'mnemonik scanner enable',
+        action: SCANNER_APPROVAL_ACTION,
+        approval: SCANNER_APPROVAL_NOTE,
       };
     else if (snapshot?.lifecycle.state === 'paused')
       scannerReason = {
@@ -716,12 +755,15 @@ export async function collectStatusDocument(input: CollectStatusInput): Promise<
       const expected = await (
         input.expectedDisclosureVersion ?? expectedScannerDisclosureVersion
       )().catch(() => undefined);
-      if (expected && state.consent.disclosureVersion !== expected)
+      // The running scanner keeps indexing, so the machine stays READY with the
+      // step named, as the console shows it.
+      if (expected && !disclosureCovers(state.consent.disclosureVersion, expected))
         scannerReason = {
-          kind: 'login_pending',
+          kind: 'update_pending',
           component: 'scanner',
           reason: 'scanner_update_consent_required',
-          action: 'mnemonik scanner enable',
+          action: SCANNER_APPROVAL_ACTION,
+          approval: SCANNER_APPROVAL_NOTE,
         };
     }
     if (

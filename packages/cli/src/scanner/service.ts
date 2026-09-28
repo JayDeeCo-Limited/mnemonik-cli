@@ -10,6 +10,7 @@ import {
   SCANNER_REMOVAL_BUDGET_MS,
   SCANNER_STARTUP_BUDGET_MS,
   SCANNER_STOP_BUDGET_MS,
+  SCANNER_SERVICE_RUNNING_BUDGET_MS,
   WINDOWS_SERVICE_BUDGET_MS,
 } from '@mnemonik/shared';
 import { withLock } from '@mnemonik/local-setup';
@@ -391,7 +392,7 @@ export function scannerService(options: ScannerServiceOptions) {
       }
       state = await invoke('status');
       if (!state.running) await invoke('start');
-      await waitFor('service', WINDOWS_SERVICE_BUDGET_MS, async () => {
+      await waitFor('service', SCANNER_SERVICE_RUNNING_BUDGET_MS, async () => {
         state = await invoke('status');
         return state.running;
       });

@@ -285,6 +285,10 @@ Example
 and background indexing if it is installed. Restarts background indexing
 when its software changes. Safe to run while a coding tool is open.
 
+If background indexing needs you to approve an updated notice, update opens
+the approval in your browser (or prints its link) and finishes once you
+approve.
+
 Usage: mnemonik update [options]
 
 Options
@@ -482,8 +486,9 @@ Options
                               more.
   --skip                      If indexing does not start in time, stop waiting.
 
-With --non-interactive or --json, all three of --scan-roots,
---accept-indexing and --apply are required.
+With --non-interactive or --json, --accept-indexing and --apply are
+required. Without --scan-roots, --apply keeps the folders you already
+approved.
 
 Example
   mnemonik scanner enable --scan-roots ~/projects --accept-indexing --apply

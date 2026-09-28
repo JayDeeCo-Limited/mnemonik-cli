@@ -18,6 +18,7 @@ import * as hosts from '../src/install/hosts.js';
 import * as scanner from '../src/scanner/update.js';
 import * as scannerEnable from '../src/scanner/enable.js';
 import { ScannerServiceLimited } from '../src/scanner/service.js';
+import { OAuthProtocolError } from '../src/auth/pkce.js';
 import { SCANNER_FAILURE_MESSAGE, SCANNER_RETRY_MESSAGE } from '../src/screens/journey.js';
 
 const releaseKeyFixture = vi.hoisted(() => ({
@@ -1087,45 +1088,189 @@ describe('a scanner release that names an updated notice', () => {
     expect(f.operations).not.toEqual(expect.arrayContaining(['stop']));
     await expect(readFile(join(state, 'scanner/control.json'))).rejects.toThrow();
     expect(await readFile(join(state, 'scanner/state.json'), 'utf8')).toBe(saved(f.root));
+    // Held, not current: the console and status say a scanner update is waiting.
     const check = JSON.parse(await readFile(join(state, 'update-check.json'), 'utf8'));
-    expect(check.result).not.toBe('failed');
+    expect(check.result).toBe('consent_pending');
   });
+
+  it('a release naming 2026.09.1 installs over an acceptance of the withdrawn 2026.09.2 wording', async () => {
+    const f = await setup();
+    const statePath = join(state, 'scanner/state.json');
+    const withdrawn = JSON.parse(await readFile(statePath, 'utf8'));
+    withdrawn.consent.disclosureVersion = '2026.09.2';
+    await writeFile(statePath, JSON.stringify(withdrawn));
+    f.deps.scannerEnable.source = async () => ({
+      manifest: {
+        artifact: 'scanner',
+        version: '2.0.0',
+        disclosureVersion: '2026.09.1',
+      } as RuntimeSource['manifest'],
+      files: {},
+    });
+    const installed = vi.spyOn(runtimes, 'updateRuntime').mockImplementation(async (options) => {
+      const candidate = await options.source();
+      return {
+        reference: { version: candidate.manifest.version, manifestSha256: 'new' },
+        manifest: candidate.manifest,
+      } as Awaited<ReturnType<typeof runtimes.updateRuntime>>;
+    });
+    expect(
+      await runCli(
+        ['update', '--component=scanner', '--json'],
+        f.deps as Parameters<typeof runCli>[1]
+      )
+    ).toBe(0);
+    expect(installed).toHaveBeenCalledOnce();
+    expect(JSON.parse(f.out.text)).toMatchObject({ status: 'updated', version: '2.0.0' });
+    expect(f.enable).not.toHaveBeenCalled();
+  });
+
+  const link = 'https://auth.mnemonik.ai/oauth/device?user_code=ABCD-EFGH';
+  /** The browser approval as enableScanner runs it: the link is issued, then the person answers. */
+  const approvalIssued =
+    (answer: () => Promise<ReturnType<typeof serializeReadiness>>) =>
+    async (options: Parameters<typeof scannerEnable.enableScanner>[0]) => {
+      options.onApprovalLink?.(link, Date.parse('2026-09-28T00:10:00.000Z'));
+      return answer();
+    };
 
   it.each([
     ['no terminal (a pipe, no flag)', false, []],
     ['--non-interactive at a terminal', true, ['--non-interactive']],
   ] as const)(
-    'an update with %s asks nothing and exits 3 within the run',
+    'an agent update (%s) starts the approval over the approved folders, hands over the link and completes',
     async (_case, terminal, flags) => {
       const f = await setup();
-      // A script or a pipe: stdin is not a TTY.
+      // A script, a pipe or an agent's shell: stdin is not a TTY.
       const input = terminal
         ? f.deps.input
         : Object.assign(Readable.from([]), { isTTY: false as const });
-      const deviceFlow = vi.fn();
-      const started = Date.now();
+      f.enable.mockImplementation(
+        approvalIssued(async () => serializeReadiness({ installation: { conditions: [] } }))
+      );
       const code = await runCli(['update', ...flags], {
         ...f.deps,
         input,
-        cliAuth: {
-          signIn: deviceFlow,
-          getCliBearer: async () => ({ status: 'ACTION_REQUIRED', reason: 'not_signed_in' }),
-          logout: async () => undefined,
-        },
       } as Parameters<typeof runCli>[1]);
-      expect(code).toBe(3);
-      expect(Date.now() - started).toBeLessThan(30_000);
-      // Neither the browser approval nor a device sign-in was started.
-      expect(f.enable).not.toHaveBeenCalled();
-      expect(deviceFlow).not.toHaveBeenCalled();
-      expect(f.out.text).toBe(
-        'Mnemonik updated.\n' +
-          'A scanner update is waiting until you approve an updated notice.\n' +
-          'Run mnemonik scanner enable.\n'
+      expect(code).toBe(0);
+      expect(f.enable).toHaveBeenCalledOnce();
+      expect(f.enable).toHaveBeenCalledWith(
+        expect.objectContaining({
+          roots: [f.root],
+          exclusions: [],
+          nonInteractive: true,
+          onApprovalLink: expect.any(Function),
+        })
       );
-      expect(await readFile(join(state, 'scanner/state.json'), 'utf8')).toBe(saved(f.root));
+      expect(f.out.text).toBe(
+        // The link stands on its own line, as every approval link does.
+        'Give the person this link to approve the updated notice:\n\n' +
+          `${link}\n\n` +
+          'Mnemonik updated.\n'
+      );
+      expect(JSON.parse(await readFile(join(state, 'update-check.json'), 'utf8')).result).toBe(
+        'updated'
+      );
     }
   );
+
+  it('an agent update whose approval expires exits 3 and says what the agent does next', async () => {
+    const f = await setup();
+    f.enable.mockImplementation(
+      approvalIssued(async () => {
+        throw new OAuthProtocolError('expired_token', 'expired');
+      })
+    );
+    const code = await runCli(
+      ['update', '--non-interactive'],
+      f.deps as Parameters<typeof runCli>[1]
+    );
+    expect(code).toBe(3);
+    expect(f.out.text).toBe(
+      'Give the person this link to approve the updated notice:\n\n' +
+        `${link}\n\n` +
+        'Mnemonik updated.\n' +
+        'The approval request for the updated notice expired.\n' +
+        'Run mnemonik update again and give the person the new approval link.\n'
+    );
+    expect(JSON.parse(await readFile(join(state, 'update-check.json'), 'utf8')).result).toBe(
+      'consent_pending'
+    );
+    // The running scanner and its saved approval are left as they were.
+    expect(await readFile(join(state, 'scanner/state.json'), 'utf8')).toBe(saved(f.root));
+  });
+
+  it('with --json the link arrives as its own line first, then the result', async () => {
+    const f = await setup();
+    f.enable.mockImplementation(
+      approvalIssued(async () => serializeReadiness({ installation: { conditions: [] } }))
+    );
+    expect(
+      await runCli(
+        ['update', '--component=scanner', '--json'],
+        f.deps as Parameters<typeof runCli>[1]
+      )
+    ).toBe(0);
+    const lines = f.out.text
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line));
+    expect(lines).toEqual([
+      {
+        status: 'awaiting_approval',
+        reason: 'scanner_update_consent_required',
+        approvalUrl: link,
+        expiresAt: '2026-09-28T00:10:00.000Z',
+      },
+      { status: 'updated' },
+    ]);
+  });
+
+  it('with --json an expired approval exits 3 with its reason and the command to run again', async () => {
+    const f = await setup();
+    f.enable.mockRejectedValue(new OAuthProtocolError('expired_token', 'expired'));
+    expect(
+      await runCli(
+        ['update', '--component=scanner', '--json'],
+        f.deps as Parameters<typeof runCli>[1]
+      )
+    ).toBe(3);
+    expect(JSON.parse(f.out.text)).toEqual({
+      status: 'ACTION_REQUIRED',
+      reason: 'scanner_approval_expired',
+      action: 'mnemonik update',
+      approval: expect.stringContaining('approvalUrl'),
+    });
+  });
+
+  it('an update finds a scanner paused for an updated notice and asks for the approval', async () => {
+    const f = await setup();
+    // No newer release: the running scanner paused itself for the notice.
+    f.deps.scannerEnable.source = async () => ({
+      manifest: {
+        artifact: 'scanner',
+        version: '1.0.0',
+        disclosureVersion: '2026.09.1',
+      } as RuntimeSource['manifest'],
+      files: {},
+    });
+    await writeFile(
+      join(state, 'scanner/status.json'),
+      JSON.stringify({
+        recordedAt: Date.now(),
+        snapshot: {
+          version: '1.0.0',
+          lifecycle: { state: 'paused', reason: 'consent_required', pid: null, pauseIntervals: [] },
+          heartbeat: { lastSuccess: null },
+          roots: [],
+          exclusions: [],
+        },
+      })
+    );
+    expect(await runCli(['update'], f.deps as Parameters<typeof runCli>[1])).toBe(0);
+    expect(f.enable).toHaveBeenCalledWith(expect.objectContaining({ roots: [f.root] }));
+    expect(f.out.text).toContain('Mnemonik updated.\n');
+  });
 
   /** What a scanner approval killed while it waited on the browser leaves behind. */
   async function interruptedApproval(root: string, status: 'planned' | 'staged') {
@@ -1185,6 +1330,7 @@ describe('a scanner release that names an updated notice', () => {
 
   it('the CLI updated, an abandoned approval is closed, and only the scanner waits: no failure line', async () => {
     const f = await setup();
+    f.enable.mockRejectedValue(new OAuthProtocolError('expired_token', 'expired'));
     const journal = await interruptedApproval(f.root, 'planned');
     const code = await runCli(
       ['update', '--non-interactive'],
@@ -1193,18 +1339,19 @@ describe('a scanner release that names an updated notice', () => {
     expect(f.err.text).toBe('');
     expect(f.out.text).toBe(
       'Mnemonik updated.\n' +
-        'A scanner update is waiting until you approve an updated notice.\n' +
-        'Run mnemonik scanner enable.\n'
+        'The approval request for the updated notice expired.\n' +
+        'Run mnemonik update again and give the person the new approval link.\n'
     );
     expect(code).toBe(3);
     expect(JSON.parse(await readFile(journal, 'utf8'))).toMatchObject({ phase: 'complete' });
-    expect(JSON.parse(await readFile(join(state, 'update-check.json'), 'utf8')).result).not.toBe(
-      'failed'
+    expect(JSON.parse(await readFile(join(state, 'update-check.json'), 'utf8')).result).toBe(
+      'consent_pending'
     );
   });
 
   it('an earlier run that changed something names the coding tools and the step, never the generic line', async () => {
     const f = await setup();
+    f.enable.mockRejectedValue(new OAuthProtocolError('expired_token', 'expired'));
     const journal = await interruptedApproval(f.root, 'staged');
     const code = await runCli(
       ['update', '--non-interactive'],
@@ -1213,8 +1360,8 @@ describe('a scanner release that names an updated notice', () => {
     expect(code).toBe(3);
     expect(f.out.text).toBe(
       'The mnemonik command updated.\n' +
-        'A scanner update is waiting until you approve an updated notice.\n' +
-        'Run mnemonik scanner enable.\n'
+        'The approval request for the updated notice expired.\n' +
+        'Run mnemonik update again and give the person the new approval link.\n'
     );
     expect(f.err.text).toBe(
       'Your coding tools could not update.\n' +
@@ -1254,10 +1401,8 @@ describe('a scanner release that names an updated notice', () => {
     f.enable.mockRejectedValue(new Error('consent_declined'));
     expect(await runCli(['update'], f.deps as Parameters<typeof runCli>[1])).toBe(3);
     expect(f.enable).toHaveBeenCalledOnce();
-    expect(f.out.text).toContain(
-      'A scanner update is waiting until you approve an updated notice.\n' +
-        'Run mnemonik scanner enable.\n'
-    );
+    // The person said no in the browser: said plainly, with no command to run.
+    expect(f.out.text).toBe('Mnemonik updated.\nThe updated notice was not approved.\n');
     expect(await readFile(join(state, 'scanner/state.json'), 'utf8')).toBe(saved(f.root));
   });
 });

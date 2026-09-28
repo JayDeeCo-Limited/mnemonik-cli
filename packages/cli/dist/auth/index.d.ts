@@ -13,6 +13,8 @@ export interface CliAuthOptions {
     /** Reads the macOS Computer Name; replaced in tests. */
     computerName?: () => Promise<string>;
     print?: (line: string) => void;
+    /** Each approval link as it is issued, instead of printing it. */
+    onApprovalLink?: (url: string, expiresAt: number) => void;
     fetch?: typeof fetch;
     openBrowser?: (url: string) => Promise<void>;
     sleep?: (milliseconds: number) => Promise<void>;

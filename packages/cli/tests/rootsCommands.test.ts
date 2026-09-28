@@ -145,7 +145,7 @@ it.each(['add', 'remove'])(
 
     expect(f.stdout.text).toBe(
       'Background indexing is paused until you approve an updated notice.\n' +
-        'Run mnemonik scanner enable.\n'
+        'Your coding agent will ask you to approve it.\n'
     );
     expect(scanner.update).not.toHaveBeenCalled();
     expect(scanner.enable).not.toHaveBeenCalled();

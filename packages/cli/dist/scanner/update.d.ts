@@ -6,7 +6,9 @@ import { type ScannerServiceOptions } from './service.js';
  * approve the updated notice (the same browser approval install uses).
  */
 export declare class ScannerConsentRequired extends Error {
-    constructor();
+    readonly paused: boolean;
+    /** paused: the running scanner paused itself for the notice, rather than a newer release naming it. */
+    constructor(paused?: boolean);
 }
 export declare function updateScanner(options: ScannerServiceOptions, source?: () => Promise<RuntimeSource>): Promise<import("../runtime/store.js").Verified>;
 //# sourceMappingURL=update.d.ts.map

@@ -79,6 +79,7 @@ export * from './projectIdentityFile.js';
 export * from './repositoryRoot.js';
 export * from './protectedPaths.js';
 export * from './readiness.js';
+export { disclosureCovers } from './scannerDisclosure.js';
 
 export * from './hostAdapter.js';
 export * from './grantHost.js';
@@ -95,6 +96,7 @@ export { apiOrigin } from './apiOrigin.js';
 
 export {
   WINDOWS_SERVICE_BUDGET_MS,
+  SCANNER_SERVICE_RUNNING_BUDGET_MS,
   SCANNER_STARTUP_BUDGET_MS,
   SCANNER_RAPID_FAILURE_LIMIT,
   SCANNER_HANDOFF_BUDGET_MS,

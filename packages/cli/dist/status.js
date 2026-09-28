@@ -1,11 +1,11 @@
-import { messageFor as humanMessageFor } from './humanReason.js';
+import { APPROVAL_REASONS, approvalMessage, messageFor as humanMessageFor, SCANNER_APPROVAL_ACTION, SCANNER_APPROVAL_NOTE, } from './humanReason.js';
 export { CODEX_TRUST_MESSAGE } from './humanReason.js';
 import { cliCredentialStatus } from './auth/credentials.js';
 import { readOwnership } from './install/ownership.js';
 import { pausedForConsent, resumeAbandonedPause, scannerReceipt, } from './scanner/control.js';
 import { scannerService, ScannerServiceLimited, SCANNER_RESTART_MESSAGE, SCANNER_RESTART_ACTION, } from './scanner/service.js';
 import { stateDirectory } from '@mnemonik/local-setup';
-import { CODING_TOOL_SIGN_IN, scannerAttemptHealthy, SCANNER_HANDOFF_BUDGET_MS, SCANNER_RECEIPT_STALE_MS, } from '@mnemonik/shared';
+import { CODING_TOOL_SIGN_IN, disclosureCovers, scannerAttemptHealthy, SCANNER_HANDOFF_BUDGET_MS, SCANNER_RECEIPT_STALE_MS, } from '@mnemonik/shared';
 import { readFile, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -279,10 +279,22 @@ function messageFor(reason, actions, action) {
     }
     return humanMessageFor(reason, actions, action);
 }
-function renderAttention(label, summary, output, rendered, conditions = []) {
+function renderAttention(label, summary, output, rendered, conditions = [], agent = false) {
+    const lines = attentionLines(summary, rendered, conditions, agent);
+    // A heading with nothing under it tells a person nothing, so it is not printed.
+    if (!lines.length)
+        return;
+    output.line(`${label}: Needs attention.`);
+    for (const line of lines)
+        output.line(line);
+}
+/** One sentence and its step per reason, each said once across the whole report. */
+function attentionLines(summary, rendered, conditions = [], agent = false) {
     const lines = [];
     for (const reason of summary.reasons) {
-        const message = messageFor(reason, summary.actions, conditions.find((c) => c.reason === reason)?.action);
+        const said = messageFor(reason, summary.actions, conditions.find((c) => c.reason === reason)?.action);
+        // An approval step reads as a command only for the agent running this.
+        const message = APPROVAL_REASONS.test(reason) ? approvalMessage(said, agent) : said;
         const key = `${message.sentence}\n${message.nextStep}`;
         if (!message.sentence || rendered.has(key))
             continue;
@@ -292,12 +304,7 @@ function renderAttention(label, summary, output, rendered, conditions = []) {
         if (message.nextStep)
             lines.push(message.nextStep);
     }
-    // A heading with nothing under it tells a person nothing, so it is not printed.
-    if (!lines.length)
-        return;
-    output.line(`${label}: Needs attention.`);
-    for (const line of lines)
-        output.line(line);
+    return lines;
 }
 /**
  * `status` could not tell the console about this machine because this
@@ -308,7 +315,9 @@ export const REPORT_NOT_SENT = {
     sentence: 'The console has not heard from this machine because its sign-in no longer works.',
     nextStep: humanMessageFor('renew').nextStep,
 };
-export function renderStatusSummaries(document, output, options = {}) {
+export function renderStatusSummaries(document, output, 
+/** agent: no person at a terminal; an approval step names what the agent runs. */
+options = {}) {
     if (options.diagnostics && document.cliCredential)
         output.line(`CLI credential: store=${document.cliCredential.store ?? 'unknown'} present=${document.cliCredential.present}`);
     if (options.diagnostics && document.cliCredential?.detail)
@@ -327,10 +336,14 @@ export function renderStatusSummaries(document, output, options = {}) {
         output.line(`Launcher: ${state}; directory ${document.launcher.onPath ? 'on' : 'off'} current PATH.${action ? ` ${action}` : ''}`);
     }
     const rendered = new Set();
-    if (document.installation.state === 'READY')
+    if (document.installation.state === 'READY') {
         output.line('Mnemonik is installed and working.');
+        // What works still names a step that is waiting, such as a held scanner update.
+        for (const line of attentionLines(document.installation, rendered, document.conditions, options.agent))
+            output.line(line);
+    }
     else
-        renderAttention('Installation', document.installation, output, rendered, document.conditions);
+        renderAttention('Installation', document.installation, output, rendered, document.conditions, options.agent);
     // One folder per project, in the order a person would read them.
     const connected = [...new Set(document.scanner?.roots?.map((root) => basename(root)) ?? [])].sort((left, right) => left.toLocaleLowerCase().localeCompare(right.toLocaleLowerCase()));
     if (connected.length) {
@@ -469,10 +482,11 @@ export async function collectStatusDocument(input) {
         // Paused because its consent names an older notice: resume cannot help.
         else if (pausedForConsent(receipt))
             scannerReason = {
-                kind: 'login_pending',
+                kind: 'consent_pending',
                 component: 'scanner',
                 reason: 'scanner_consent_required',
-                action: 'mnemonik scanner enable',
+                action: SCANNER_APPROVAL_ACTION,
+                approval: SCANNER_APPROVAL_NOTE,
             };
         else if (snapshot?.lifecycle.state === 'paused')
             scannerReason = {
@@ -483,12 +497,15 @@ export async function collectStatusDocument(input) {
         else if (state?.consent && !scannerReason) {
             // A newer scanner waits for the same approval; the current one keeps indexing.
             const expected = await (input.expectedDisclosureVersion ?? expectedScannerDisclosureVersion)().catch(() => undefined);
-            if (expected && state.consent.disclosureVersion !== expected)
+            // The running scanner keeps indexing, so the machine stays READY with the
+            // step named, as the console shows it.
+            if (expected && !disclosureCovers(state.consent.disclosureVersion, expected))
                 scannerReason = {
-                    kind: 'login_pending',
+                    kind: 'update_pending',
                     component: 'scanner',
                     reason: 'scanner_update_consent_required',
-                    action: 'mnemonik scanner enable',
+                    action: SCANNER_APPROVAL_ACTION,
+                    approval: SCANNER_APPROVAL_NOTE,
                 };
         }
         if (state &&

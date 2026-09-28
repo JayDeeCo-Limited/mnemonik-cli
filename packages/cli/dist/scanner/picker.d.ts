@@ -24,6 +24,13 @@ export interface ScannerConsentDraft {
     candidates?: ScannerCandidate[];
     boundary?: string;
 }
+/**
+ * `~` and `~/...` the way a person types a folder and the way `mnemonik status`
+ * prints one, against this machine's home folder. Anything else is unchanged.
+ */
+export declare function expandHome(path: string, home: string | undefined): string;
+/** A comma-separated folder list from `--scan-roots` or `--exclusions`. */
+export declare function folderList(value: string, home: string | undefined): string[];
 export declare const SCANNER_SELECTION_LIMIT = 32;
 export declare const SCANNER_SELECTION_LIMIT_MESSAGE = "You can leave out up to 32 project folders here. Choose a narrower folder, or index only this project.";
 export declare const scannerBoundaryPrompt: (shown: string) => string;

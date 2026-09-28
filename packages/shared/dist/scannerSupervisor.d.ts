@@ -1,6 +1,7 @@
+/** A Windows scheduled-task command, and the CLI's own launch of the scanner on Windows. */
 export declare const WINDOWS_SERVICE_BUDGET_MS = 120000;
 /** Every scanner supervision timing, named once. Budgets come from measured cold starts. */
-export declare const SCANNER_STARTUP_BUDGET_MS = 60000, SCANNER_RAPID_FAILURE_LIMIT = 3, SCANNER_HANDOFF_BUDGET_MS = 150000, SCANNER_RECEIPT_STALE_MS = 360000, SCANNER_MAC_COMMAND_BUDGET_MS = 360000, SCANNER_STOP_BUDGET_MS = 10000, SCANNER_REMOVAL_BUDGET_MS = 180000;
+export declare const SCANNER_STARTUP_BUDGET_MS = 60000, SCANNER_SERVICE_RUNNING_BUDGET_MS = 120000, SCANNER_RAPID_FAILURE_LIMIT = 3, SCANNER_HANDOFF_BUDGET_MS = 150000, SCANNER_RECEIPT_STALE_MS = 360000, SCANNER_MAC_COMMAND_BUDGET_MS = 360000, SCANNER_STOP_BUDGET_MS = 10000, SCANNER_REMOVAL_BUDGET_MS = 180000;
 /**
  * One rule for every caller: did this attempt reach its local running state? It
  * judges only what the machine can prove, never the network. A clean exit keeps

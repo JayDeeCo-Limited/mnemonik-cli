@@ -660,10 +660,16 @@ describe('command router', () => {
       });
       await runCli(['update', '--host', 'codex', '--automatic'], f.deps);
       expect(isReadinessDocument(posted)).toBe(true);
-      expect(posted.installation?.state).toBe('ACTION_REQUIRED');
+      // Paused, the scanner is not indexing: that needs the person. Holding an
+      // update, the running scanner keeps indexing: the machine is ready and the
+      // console shows it Active with the step (L-110: status says what is true).
+      expect(posted.installation?.state).toBe(
+        reason === 'scanner_consent_required' ? 'ACTION_REQUIRED' : 'READY'
+      );
       expect(posted.installation?.reasons).toContain(reason);
       expect(posted.installation?.reasons).not.toContain('scanner_paused');
-      expect(posted.installation?.actions).toContain('mnemonik scanner enable');
+      // The command an agent runs for the person: it starts the browser approval.
+      expect(posted.installation?.actions).toContain('mnemonik update');
       expect(f.stdout.text + f.stderr.text).toBe('');
     }
   );
@@ -1433,7 +1439,7 @@ describe('a running scanner that reports its own failure', () => {
     const consent = { state: 'paused', reason: 'consent_required' };
     const lines =
       'Background indexing is paused until you approve an updated notice.\n' +
-      'Run mnemonik scanner enable.\n';
+      'Your coding agent will ask you to approve it.\n';
     const status = fixture();
     await withReceipt(status, null, consent);
     await runCli(['status'], status.deps);
@@ -1451,6 +1457,9 @@ describe('a running scanner that reports its own failure', () => {
 
   it('status names a scanner update waiting for an updated notice while the scanner runs', async () => {
     const f = fixture();
+    // Nothing else on this machine needs anything.
+    f.deps.configuredHosts = [];
+    f.deps.projectHookConditions = [];
     await withReceipt(f, null);
     const { writeFile } = await import('node:fs/promises');
     await writeFile(
@@ -1464,10 +1473,70 @@ describe('a running scanner that reports its own failure', () => {
     );
     await runCli(['status'], { ...f.deps, scannerDisclosureVersion: async () => '2026.09.2' });
     expect(f.stdout.text).toContain(
-      'A scanner update is waiting until you approve an updated notice.\n' +
-        'Run mnemonik scanner enable.\n'
+      'Mnemonik is installed and working.\n' +
+        'A scanner update is waiting until you approve an updated notice.\n' +
+        'Your coding agent will ask you to approve it.\n'
     );
     expect(f.stdout.text).not.toContain('paused');
+    expect(f.stdout.text).not.toContain('Needs attention');
+    const json = fixture();
+    json.deps.configuredHosts = [];
+    json.deps.projectHookConditions = [];
+    await withReceipt(json, null);
+    await writeFile(
+      join(json.deps.installStateDir!, 'scanner/state.json'),
+      JSON.stringify({
+        config: { roots: [], exclusions: [] },
+        consent: { userId: 'owner', roots: [], exclusions: [], disclosureVersion: '2026.09.1' },
+        paused: false,
+        pauseIntervals: [],
+      })
+    );
+    await runCli(['status', '--json'], {
+      ...json.deps,
+      scannerDisclosureVersion: async () => '2026.09.2',
+    });
+    const document = JSON.parse(json.stdout.text) as {
+      installation: { state: string; reasons: string[]; actions: string[] };
+      conditions?: Array<{ kind: string; reason: string; action?: string }>;
+    };
+    expect(document.installation).toMatchObject({
+      state: 'READY',
+      reasons: expect.arrayContaining(['scanner_update_consent_required']),
+      actions: expect.arrayContaining(['mnemonik update']),
+    });
+    // The agent is told the command finishes only once the person approves, and
+    // how it hands over the link for them.
+    expect(document.conditions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          reason: 'scanner_update_consent_required',
+          action: 'mnemonik update',
+          approval: expect.stringContaining('approvalUrl'),
+        }),
+      ])
+    );
+    // An agent reading plain status (no terminal) is told what to run; a person is not.
+    const agent = fixture();
+    agent.deps.configuredHosts = [];
+    agent.deps.projectHookConditions = [];
+    agent.deps.input = Object.assign(Readable.from([]), { isTTY: false as const });
+    await withReceipt(agent, null);
+    await writeFile(
+      join(agent.deps.installStateDir!, 'scanner/state.json'),
+      JSON.stringify({
+        config: { roots: [], exclusions: [] },
+        consent: { userId: 'owner', roots: [], exclusions: [], disclosureVersion: '2026.09.1' },
+        paused: false,
+        pauseIntervals: [],
+      })
+    );
+    await runCli(['status'], { ...agent.deps, scannerDisclosureVersion: async () => '2026.09.2' });
+    expect(agent.stdout.text).toContain(
+      'A scanner update is waiting until you approve an updated notice.\n' +
+        'Run mnemonik update and give the person the approval link it prints; it finishes when they approve.\n'
+    );
+    expect(f.stdout.text).not.toMatch(/Run mnemonik|--/u);
     const current = fixture();
     await withReceipt(current, null);
     await writeFile(
@@ -1484,6 +1553,24 @@ describe('a running scanner that reports its own failure', () => {
       scannerDisclosureVersion: async () => '2026.09.2',
     });
     expect(current.stdout.text).not.toContain('updated notice');
+    // The next release restores 2026.09.1; an acceptance of the withdrawn
+    // 2026.09.2 wording already covers it.
+    const restored = fixture();
+    await withReceipt(restored, null);
+    await writeFile(
+      join(restored.deps.installStateDir!, 'scanner/state.json'),
+      JSON.stringify({
+        config: { roots: [], exclusions: [] },
+        consent: { userId: 'owner', roots: [], exclusions: [], disclosureVersion: '2026.09.2' },
+        paused: false,
+        pauseIntervals: [],
+      })
+    );
+    await runCli(['status'], {
+      ...restored.deps,
+      scannerDisclosureVersion: async () => '2026.09.1',
+    });
+    expect(restored.stdout.text).not.toContain('updated notice');
   });
 
   it('the report counts approved folders that no longer exist, and says nothing when none are gone', async () => {

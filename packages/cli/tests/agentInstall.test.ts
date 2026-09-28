@@ -273,6 +273,16 @@ async function nonInteractiveInstall(
   return { code, text, posted };
 }
 
+it('install --scan-roots accepts ~, the form status prints folders in', async () => {
+  const f = await fixture();
+  const path = await folder(f.home, 'one');
+  await nonInteractiveInstall(f, ['~/Projects/one']);
+  expect(scanner.prepare).toHaveBeenCalledWith(
+    expect.objectContaining({ roots: [path] }),
+    expect.any(Function)
+  );
+});
+
 it('removes an unfinished earlier installation and keeps going', async () => {
   const f = await fixture();
   const path = await folder(f.home, 'one');

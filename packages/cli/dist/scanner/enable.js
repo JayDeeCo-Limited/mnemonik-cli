@@ -3,7 +3,7 @@ import { mkdir, readFile, realpath } from 'node:fs/promises';
 import { join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { atomicWrite, withLock } from '@mnemonik/local-setup';
-import { apiOrigin, serializeReadiness, } from '@mnemonik/shared';
+import { apiOrigin, disclosureCovers, serializeReadiness, } from '@mnemonik/shared';
 import { createCliAuth } from '../auth/index.js';
 import { REPOSITORY_APPROVAL_INSTRUCTION } from '../auth/device.js';
 import { createCliCredentials } from '../auth/credentials.js';
@@ -133,6 +133,7 @@ export async function prepareScanner(options, work) {
                     credentialOptions: { stateDir: options.stateDir },
                     deviceInstallationId: installation,
                     print: (line) => options.nonInteractive ? options.output.error(line) : options.output.line(line),
+                    ...(options.onApprovalLink ? { onApprovalLink: options.onApprovalLink } : {}),
                     fetch: options.fetch,
                 });
                 if (selection)
@@ -222,7 +223,7 @@ export async function prepareScanner(options, work) {
             let remote = (await request('GET', '/api/v1/scanner-consent/current'));
             // Approved means the account's accepted consent already covers every
             // folder asked for, at the current disclosure. Asking again adds nothing.
-            const matches = () => remote.consent?.disclosureVersion === remote.disclosure.version &&
+            const matches = () => disclosureCovers(remote.consent?.disclosureVersion, remote.disclosure.version) &&
                 (picked.candidates
                     ? !!remote.consent?.roots.length &&
                         remote.consent.roots.every((root) => picked.candidates?.some((candidate) => candidate.path === root))
@@ -350,7 +351,7 @@ export async function prepareScanner(options, work) {
                         await put(path, scannerStateBytes(state));
                     const source = await (options.source ?? (() => releaseSource('scanner')))();
                     if (source.manifest.disclosureVersion &&
-                        source.manifest.disclosureVersion !== state.consent?.disclosureVersion)
+                        !disclosureCovers(state.consent?.disclosureVersion, source.manifest.disclosureVersion))
                         throw new Error('release_consent_required');
                     if (process.env.MNEMONIK_DEV_RELEASE_DIR)
                         options.output.error('WARNING: development scanner release; readiness remains LIMITED.');

@@ -62,6 +62,26 @@ export interface ScannerConsentDraft {
   boundary?: string;
 }
 
+/**
+ * `~` and `~/...` the way a person types a folder and the way `mnemonik status`
+ * prints one, against this machine's home folder. Anything else is unchanged.
+ */
+export function expandHome(path: string, home: string | undefined): string {
+  if (!home) return path;
+  if (path === '~') return home;
+  if (path.startsWith('~/') || path.startsWith('~\\')) return resolve(home, path.slice(2));
+  return path;
+}
+
+/** A comma-separated folder list from `--scan-roots` or `--exclusions`. */
+export function folderList(value: string, home: string | undefined): string[] {
+  return value
+    .split(',')
+    .map((path) => path.trim())
+    .filter(Boolean)
+    .map((path) => expandHome(path, home));
+}
+
 export const SCANNER_SELECTION_LIMIT = 32;
 export const SCANNER_SELECTION_LIMIT_MESSAGE =
   'You can leave out up to 32 project folders here. Choose a narrower folder, or index only this project.';
@@ -109,12 +129,7 @@ export async function runScannerBoundaryPicker(
       if (response === undefined) throw new Error('project_folder_required');
       const answer = response.trim();
       const candidate = answer || guess;
-      const expanded =
-        candidate === '~'
-          ? home
-          : home && candidate.startsWith('~/')
-            ? resolve(home, candidate.slice(2))
-            : candidate;
+      const expanded = expandHome(candidate, home);
       const absolute = expanded ? resolve(expanded) : '';
       if (!candidate || absolute === resolve(home)) {
         options.output.line('Choose a project folder inside your home folder.');

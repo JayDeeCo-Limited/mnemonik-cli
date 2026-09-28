@@ -89,8 +89,11 @@ export declare function renderStatusSummaries(document: ReadinessDocument & {
     cliCredential?: Awaited<ReturnType<typeof cliCredentialStatus>>;
     launcher?: LauncherStatus;
     conditions?: readonly ReadinessCondition[];
-}, output: Pick<Output, 'line'>, options?: {
+}, output: Pick<Output, 'line'>, 
+/** agent: no person at a terminal; an approval step names what the agent runs. */
+options?: {
     diagnostics?: boolean;
+    agent?: boolean;
 }): void;
 /**
  * One line per project whose files the server refused to index, summed over its

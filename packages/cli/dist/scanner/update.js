@@ -1,4 +1,5 @@
 import { withLock } from '@mnemonik/local-setup';
+import { disclosureCovers } from '@mnemonik/shared';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { RuntimeStore, updateRuntime } from '../runtime/store.js';
@@ -11,8 +12,11 @@ import { resumeAbandonedPause } from './control.js';
  * approve the updated notice (the same browser approval install uses).
  */
 export class ScannerConsentRequired extends Error {
-    constructor() {
+    paused;
+    /** paused: the running scanner paused itself for the notice, rather than a newer release naming it. */
+    constructor(paused = false) {
         super('release_consent_required');
+        this.paused = paused;
         this.name = 'ScannerConsentRequired';
     }
 }
@@ -34,7 +38,7 @@ export async function updateScanner(options, source = () => releaseSource('scann
             const candidate = await source();
             const state = JSON.parse(await readFile(join(options.stateDir, 'scanner/state.json'), 'utf8'));
             if (candidate.manifest.disclosureVersion &&
-                candidate.manifest.disclosureVersion !== state.consent?.disclosureVersion) {
+                !disclosureCovers(state.consent?.disclosureVersion, candidate.manifest.disclosureVersion)) {
                 // The running release still has valid consent. Reject the new release without
                 // suspending indexing that the person already approved.
                 throw new ScannerConsentRequired();

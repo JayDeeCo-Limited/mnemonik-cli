@@ -1,4 +1,4 @@
-import { humanReason, humanReport, humanIdentityState, INTERRUPTED_INSTALL, INTERRUPTED_INSTALL_MESSAGE, SCANNER_CONSENT_MESSAGE, SCANNER_UPDATE_CONSENT_MESSAGE, } from './humanReason.js';
+import { humanReason, humanReport, humanIdentityState, INTERRUPTED_INSTALL, INTERRUPTED_INSTALL_MESSAGE, approvalMessage, knownReason, SCANNER_APPROVAL_ACTION, SCANNER_APPROVAL_NOTE, SCANNER_CONSENT_MESSAGE, SCANNER_ENABLE_ACTION, SCANNER_UPDATE_CONSENT_MESSAGE, } from './humanReason.js';
 import { consentDecision, consentLines } from './consent.js';
 import { helpScreen } from './help.js';
 import { enableScanner, updateScannerRoots } from './scanner/enable.js';
@@ -6,7 +6,7 @@ import { ABANDONED_PAUSE_RESUMED, controlScanner, pausedForConsent, scannerRecei
 import { ScannerConsentRequired, updateScanner } from './scanner/update.js';
 import { deleteScannerIndex } from './scanner/data.js';
 import { devReadiness } from './runtime/releaseSource.js';
-import { scannerService, ScannerServiceLimited, } from './scanner/service.js';
+import { scannerService, SCANNER_LIMITED_SENTENCE, ScannerServiceLimited, } from './scanner/service.js';
 import { stateDirectory } from '@mnemonik/local-setup';
 import { isCredentialSessionUnavailableError } from '@mnemonik/credentials';
 import { runHosts, hostSource, codexTrustConditions, logoutHost, selectOwned, } from './install/hosts.js';
@@ -31,10 +31,10 @@ import { accountActions } from './transport/server.js';
 import { apiOrigin, describeReadiness, serializeReadiness as baseReadiness, resolveProjectIdentity, } from '@mnemonik/shared';
 import { codingToolSignIn, grantTransport, grantHost, grantSummaryLines, relativeTime, validGrant, } from './auth/status.js';
 import { createCliAuth } from './auth/index.js';
-import { runEditorLogin } from './auth/pkce.js';
+import { OAuthProtocolError, runEditorLogin } from './auth/pkce.js';
 import { currentInstallSession, ensureInstallSession } from './auth/installSession.js';
 import { runIdentityMigration } from './identity/migrate.js';
-import { renderScannerStatus } from './scanner/picker.js';
+import { folderList, renderScannerStatus } from './scanner/picker.js';
 import { abandonInterrupted, closeUntouchedScannerRun, interrupted } from './install/journal.js';
 import { installFailureReason, runInstall, } from './install/transaction.js';
 import { chooseHostProfile, simulatedInstall, terminalInstallUI } from './install/ui.js';
@@ -151,16 +151,53 @@ function personPresent(parsed, deps) {
         return deps.input.isTTY !== false;
     return process.stdin.isTTY === true;
 }
+/** An approval that stopped, by what the browser said. */
+function approvalStopped(error, held) {
+    if (error instanceof OAuthProtocolError) {
+        if (error.code === 'expired_token')
+            return 'scanner_approval_expired';
+        if (error.code === 'access_denied')
+            return 'scanner_approval_declined';
+    }
+    const message = error.message;
+    if (message === 'consent_declined' || message === 'browser_consent_required')
+        return 'scanner_approval_declined';
+    return held;
+}
 /**
- * A scanner release names a newer notice than the saved consent. With a person
- * at the terminal, ask once in the browser through the flow install uses, over
- * the folders already approved; it installs the new scanner when approved and
- * puts the running one back when not. Without one (automatic, --json,
- * --non-interactive), nothing changes and the running scanner keeps indexing.
+ * Hands the approval link to whoever runs the command with no person at the
+ * terminal: a line on stdout, or with --json an `awaiting_approval` line ahead
+ * of the result, the moment the link exists.
  */
-async function approveScannerUpdate(parsed, deps, output, stateDir) {
-    if (parsed.flags.has('automatic') || !personPresent(parsed, deps))
-        return 'pending';
+function relayApprovalLink(output, json, reason) {
+    return (url, expiresAt) => {
+        if (json)
+            output.json({
+                status: 'awaiting_approval',
+                reason,
+                approvalUrl: url,
+                expiresAt: new Date(expiresAt).toISOString(),
+            });
+        else {
+            output.line(APPROVAL_LINK_LINE);
+            output.line(url);
+        }
+    };
+}
+const APPROVAL_LINK_LINE = 'Give the person this link to approve the updated notice:';
+/**
+ * The scanner needs the person's approval of an updated notice: a release
+ * names a newer one than the saved consent, or the scanner paused itself for
+ * one. Ask once in the browser through the flow install uses, over the folders
+ * already approved; it installs the scanner when approved and puts the running
+ * one back when not. With no person at the terminal (an agent's run, --json,
+ * --non-interactive) the same approval starts and its link is handed over; only
+ * the automatic daily update leaves it waiting, quietly.
+ */
+async function approveScannerUpdate(parsed, deps, output, stateDir, held = 'scanner_update_consent_required') {
+    if (parsed.flags.has('automatic'))
+        return { status: 'pending', reason: held };
+    const present = personPresent(parsed, deps);
     const saved = JSON.parse(await readFile(join(stateDir, 'scanner/state.json'), 'utf8'));
     try {
         const document = await enableScanner({
@@ -169,32 +206,55 @@ async function approveScannerUpdate(parsed, deps, output, stateDir) {
             home: deps.home,
             input: deps.input ?? process.stdin,
             output,
+            nonInteractive: !present,
             noBrowser: parsed.flags.has('no-browser'),
             roots: saved.config.roots,
             exclusions: saved.config.exclusions ?? [],
+            ...(present
+                ? {}
+                : { onApprovalLink: relayApprovalLink(output, parsed.flags.has('json'), held) }),
             ...deps.scannerService,
             ...deps.scannerEnable,
             projectExecutor: deps.projectExecutor,
             projectStateDir: deps.projectStateDir,
         });
-        return document.installation.state === 'READY' ? 'approved' : 'pending';
+        return document.installation.state === 'READY'
+            ? { status: 'approved' }
+            : { status: 'pending', reason: held };
     }
-    catch {
-        return 'pending';
+    catch (error) {
+        return { status: 'pending', reason: approvalStopped(error, held) };
     }
 }
-/** The scanner paused itself for consent: the decided two lines, never the resume line. */
-function scannerConsentRequired(output, json) {
+/** The lines for a scanner still waiting on the person's approval, by who reads them. */
+function approvalLines(reason, agent) {
+    if (reason === 'scanner_approval_expired' || reason === 'scanner_approval_declined') {
+        const sentence = reason === 'scanner_approval_expired'
+            ? 'The approval request for the updated notice expired.'
+            : 'The updated notice was not approved.';
+        if (agent)
+            return [sentence, 'Run mnemonik update again and give the person the new approval link.'];
+        return reason === 'scanner_approval_expired'
+            ? [sentence, SCANNER_UPDATE_CONSENT_MESSAGE.nextStep]
+            : [sentence];
+    }
+    const message = approvalMessage(reason === 'scanner_consent_required'
+        ? SCANNER_CONSENT_MESSAGE
+        : SCANNER_UPDATE_CONSENT_MESSAGE, agent);
+    return [message.sentence, message.nextStep];
+}
+/** The scanner paused itself for consent: the decided lines, never the resume line. */
+function scannerConsentRequired(output, json, agent) {
     if (json)
         output.json({
             status: 'ACTION_REQUIRED',
             reason: 'scanner_consent_required',
-            action: 'mnemonik scanner enable',
+            action: SCANNER_APPROVAL_ACTION,
+            approval: SCANNER_APPROVAL_NOTE,
         });
-    else {
-        output.line(SCANNER_CONSENT_MESSAGE.sentence);
-        output.line(SCANNER_CONSENT_MESSAGE.nextStep);
-    }
+    else
+        for (const line of approvalLines('scanner_consent_required', agent))
+            output.line(line);
     return 3;
 }
 function hostUpdateFailed(result) {
@@ -589,7 +649,11 @@ async function runHostCommand(command, parsed, deps, output, scannerSelected = f
         let scannerRecovery;
         if (all &&
             (await readFile(`${state}/scanner/state.json`).then(() => true, () => false))) {
+            // A scanner paused for an updated notice needs the approval, not a new copy.
+            const pausedForApproval = pausedForConsent(await scannerReceipt(state));
             try {
+                if (pausedForApproval)
+                    throw new ScannerConsentRequired();
                 const before = await store.verifyRuntime('scanner').catch(() => undefined);
                 const runtime = await retryUpdateOnce(() => updateScanner({
                     stateDir: state,
@@ -609,15 +673,18 @@ async function runHostCommand(command, parsed, deps, output, scannerSelected = f
                 };
             }
             catch (error) {
-                if (error instanceof ScannerConsentRequired)
+                if (error instanceof ScannerConsentRequired) {
+                    const approval = await approveScannerUpdate(parsed, deps, output, state, pausedForApproval ? 'scanner_consent_required' : 'scanner_update_consent_required');
                     scanner =
-                        (await approveScannerUpdate(parsed, deps, output, state)) === 'approved'
+                        approval.status === 'approved'
                             ? { status: 'UPDATED' }
                             : {
                                 status: 'ACTION_REQUIRED',
-                                reason: 'scanner_update_consent_required',
-                                action: 'mnemonik scanner enable',
+                                reason: approval.reason,
+                                action: SCANNER_APPROVAL_ACTION,
+                                approval: SCANNER_APPROVAL_NOTE,
                             };
+                }
                 else
                     scanner = { status: 'FAILED', reason: error.message };
                 if (!json && scanner.status === 'FAILED')
@@ -640,12 +707,18 @@ async function runHostCommand(command, parsed, deps, output, scannerSelected = f
         const codexTrustPending = result.results.some((target) => target.reason === 'codex_trust_pending');
         // Every host update is journaled: a failed one has already put the previous
         // runtime back. The record says so to the console through the readiness report.
+        // A scanner update held for approval is neither current nor a failure: the
+        // running scanner keeps indexing and status names the step that installs it.
         if (all)
             await recordUpdateCheck(state, failed || hostsFailed
                 ? 'failed'
-                : cli?.status === 'UPDATED' || result.reports.length > 0 || scanner?.status === 'UPDATED'
-                    ? 'updated'
-                    : 'current');
+                : scannerConsentPending
+                    ? 'consent_pending'
+                    : cli?.status === 'UPDATED' ||
+                        result.reports.length > 0 ||
+                        scanner?.status === 'UPDATED'
+                        ? 'updated'
+                        : 'current');
         if (fullUninstall && hostExit === 0) {
             // A damaged install can lose the runtime pointer and still leave a service
             // registered, so the saved scanner state also counts as one to remove. A
@@ -740,11 +813,10 @@ async function runHostCommand(command, parsed, deps, output, scannerSelected = f
                 output.line('Mnemonik updated.');
             else
                 output.line('Mnemonik is up to date.');
-            // The scanner kept running; its update waits for the person's approval.
-            if (scannerConsentPending) {
-                output.line(SCANNER_UPDATE_CONSENT_MESSAGE.sentence);
-                output.line(SCANNER_UPDATE_CONSENT_MESSAGE.nextStep);
-            }
+            // The scanner's update waits for the person's approval.
+            if (scannerConsentPending)
+                for (const line of approvalLines(scanner?.reason ?? 'scanner_update_consent_required', !personPresent(parsed, deps)))
+                    output.line(line);
         }
         else {
             for (const target of result.results)
@@ -752,7 +824,7 @@ async function runHostCommand(command, parsed, deps, output, scannerSelected = f
             for (const report of result.reports)
                 output.line(humanReport(report));
             if (remaining)
-                renderStatusSummaries(remaining, output);
+                renderStatusSummaries(remaining, output, { agent: !personPresent(parsed, deps) });
             if (!selections.length && !fullUninstall && !remaining)
                 output.line('No recorded host targets.');
             if (fullUninstall && !failed && hostExit === 0)
@@ -834,22 +906,151 @@ async function scannerRecoveryAction(error, options) {
         action: failure?.action ?? SCANNER_RETRY_MESSAGE,
     };
 }
+// Enable already named the folder and why it cannot be used; nothing more to say.
+const FOLDER_REFUSED = /^(?:filesystem_root|home_directory|temporary_directory|mnemonik_state_directory|user_data_directory|host_config_directory|broad_workspace_parent)$/u;
+const ENABLE_FAILURES = {
+    browser_consent_required: {
+        summary: 'The folders were not approved in your browser.',
+        action: SCANNER_ENABLE_ACTION,
+    },
+    consent_declined: {
+        summary: 'Background indexing was not approved.',
+        action: SCANNER_ENABLE_ACTION,
+    },
+    scanner_approval_declined: {
+        summary: 'Background indexing was not approved.',
+        action: SCANNER_ENABLE_ACTION,
+    },
+    scanner_approval_expired: {
+        summary: 'The approval request expired before it was approved.',
+        action: SCANNER_ENABLE_ACTION,
+    },
+    // The scanner this CLI carries names a notice the account's approval does not cover.
+    release_consent_required: {
+        summary: 'This version of Mnemonik cannot install the newer scanner yet.',
+        action: 'mnemonik update',
+    },
+    scan_roots_required: {
+        summary: 'No folder was chosen for background indexing.',
+        action: `${SCANNER_ENABLE_ACTION} --scan-roots <folder>`,
+    },
+};
+function folderFailure(code, folder) {
+    if (code === 'ENOENT')
+        return {
+            reason: 'folder_missing',
+            folder,
+            summary: `This folder does not exist: ${folder}`,
+            action: 'Pass folders that exist in --scan-roots, or leave --scan-roots out to keep the folders already approved.',
+        };
+    if (code === 'EACCES' || code === 'EPERM')
+        return {
+            reason: 'folder_unreadable',
+            folder,
+            summary: `Mnemonik cannot open this folder: ${folder}`,
+            action: 'Give the user read access to the folder, or choose another, then run the command again.',
+        };
+    return undefined;
+}
+/** The real cause of a failed enable, never a blanket "run install". */
+function enableFailure(error) {
+    const message = error.message;
+    const limited = scannerFailure(error);
+    // The service's own sentences, including steps only a person can take.
+    if (limited)
+        return { reason: message, summary: limited.summary, step: limited.action };
+    const { code, path } = error;
+    const folder = path ? folderFailure(code, path) : undefined;
+    if (folder)
+        return folder;
+    if (FOLDER_REFUSED.test(message))
+        return { reason: message, summary: '' };
+    // A browser that said no, or a link that lapsed, has its own reason.
+    const stopped = error instanceof OAuthProtocolError ? approvalStopped(error, message) : message;
+    const known = ENABLE_FAILURES[stopped];
+    if (known)
+        return { reason: stopped, ...known };
+    if (message === 'lock_held')
+        return { reason: message, summary: humanReason(message) };
+    const words = knownReason(message);
+    if (words)
+        return { reason: message, summary: words.sentence, step: words.nextStep };
+    return {
+        reason: message,
+        summary: SCANNER_LIMITED_SENTENCE,
+        action: SCANNER_ENABLE_ACTION,
+    };
+}
+function enableFailed(output, json, agent, failure) {
+    const action = failure.action ?? failure.step;
+    if (json)
+        output.json({
+            status: 'ACTION_REQUIRED',
+            reason: failure.reason,
+            ...(failure.folder ? { folder: failure.folder } : {}),
+            ...(action ? { action } : {}),
+        });
+    else {
+        if (failure.summary)
+            output.error(failure.summary);
+        // A person reads only their own step; the agent running this reads its own.
+        const next = agent ? action : failure.step;
+        if (next)
+            output.error(/^mnemonik /u.test(next) ? `Run ${next}.` : next);
+    }
+    return 3;
+}
+/** The folders this machine already approved, as the saved scanner state holds them. */
+async function approvedSelection(stateDir) {
+    const saved = JSON.parse(await readFile(join(stateDir, 'scanner/state.json'), 'utf8').catch(() => 'null'));
+    const roots = saved?.config?.roots;
+    if (!Array.isArray(roots) || !roots.length || !roots.every((r) => typeof r === 'string'))
+        return undefined;
+    const exclusions = saved?.config?.exclusions;
+    return {
+        roots,
+        exclusions: Array.isArray(exclusions)
+            ? exclusions.filter((e) => typeof e === 'string')
+            : [],
+    };
+}
 async function enableCommand(parsed, deps, output) {
     const json = parsed.flags.has('json');
     const present = personPresent(parsed, deps);
+    const stateDir = deps.installStateDir ?? stateDirectory(process.platform, process.env, deps.home);
+    const home = deps.home ?? homedir();
     if (!present) {
         const missing = requireConsent(parsed, output, ['accept-indexing', 'apply']);
         if (missing !== undefined)
             return missing;
-        if (!parsed.flags.has('scan-roots'))
-            return actionRequired(output, json, 'Supply --scan-roots with approved roots', '--scan-roots');
+    }
+    const rootsFlag = parsed.flags.get('scan-roots');
+    const exclusionsFlag = parsed.flags.get('exclusions');
+    // Folders as status prints them (`~/...`) are folders on this machine.
+    let roots = typeof rootsFlag === 'string' ? folderList(rootsFlag, home) : undefined;
+    let exclusions = typeof exclusionsFlag === 'string' ? folderList(exclusionsFlag, home) : undefined;
+    // Without --scan-roots, a run that applies (an agent, or a person who passed
+    // --apply) keeps the folders already approved; a person with neither chooses
+    // them in the picker.
+    if (!roots && (!present || parsed.flags.has('apply'))) {
+        const approved = await approvedSelection(stateDir);
+        if (approved) {
+            roots = approved.roots;
+            exclusions ??= approved.exclusions;
+        }
+    }
+    if (!present && !roots)
+        return actionRequired(output, json, 'Supply --scan-roots with approved roots', '--scan-roots');
+    // A folder that is not there is said before anything starts or has to be undone.
+    for (const folder of [...(roots ?? []), ...(exclusions ?? [])]) {
+        const failure = await realpath(folder).then(() => undefined, (error) => folderFailure(error.code, folder));
+        if (failure)
+            return enableFailed(output, json, !present, failure);
     }
     try {
-        await closeUntouchedScannerRun(deps.installStateDir ?? stateDirectory(process.platform, process.env, deps.home)).catch(() => false);
-        const roots = parsed.flags.get('scan-roots');
-        const exclusions = parsed.flags.get('exclusions');
+        await closeUntouchedScannerRun(stateDir).catch(() => false);
         const result = await enableScanner({
-            stateDir: deps.installStateDir ?? stateDirectory(process.platform, process.env, deps.home),
+            stateDir,
             cwd: deps.cwd ?? process.cwd(),
             home: deps.home,
             input: deps.input ?? process.stdin,
@@ -857,10 +1058,12 @@ async function enableCommand(parsed, deps, output) {
             nonInteractive: !present,
             noBrowser: parsed.flags.has('no-browser'),
             timeout: retryOnce(parsed.flags),
-            ...(typeof roots === 'string' ? { roots: roots.split(',').filter(Boolean) } : {}),
-            ...(typeof exclusions === 'string'
-                ? { exclusions: exclusions.split(',').filter(Boolean) }
-                : {}),
+            // An agent's run hands over the browser approval link as soon as it exists.
+            ...(present
+                ? {}
+                : { onApprovalLink: relayApprovalLink(output, json, 'scanner_consent_required') }),
+            ...(roots ? { roots } : {}),
+            ...(exclusions ? { exclusions } : {}),
             ...deps.scannerService,
             ...deps.scannerEnable,
             projectExecutor: deps.projectExecutor,
@@ -869,25 +1072,11 @@ async function enableCommand(parsed, deps, output) {
         if (json)
             output.json(result);
         else
-            renderStatusSummaries(result, output);
+            renderStatusSummaries(result, output, { agent: !present });
         return result.installation.state === 'READY' ? 0 : 3;
     }
     catch (error) {
-        const failure = scannerFailure(error) ??
-            new ScannerServiceLimited('scanner_service_unavailable', error.message);
-        const result = {
-            status: 'ACTION_REQUIRED',
-            reason: error.message,
-            action: failure.action,
-        };
-        if (json)
-            output.json(result);
-        else {
-            output.error(failure.summary);
-            if (failure.action)
-                output.error(failure.action);
-        }
-        return 3;
+        return enableFailed(output, json, !present, enableFailure(error));
     }
 }
 async function installCommand(parsed, deps, output) {
@@ -1312,7 +1501,7 @@ export async function runCli(args, deps = {}) {
             return actionRequired(output, parsed.flags.has('json'), 'mnemonik install');
         if ((action === 'add' || action === 'remove') &&
             pausedForConsent(await scannerReceipt(stateDir)))
-            return scannerConsentRequired(output, parsed.flags.has('json'));
+            return scannerConsentRequired(output, parsed.flags.has('json'), !personPresent(parsed, deps));
         if (action === 'list') {
             if (parsed.flags.has('json'))
                 output.json(saved.config.roots);
@@ -1422,7 +1611,7 @@ export async function runCli(args, deps = {}) {
                 status: 'revoked',
                 verbs: ['revoke access'],
                 retained: ['local software', 'cloud data'],
-                action: 'mnemonik scanner enable',
+                action: SCANNER_ENABLE_ACTION,
             };
             if (parsed.flags.has('json'))
                 output.json(result);
@@ -1483,6 +1672,9 @@ export async function runCli(args, deps = {}) {
                 ...deps.scannerService,
             };
             if (command === 'update') {
+                // A scanner paused for an updated notice needs the approval, not a new copy.
+                if (pausedForConsent(await scannerReceipt(options.stateDir)))
+                    throw new ScannerConsentRequired(true);
                 const store = new RuntimeStore(options.stateDir);
                 const before = await store.verifyRuntime('scanner').catch(() => undefined);
                 const runtime = await retryUpdateOnce(() => updateScanner({
@@ -1516,7 +1708,8 @@ export async function runCli(args, deps = {}) {
         catch (error) {
             if (command === 'update' && error instanceof ScannerConsentRequired) {
                 const stateDir = deps.installStateDir ?? stateDirectory(process.platform, process.env, deps.home);
-                if ((await approveScannerUpdate(parsed, deps, output, stateDir)) === 'approved') {
+                const approval = await approveScannerUpdate(parsed, deps, output, stateDir, error.paused ? 'scanner_consent_required' : 'scanner_update_consent_required');
+                if (approval.status === 'approved') {
                     if (parsed.flags.has('json'))
                         output.json({ status: 'updated' });
                     else
@@ -1526,13 +1719,13 @@ export async function runCli(args, deps = {}) {
                 if (parsed.flags.has('json'))
                     output.json({
                         status: 'ACTION_REQUIRED',
-                        reason: 'scanner_update_consent_required',
-                        action: 'mnemonik scanner enable',
+                        reason: approval.reason,
+                        action: SCANNER_APPROVAL_ACTION,
+                        approval: SCANNER_APPROVAL_NOTE,
                     });
-                else {
-                    output.line(SCANNER_UPDATE_CONSENT_MESSAGE.sentence);
-                    output.line(SCANNER_UPDATE_CONSENT_MESSAGE.nextStep);
-                }
+                else
+                    for (const line of approvalLines(approval.reason, !personPresent(parsed, deps)))
+                        output.line(line);
                 return 3;
             }
             const failure = scannerFailure(error);
@@ -1670,7 +1863,7 @@ export async function runCli(args, deps = {}) {
         const version = await packageVersion();
         const store = new RuntimeStore(deps.installStateDir ?? stateDirectory(process.platform, process.env, deps.home));
         if (!parsed.flags.has('json')) {
-            renderStatusSummaries(shown, output);
+            renderStatusSummaries(shown, output, { agent: !personPresent(parsed, deps) });
             for (const line of codingToolLines(shown.codingTools))
                 output.line(line);
             await renderRefusals(refusalStateDir(deps), output);
@@ -2032,7 +2225,7 @@ export async function runCli(args, deps = {}) {
             };
             // Resume cannot lift a pause for consent; say what can.
             if (subcommand === 'resume' && pausedForConsent(await scannerReceipt(options.stateDir)))
-                return scannerConsentRequired(output, json);
+                return scannerConsentRequired(output, json, !personPresent(parsed, deps));
             if (subcommand === 'pause' || subcommand === 'resume')
                 await controlScanner(subcommand, options);
             else if (subcommand === 'export-preview') {

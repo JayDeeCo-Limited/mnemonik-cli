@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { atomicWrite } from '@mnemonik/local-setup';
-import type { ReadinessUpdateCheck } from '@mnemonik/shared';
+import { UPDATE_CHECK_RESULTS, type ReadinessUpdateCheck } from '@mnemonik/shared';
 
 /**
  * The last full `mnemonik update` on this machine, automatic or by hand. The
@@ -30,7 +30,7 @@ export async function readUpdateCheck(stateDir: string): Promise<ReadinessUpdate
     if (
       typeof checkedAt !== 'string' ||
       !Number.isFinite(Date.parse(checkedAt)) ||
-      !['updated', 'current', 'failed'].includes(String(result))
+      !(UPDATE_CHECK_RESULTS as readonly string[]).includes(String(result))
     )
       return undefined;
     return { checkedAt, result: result as ReadinessUpdateCheck['result'] };
