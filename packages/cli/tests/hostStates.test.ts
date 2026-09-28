@@ -861,7 +861,7 @@ describe('host rulings', () => {
     });
     const owned = (await readOwnership(f.deps.stateDir)).targets[0]!;
     const launcher = join(dirname(owned.runtimePointer), 'launcher.mjs');
-    const exact = Array(5).fill(
+    const exact = Array(6).fill(
       `node ${JSON.stringify(launcher)} --server https://api.mnemonik.dev --mnemonik-owner=codex-hooks`
     );
     expect(await codexCommands(owned.profilePath)).toEqual(exact);
@@ -904,7 +904,7 @@ describe('host rulings', () => {
     await runHosts('install', [user], f.deps);
     const owned = (await readOwnership(f.deps.stateDir)).targets[0]!;
     const exact = await codexCommands(owned.profilePath);
-    expect(exact).toHaveLength(5);
+    expect(exact).toHaveLength(6);
     expect(exact.join('\n')).not.toContain('--credential-family');
     const migration = `codex: ${CODEX_TRUST_MIGRATION}`;
 
