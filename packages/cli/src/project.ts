@@ -226,6 +226,8 @@ export interface RealProjectRuntimeOptions {
   getCliBearer?: () => Promise<string | { status: string; reason: string }>;
   requestId?: string;
   fault?: ExecutorDependencies['fault'];
+  /** Epoch ms after which the server transport sends nothing (see ensureProjectForAgent). */
+  deadline?: number;
 }
 
 const gitEnvironment = (): NodeJS.ProcessEnv => {
@@ -295,6 +297,7 @@ export async function createRealProjectRuntime(options: RealProjectRuntimeOption
     credentials,
     getCliBearer: options.getCliBearer,
     requestId: options.requestId,
+    deadline: options.deadline,
     issueContext: async (input) => {
       const context = contexts.get(contextKey(input));
       if (!context)
@@ -937,6 +940,9 @@ async function handoffRequestId(input: Readable): Promise<string | undefined> {
   return value.requestId;
 }
 
+/** How long `project ensure` may spend on server requests (the supervisor allows 30 s). */
+export const PROJECT_ENSURE_DEADLINE_MS = 25_000;
+
 export async function ensureProjectForAgent(options: {
   output: Output;
   cwd: string;
@@ -947,6 +953,12 @@ export async function ensureProjectForAgent(options: {
   /** The hook passes --agent and its request id on stdin; nobody else writes there. */
   handoff?: boolean;
 }): Promise<number> {
+  // Every request of this run ends by this deadline, inside the 30 s the
+  // hook's supervisor allows the helper: a server that never answers ends
+  // the run as `unreachable` (retry) rather than leaving it running. The
+  // sign-in refresh before it is bounded by CLI_REFRESH_TIMEOUT_MS (twice at
+  // most, about 10 s).
+  const deadline = Date.now() + PROJECT_ENSURE_DEADLINE_MS;
   let executor = options.executor;
   if (!executor)
     try {
@@ -960,7 +972,8 @@ export async function ensureProjectForAgent(options: {
       const requestId = options.handoff
         ? await handoffRequestId(options.input ?? process.stdin)
         : undefined;
-      executor = (await createRealProjectRuntime({ ...options.runtime, requestId })).executor;
+      executor = (await createRealProjectRuntime({ ...options.runtime, requestId, deadline }))
+        .executor;
     } catch (error) {
       const reason = accountFailure(error);
       if (!reason) throw error;

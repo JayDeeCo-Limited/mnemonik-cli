@@ -17,6 +17,17 @@ export const CLI_SCOPES = [
 ];
 const CLI_VERSION = createRequire(import.meta.url)('../../package.json')
     .version;
+/**
+ * Sign-out holds the CLI credential lease across its /oauth/revoke call, so the call is
+ * bounded: a hung issuer must not keep the lease (and a sign-in waiting for it) indefinitely.
+ */
+export const CLI_REVOKE_TIMEOUT_MS = 10_000;
+/**
+ * Bound on one token refresh. The credential adapter retries a lost response
+ * once, so a refresh the server never answers ends as rotation_response_lost
+ * (retry) after about twice this.
+ */
+export const CLI_REFRESH_TIMEOUT_MS = 5_000;
 export function noBrowserAvailable(platform = process.platform, env = process.env) {
     return (!!env.SSH_CONNECTION ||
         !!env.SSH_TTY ||
@@ -95,8 +106,16 @@ export function createCliAuth(options = {}) {
             ...new Set([options.deviceInstallationId, ...(await readInstallations(stateDir))].filter((id) => !!id)),
         ];
         deviceInstallationId = deviceInstallationIds[0];
+        // Before any device grant exists: a sign-out or rotation holding the CLI lease finishes
+        // first, and a lease that cannot be had fails here rather than after approval, when the
+        // grant would be live with nowhere to store it.
+        await credentials.waitForCliLease();
         const saved = await credentials.readCliOAuth().catch((error) => {
+            // An unreadable session store, or a record an older crash left without its secret:
+            // sign in afresh (putCliOAuth replaces the record).
             if (isCredentialSessionUnavailableError(error))
+                return null;
+            if (error instanceof Error && error.message === 'credential_secret_missing')
                 return null;
             throw error;
         });
@@ -139,6 +158,9 @@ export function createCliAuth(options = {}) {
                     refresh_token: current.refreshToken,
                     resource,
                 }),
+                // A refresh that never answers is a lost response to the credential
+                // adapter (retried once, then rotation_response_lost), not a hang.
+                signal: AbortSignal.timeout(options.refreshTimeoutMs ?? CLI_REFRESH_TIMEOUT_MS),
             });
             return {
                 status: response.status,
@@ -171,22 +193,38 @@ export function createCliAuth(options = {}) {
             await saveInstallation(stateDir, body.deviceInstallationId, typeof body.account === 'string' ? { account: body.account, email: body.email } : undefined);
         return body.email;
     }
+    /** Revokes and removes under the credential package's CLI lease (revokeCli). */
     async function logout() {
-        const current = await credentials.readCliOAuth();
-        if (!current)
-            return;
-        const response = await fetchImpl(`${current.issuer.replace(/\/$/u, '')}/oauth/revoke`, {
-            method: 'POST',
-            headers: { 'content-type': 'application/x-www-form-urlencoded' },
-            body: new URLSearchParams({
-                client_id: current.clientId,
-                token: current.refreshToken,
-                token_type_hint: 'refresh_token',
-            }),
+        const result = await credentials.revokeCli({
+            async revokeCli(current) {
+                let response;
+                try {
+                    response = await fetchImpl(`${current.issuer.replace(/\/$/u, '')}/oauth/revoke`, {
+                        method: 'POST',
+                        headers: { 'content-type': 'application/x-www-form-urlencoded' },
+                        body: new URLSearchParams({
+                            client_id: current.clientId,
+                            token: current.refreshToken,
+                            token_type_hint: 'refresh_token',
+                        }),
+                        signal: AbortSignal.timeout(options.revokeTimeoutMs ?? CLI_REVOKE_TIMEOUT_MS),
+                    });
+                }
+                catch {
+                    // Timed out or unreachable: keep the credential for a retry, as for a 5xx.
+                    return { status: 503, body: { error: 'revoke_failed' } };
+                }
+                return response.ok
+                    ? { status: 200, body: {} }
+                    : { status: response.status, body: { error: 'revoke_failed' } };
+            },
         });
-        if (!response.ok)
-            throw new OAuthProtocolError('revoke_failed');
-        await credentials.removeCliOAuth();
+        // credential_secret_missing: an unusable record was removed; nothing is left to sign out.
+        if (result.status === 'revoked' ||
+            result.reason === 'family_missing' ||
+            result.reason === 'credential_secret_missing')
+            return;
+        throw new OAuthProtocolError('revoke_failed');
     }
     return { signIn, getCliBearer, accountEmail, logout };
 }

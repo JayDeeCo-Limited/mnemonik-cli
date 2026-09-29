@@ -71,6 +71,15 @@ test('only a selected regular JSON object without a project id is treated as una
       await writeFile(path, text);
       assert.notEqual((await readIdentityFile(root, { selectedRoot: true })).kind, 'absent');
     }
+    for (const text of [
+      '{"schemaVersion":2,"futureIdentity":"proj_future_0001"}',
+      '{"schemaVersion":0}',
+      '{"schemaVersion":null}',
+      '{"schemaVersion":"1"}',
+    ]) {
+      await writeFile(path, text);
+      assert.equal((await readIdentityFile(root, { selectedRoot: true })).kind, 'unknown_version');
+    }
     if (process.platform !== 'win32') {
       await rm(path);
       const target = join(root, 'other.json');

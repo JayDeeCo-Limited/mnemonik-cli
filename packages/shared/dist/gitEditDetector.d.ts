@@ -74,4 +74,89 @@ export declare function diffGitDirtySnapshot(snapshotFile: string, cwd: string, 
  * report pre-existing dirt.
  */
 export declare function addPathsToGitDirtySnapshot(snapshotFile: string, paths: string[]): void;
+/**
+ * The fingerprint a host sends with an edit report: the first 32 hex chars of
+ * the sha256 of the file's current content, 'absent' when the file does not
+ * exist, undefined when it cannot be read, is not a regular file, or exceeds
+ * EDIT_FINGERPRINT_MAX_BYTES (the report then carries none and counts as
+ * before).
+ *
+ * Why: a report the server recorded but answered after the host's budget
+ * stays unconfirmed here and the next carrier's diff re-sends it. The server
+ * compares the fingerprint with the last one it recorded for the path, so the
+ * re-send of unchanged content is not counted as a second edit, while any
+ * further edit changes the content and is.
+ */
+export declare function editFingerprint(path: string, cwd?: string): string | undefined;
+export declare const EDIT_REPORT_RETRY: {
+    /** Total time one hook event may spend on edit reports. */
+    readonly budgetMs: 1500;
+    /** One report's own ceiling (the shared POST_TOOL_TIMEOUT_MS). */
+    readonly attemptTimeoutMs: 1500;
+    /** Reports in flight at once. */
+    readonly concurrency: 4;
+    readonly maxAttempts: 5;
+    /** Backoff after the second failure; doubles per failure after that. */
+    readonly backoffBaseMs: 5000;
+    readonly backoffMaxMs: number;
+    /** A path pending longer than this since its first attempt is dropped. */
+    readonly expiryMs: number;
+    /** Pause after an event in which every attempt timed out. */
+    readonly hungServerPauseMs: 15000;
+    readonly rateLimitDefaultMs: 30000;
+    readonly rateLimitMaxMs: number;
+    /** Oldest pending paths beyond this are dropped. */
+    readonly maxPending: 200;
+};
+/**
+ * The edit-report budget a hook event can still afford (CQ-033 review). The
+ * event's own work runs after its edit reports and the host kills the hook at
+ * its installed timeout, so the reports get only what is left of `deadlineMs`
+ * (the host timeout less a safety margin, measured from process start) after
+ * the time this process has already spent and `reserveMs`, the worst case of
+ * the event's own work still to come; capped at EDIT_REPORT_RETRY.budgetMs.
+ * Zero means send nothing now: every path stays pending for a later, lighter
+ * event. The per-event sums are pinned by tests/HookEventBudgets.test.ts.
+ */
+export declare function editReportBudgetMs(deadlineMs: number, reserveMs: number, elapsedMs?: number): number;
+/** What one edit report achieved, as the sending host classifies it. */
+export type EditReportResult = {
+    kind: 'confirmed';
+} | {
+    kind: 'transient';
+    detail: string;
+    timedOut?: boolean;
+} | {
+    kind: 'permanent';
+    detail: string;
+} | {
+    kind: 'rate_limited';
+    retryAfterMs?: number;
+};
+/**
+ * Classify an HTTP answer to track-ide-edit. `body` is the parsed JSON, if any.
+ * `retryable: true` marks a failure that says nothing lasting (see above); an
+ * older server never sends it, so its `{ ok: false }` stays permanent.
+ */
+export declare function classifyEditReportResponse(status: number, body: unknown, retryAfter?: string | null): EditReportResult;
+/** Paths whose report is pending and due now (retry on any hook event). */
+export declare function pendingEditReports(snapshotFile: string, now?: number): string[];
+/**
+ * Report edited paths under the bounded retry policy: this event's new paths
+ * plus every pending path now due. Call once per hook event (pass `paths: []`
+ * to deliver only pending ones). Confirmed and dropped paths join the dirty
+ * snapshot; the rest stay pending for a later event.
+ */
+export declare function reportEditsWithinBudget(options: {
+    snapshotFile: string;
+    paths: readonly string[];
+    send: (path: string, signal: AbortSignal) => Promise<EditReportResult>;
+    budgetMs?: number;
+    now?: () => number;
+    log?: (message: string) => void;
+}): Promise<{
+    confirmed: string[];
+    dropped: string[];
+    deferred: string[];
+}>;
 //# sourceMappingURL=gitEditDetector.d.ts.map

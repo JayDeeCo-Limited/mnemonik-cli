@@ -1,9 +1,11 @@
 import { protectWindowsDirectory } from './runtimeSigners.js';
-import { execFile } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { constants } from 'node:fs';
 import { lstat, mkdir, open, readdir, realpath, rename, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname, join, relative } from 'node:path';
+import { basename, dirname, join, relative } from 'node:path';
+import { performance } from 'node:perf_hooks';
+import { hookDeadlineMs } from './hookTimeouts.js';
 import { randomUUID } from 'node:crypto';
 import { RuntimeReader, hash } from './runtimeReader.js';
 export const PROJECT_SETUP_MANUAL = 'Mnemonik project setup needs attention; ask the person to run `mnemonik project init` in this folder.';
@@ -94,6 +96,167 @@ async function writeDiagnostic(path, value) {
         await rm(temp, { force: true });
     }
 }
+/** What the agent is told while `project ensure` is still running detached. */
+export const PROJECT_SETUP_RUNNING = 'Mnemonik project setup is still running; call session_bootstrap again in a few seconds.';
+/** The CLI helper's own bound, enforced by the detached supervisor below. */
+export const PROJECT_ENSURE_TIMEOUT_MS = 30_000;
+const RUNNING = Symbol('running');
+/**
+ * The detached supervisor: runs the verified CLI bin (argv[2], args after it)
+ * with the request on stdin under PROJECT_ENSURE_TIMEOUT_MS, then writes
+ * { code, killed, stdout } to argv[1] through a rename, so a reader sees a
+ * whole result or none. It outlives the hook process: the host may kill the
+ * hook at its timeout (5 s on Claude Code and Grok) while the ensure, which
+ * consumes a single-use setup request and writes .mnemonik.json, finishes.
+ */
+const SUPERVISOR = `
+const { execFile } = require('node:child_process');
+const { writeFileSync, renameSync } = require('node:fs');
+const [out, bin, ...args] = process.argv.slice(1);
+let input = '';
+process.stdin.setEncoding('utf8');
+process.stdin.on('data', (chunk) => (input += chunk));
+process.stdin.on('end', () => {
+  const child = execFile(
+    process.execPath,
+    [bin, ...args],
+    { shell: false, timeout: ${PROJECT_ENSURE_TIMEOUT_MS}, killSignal: 'SIGKILL', maxBuffer: 64 * 1024, env: process.env },
+    (error, stdout) => {
+      const result = { code: error ? (typeof error.code === 'number' ? error.code : null) : 0, killed: !!(error && error.killed), stdout: String(stdout) };
+      writeFileSync(out + '.tmp', JSON.stringify(result), { mode: 0o600 });
+      renameSync(out + '.tmp', out);
+    }
+  );
+  child.stdin.on('error', () => {});
+  child.stdin.end(input);
+});
+`;
+/** A run older than this is no longer waited for (the helper's bound plus slack). */
+const RUN_STALE_MS = PROJECT_ENSURE_TIMEOUT_MS + 10_000;
+async function readResult(path) {
+    let raw;
+    try {
+        raw = await readPrivate(path);
+    }
+    catch (error) {
+        if (error.code === 'ENOENT')
+            return undefined;
+        throw error;
+    }
+    const result = JSON.parse(raw);
+    // Exit 3 is the helper's "action required", with its JSON on stdout.
+    if (result.killed || (result.code !== 0 && result.code !== 3))
+        throw new Error('helper_failed');
+    try {
+        return JSON.parse(String(result.stdout));
+    }
+    catch {
+        throw new Error('helper_invalid_json');
+    }
+}
+async function waitForResult(path, waitMs) {
+    const deadline = Date.now() + waitMs;
+    for (;;) {
+        const result = await readResult(path);
+        if (result !== undefined)
+            return result;
+        if (Date.now() >= deadline)
+            return RUNNING;
+        await new Promise((resolve) => setTimeout(resolve, Math.min(50, deadline - Date.now())));
+    }
+}
+/**
+ * Run `project ensure` for this setup request, waiting at most `waitMs`.
+ *
+ * The helper runs detached (under SUPERVISOR) and its result lands in the
+ * session's private directory, so a hook the host kills at its timeout loses
+ * neither the setup nor its outcome. One run per session: while it is
+ * running, a later handoff (the agent calls session_bootstrap again and gets a
+ * fresh request id) waits for that run instead of starting another; a
+ * finished run whose setup completed answers for the new request too.
+ */
+async function runEnsure(options) {
+    await privateDirectory(dirname(options.directory), options.directory);
+    await privateDirectory(options.directory, options.directory);
+    const runFile = join(options.directory, 'project-setup-run.json');
+    let previous;
+    try {
+        previous = JSON.parse(await readPrivate(runFile));
+    }
+    catch {
+        previous = undefined;
+    }
+    if (previous && previous.root === options.root && typeof previous.result === 'string') {
+        const result = join(options.directory, basename(previous.result));
+        const finished = await readResult(result).catch(() => ({ status: 'failed' }));
+        if (finished === undefined && Date.now() - previous.startedAt < RUN_STALE_MS) {
+            const outcome = await waitForResult(result, options.waitMs);
+            if (outcome !== RUNNING)
+                await rm(runFile, { force: true });
+            return outcome;
+        }
+        await rm(runFile, { force: true });
+        await rm(result, { force: true });
+        if (record(finished) && finished.status === 'done')
+            return finished;
+    }
+    const result = join(options.directory, `project-setup-${randomUUID()}.result.json`);
+    const run = {
+        requestId: options.requestId,
+        root: options.root,
+        result: basename(result),
+        startedAt: Date.now(),
+    };
+    await writeFileAtomic(runFile, JSON.stringify(run));
+    const child = spawn(process.execPath, ['-e', SUPERVISOR, result, options.bin, 'project', 'ensure', '--agent', '--json'], {
+        cwd: options.root,
+        shell: false,
+        detached: true,
+        windowsHide: true,
+        stdio: ['pipe', 'ignore', 'ignore'],
+        // Runtime injection variables and repository/PATH executables are not inherited.
+        env: Object.fromEntries([
+            'HOME',
+            'USERPROFILE',
+            'LOCALAPPDATA',
+            'XDG_STATE_HOME',
+            'MNEMONIK_STATE_DIR',
+            'MNEMONIK_SERVER',
+            'MNEMONIK_API_RESOURCE',
+            'MNEMONIK_OAUTH_ISSUER',
+            'SYSTEMROOT',
+            'TEMP',
+            'TMP',
+            'TMPDIR',
+        ].flatMap((key) => (process.env[key] === undefined ? [] : [[key, process.env[key]]]))),
+    });
+    const spawnFailed = new Promise((_, reject) => child.once('error', () => reject(new Error('helper_failed'))));
+    child.stdin?.on('error', () => { });
+    child.stdin?.end(JSON.stringify({ requestId: options.requestId }));
+    child.unref();
+    const outcome = await Promise.race([waitForResult(result, options.waitMs), spawnFailed]);
+    if (outcome !== RUNNING) {
+        await rm(runFile, { force: true });
+        await rm(result, { force: true });
+    }
+    return outcome;
+}
+async function writeFileAtomic(path, data) {
+    const temp = `${path}.${randomUUID()}`;
+    try {
+        const file = await open(temp, 'wx', 0o600);
+        try {
+            await file.writeFile(data);
+        }
+        finally {
+            await file.close();
+        }
+        await rename(temp, path);
+    }
+    finally {
+        await rm(temp, { force: true });
+    }
+}
 export async function handoffProjectSetup(input) {
     const response = setupResponse(input.response);
     if (!response)
@@ -131,41 +294,20 @@ export async function handoffProjectSetup(input) {
         const bin = join(dirname(runtime.entry), 'bin.js');
         if (!runtime.manifest.files[relative(runtime.directory, bin).replaceAll('\\', '/')])
             throw new Error('verified_cli_bin_missing');
-        const result = await new Promise((resolve, reject) => {
-            const child = execFile(process.execPath, [bin, 'project', 'ensure', '--agent', '--json'], {
-                cwd: root,
-                shell: false,
-                timeout: 30_000,
-                killSignal: 'SIGKILL',
-                maxBuffer: 64 * 1024,
-                // Runtime injection variables and repository/PATH executables are not inherited.
-                env: Object.fromEntries([
-                    'HOME',
-                    'USERPROFILE',
-                    'LOCALAPPDATA',
-                    'XDG_STATE_HOME',
-                    'MNEMONIK_STATE_DIR',
-                    'MNEMONIK_SERVER',
-                    'MNEMONIK_API_RESOURCE',
-                    'MNEMONIK_OAUTH_ISSUER',
-                    'SYSTEMROOT',
-                    'TEMP',
-                    'TMP',
-                    'TMPDIR',
-                ].flatMap((key) => (process.env[key] === undefined ? [] : [[key, process.env[key]]]))),
-            }, (error, stdout) => {
-                if (error && (error.killed || error.code !== 3))
-                    return reject(new Error('helper_failed'));
-                try {
-                    resolve(JSON.parse(stdout));
-                }
-                catch {
-                    reject(new Error('helper_invalid_json'));
-                }
-            });
-            child.stdin?.on('error', () => { });
-            child.stdin?.end(JSON.stringify({ requestId }));
+        const result = await runEnsure({
+            bin,
+            root,
+            requestId,
+            directory: dirname(input.stateFile),
+            waitMs: input.waitMs ?? Math.max(0, hookDeadlineMs(input.host) - performance.now()),
         });
+        if (result === RUNNING) {
+            // Still running detached (runEnsure); the next session_bootstrap's hook
+            // waits for it or collects its result, and never starts a second one.
+            return PROJECT_SETUP_RUNNING;
+        }
+        // The helper may have written this folder's identity.
+        (await import('./hookRuntime.js')).clearProjectIdentityCache();
         if (!record(result))
             throw new Error('helper_invalid_json');
         if (result.status === 'done') {

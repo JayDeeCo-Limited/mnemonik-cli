@@ -21,7 +21,21 @@ export interface ServerTransportOptions {
     issueContext(input: Evidence & {
         projectId?: string;
     }): Promise<CliIssueContext>;
+    /** Each request's own bound (PROJECT_REQUEST_TIMEOUT_MS). */
+    requestTimeoutMs?: number;
+    /**
+     * Epoch ms after which no request is sent and each in flight is cut short
+     * (`project ensure --agent` sets it inside its supervisor's 30 s limit).
+     */
+    deadline?: number;
 }
+/**
+ * A project-setup request that has not answered by then is abandoned and
+ * reported `unreachable` (the command's retryable failure). Without it a
+ * server that accepted the connection and never answered held the command,
+ * and the hook's detached `project ensure` helper, indefinitely.
+ */
+export declare const PROJECT_REQUEST_TIMEOUT_MS = 5000;
 type AccountContext = {
     owner: Owner;
     userId: string;
@@ -56,13 +70,18 @@ export declare function createServerTransport(options: ServerTransportOptions): 
         reason: string;
     }>;
     credentials: {
-        putCliOAuth: (metadata: import("@mnemonik/credentials").CliOAuthMetadata, tokens: import("@mnemonik/credentials").CliOAuthTokens | string) => Promise<{
+        putCliOAuth: (metadata: import("@mnemonik/credentials").CliOAuthMetadata, tokens: import("@mnemonik/credentials").CliOAuthTokens | string) => ReturnType<(metadata: import("@mnemonik/credentials").CliOAuthMetadata, tokens: import("@mnemonik/credentials").CliOAuthTokens | string) => Promise<{
             store: string;
-        }>;
+        }>>;
         readCliOAuth: () => Promise<CliOAuthCredential | null>;
         rotateCli: (transport: CliCredentialTransport) => Promise<import("@mnemonik/credentials").ActionRequired | import("@mnemonik/credentials").RetryLater | CliOAuthCredential>;
         withCliCredential: <T>(transport: CliCredentialTransport, work: (accessToken: string) => Promise<import("@mnemonik/credentials").WorkResponse<T>>) => Promise<import("@mnemonik/credentials").WorkResponse<T> | import("@mnemonik/credentials").ActionRequired | import("@mnemonik/credentials").RetryLater>;
         removeCliOAuth: () => Promise<void>;
+        revokeCli: (transport: import("@mnemonik/credentials").CliRevocationTransport) => Promise<import("@mnemonik/credentials").ActionRequired | import("@mnemonik/credentials").RetryLater | {
+            status: 'revoked';
+            familyId: string;
+        }>;
+        waitForCliLease: () => Promise<void>;
         putFamily: (componentKind: import("@mnemonik/credentials").ComponentKind, response: import("@mnemonik/credentials").ComponentCredentialResponse) => Promise<import("@mnemonik/credentials").FamilyCredential>;
         readFamily: (familyId: string) => Promise<import("@mnemonik/credentials").FamilyCredential | null>;
         rotateFamily: (familyId: string, transport: import("@mnemonik/credentials").CredentialTransport) => Promise<import("@mnemonik/credentials").RotationResult>;

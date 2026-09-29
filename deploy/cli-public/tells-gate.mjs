@@ -93,7 +93,9 @@ function inspect(text, name, rules = expressions) {
           .findIndex((line) => new RegExp(joined('Anth', 'ropic'), 'iu').test(line));
         findings.add(`${name}:${index + 1}: ${joined('Anth', 'ropic')} author`);
       }
-    } catch {}
+    } catch {
+      // Not valid JSON: the per-line checks below still scan it.
+    }
   }
   for (const [index, line] of text.split(/\r?\n/).entries()) {
     const checks = [...rules];

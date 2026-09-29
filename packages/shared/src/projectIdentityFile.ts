@@ -98,10 +98,18 @@ export async function readIdentityFile(
     const text = await readFile(path, 'utf8');
     if (options.selectedRoot) {
       // A ticked folder with configuration but no identity is a new project.
-      // Keep invalid identities and non-regular files on the strict refusal path.
+      // Keep invalid identities, non-regular files and any file that names a
+      // schema other than 1 on the strict refusal path: a later schema may carry
+      // its identity under other keys, and setup must not replace it.
       try {
         const value: unknown = JSON.parse(text);
-        if (value && typeof value === 'object' && !Array.isArray(value) && !('projectId' in value))
+        if (
+          value &&
+          typeof value === 'object' &&
+          !Array.isArray(value) &&
+          !('projectId' in value) &&
+          (!('schemaVersion' in value) || value.schemaVersion === 1)
+        )
           return { kind: 'absent' };
       } catch {
         /* The strict parser supplies the diagnostic. */

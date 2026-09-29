@@ -1,5 +1,5 @@
 import { windowsCurrentUserAcl } from '@mnemonik/local-setup';
-import { type ActionRequired, type CliOAuthCredential, type CliOAuthMetadata, type CliOAuthTokens, type CliCredentialTransport, type ComponentCredentialResponse, type ComponentKind, type CredentialTransport, type FamilyCredential, type RetryLater, type RotationResult, type SecretStore, SimulatedSecretStore, type WorkResponse } from './contracts.js';
+import { type ActionRequired, type CliOAuthCredential, type CliOAuthMetadata, type CliOAuthTokens, type CliCredentialTransport, type CliRevocationTransport, type ComponentCredentialResponse, type ComponentKind, type CredentialTransport, type FamilyCredential, type RetryLater, type RotationResult, type SecretStore, SimulatedSecretStore, type WorkResponse } from './contracts.js';
 import { CredentialError, credentialPaths, stateDirectory, type SecureFileOptions } from './storage.js';
 export * from './contracts.js';
 import { osSecretStore } from './osSecretStore.js';
@@ -14,13 +14,18 @@ export interface CredentialAdapterOptions extends SecureFileOptions {
     lockWaitMs?: number;
 }
 export declare function createCredentialAdapter(options?: CredentialAdapterOptions): {
-    putCliOAuth: (metadata: CliOAuthMetadata, tokens: CliOAuthTokens | string) => Promise<{
+    putCliOAuth: (metadata: CliOAuthMetadata, tokens: CliOAuthTokens | string) => ReturnType<(metadata: CliOAuthMetadata, tokens: CliOAuthTokens | string) => Promise<{
         store: string;
-    }>;
+    }>>;
     readCliOAuth: () => Promise<CliOAuthCredential | null>;
     rotateCli: (transport: CliCredentialTransport) => Promise<ActionRequired | RetryLater | CliOAuthCredential>;
     withCliCredential: <T>(transport: CliCredentialTransport, work: (accessToken: string) => Promise<WorkResponse<T>>) => Promise<WorkResponse<T> | ActionRequired | RetryLater>;
     removeCliOAuth: () => Promise<void>;
+    revokeCli: (transport: CliRevocationTransport) => Promise<ActionRequired | RetryLater | {
+        status: 'revoked';
+        familyId: string;
+    }>;
+    waitForCliLease: () => Promise<void>;
     putFamily: (componentKind: ComponentKind, response: ComponentCredentialResponse) => Promise<FamilyCredential>;
     readFamily: (familyId: string) => Promise<FamilyCredential | null>;
     rotateFamily: (familyId: string, transport: CredentialTransport) => Promise<RotationResult>;
@@ -43,13 +48,18 @@ export declare function createCredentialAdapter(options?: CredentialAdapterOptio
 };
 /** Shared CLI/hook backend selection; component records keep their recorded backend. */
 export declare function createLocalCredentialAdapter(options?: CredentialAdapterOptions): {
-    putCliOAuth: (metadata: CliOAuthMetadata, tokens: CliOAuthTokens | string) => Promise<{
+    putCliOAuth: (metadata: CliOAuthMetadata, tokens: CliOAuthTokens | string) => ReturnType<(metadata: CliOAuthMetadata, tokens: CliOAuthTokens | string) => Promise<{
         store: string;
-    }>;
+    }>>;
     readCliOAuth: () => Promise<CliOAuthCredential | null>;
     rotateCli: (transport: CliCredentialTransport) => Promise<ActionRequired | RetryLater | CliOAuthCredential>;
     withCliCredential: <T>(transport: CliCredentialTransport, work: (accessToken: string) => Promise<WorkResponse<T>>) => Promise<WorkResponse<T> | ActionRequired | RetryLater>;
     removeCliOAuth: () => Promise<void>;
+    revokeCli: (transport: CliRevocationTransport) => Promise<ActionRequired | RetryLater | {
+        status: 'revoked';
+        familyId: string;
+    }>;
+    waitForCliLease: () => Promise<void>;
     putFamily: (componentKind: ComponentKind, response: ComponentCredentialResponse) => Promise<FamilyCredential>;
     readFamily: (familyId: string) => Promise<FamilyCredential | null>;
     rotateFamily: (familyId: string, transport: CredentialTransport) => Promise<RotationResult>;
@@ -80,7 +90,19 @@ type HookFamily = {
 export type HookCredential = string | HookFamily;
 /** Family handles contain no tokens. Legacy keys are considered only without a family. */
 export declare function resolveHookCredential(legacyKey: string | null, server: string, env?: NodeJS.ProcessEnv, argv?: string[]): HookCredential | null;
-/** Preserve each caller's wire body and budget; share rotation and failure state with bound context. */
+/** Header on a synthetic answer that no server sent: the credential was not usable. */
+export declare const HOOK_CREDENTIAL_HEADER = "x-mnemonik-credential";
+/**
+ * Preserve each caller's wire body and budget; share rotation and failure state with bound context.
+ *
+ * When no request could be sent, the answer is synthetic and says whether that is lasting, so a
+ * caller that retries (edit reports) can tell the two apart without knowing about credentials:
+ * - lasting (no credential, revoked or expired grant, family gone, refused rotation):
+ *   403 `{"ok":false}`, as before;
+ * - transient (rotation answered 429/5xx, its response lost, the successor not persisted, the
+ *   lease or store unavailable): 503 `{"ok":false,"retryable":true,"reason":"credential_unavailable"}`.
+ * Both carry `x-mnemonik-credential: unavailable`.
+ */
 export declare function fetchWithHookCredential(credential: HookCredential | null, url: string, init: NonNullable<Parameters<typeof fetch>[1]> & {
     headers?: Record<string, string>;
 }): Promise<Response>;

@@ -43,6 +43,43 @@ export const POST_TOOL_TIMEOUT_MS = 1500;
  */
 export const MCP_PRECHECK_TIMEOUT_MS = 1000;
 /**
+ * PreCompact snapshot POST budget (Claude Code and Cursor; Grok keeps a pinned
+ * copy). Independent of FETCH_TIMEOUT_MS: the snapshot is the one hook call
+ * whose server work is a write the compaction depends on.
+ */
+export const PRECOMPACT_TIMEOUT_MS = 4000;
+/**
+ * The timeout each host is installed with for every Mnemonik hook event: the
+ * host kills the hook at this. The installers write these values (seconds =
+ * value / 1000), so a hook event's worst case is checked against the number
+ * the host actually enforces (tests/HookEventBudgets.test.ts).
+ */
+export const HOST_HOOK_TIMEOUT_MS = {
+    claude_code: 5000,
+    copilot: 5000,
+    codex: 5000,
+    grok: 5000,
+    cursor: 30_000,
+};
+/**
+ * Time every hook event keeps free below its host's timeout: Node start-up,
+ * project identity on a healthy git, local file I/O, writing the answer.
+ * Reading stdin has its own bound below. An event's summed worst case must
+ * fit the rest.
+ */
+export const HOOK_TIMEOUT_MARGIN_MS = 500;
+/**
+ * The longest a hook waits for its host to finish writing and close stdin
+ * (readHookStdin). Hosts write the payload at spawn and close the pipe; one
+ * that never closes it would otherwise hold the hook until the host kills it.
+ * On expiry the hook works with what arrived, or fails open.
+ */
+export const HOOK_STDIN_TIMEOUT_MS = 500;
+/** The latest an event's own work may run to, measured from process start. */
+export function hookDeadlineMs(host) {
+    return HOST_HOOK_TIMEOUT_MS[host] - HOOK_TIMEOUT_MARGIN_MS - HOOK_STDIN_TIMEOUT_MS;
+}
+/**
  * Spawn an `AbortController` tied to a timeout. Returns the signal plus a
  * `cleanup` function the caller MUST invoke (in `finally`) to clear the
  * timer when the request finishes naturally - otherwise the timer leaks

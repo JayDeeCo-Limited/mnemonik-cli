@@ -2,6 +2,13 @@ import { createCliCredentials } from '../auth/credentials.js';
 import { URLSearchParams } from 'node:url';
 import { createCliAuth } from '../auth/index.js';
 const DEFAULT_API = 'https://api.mnemonik.dev/';
+/**
+ * A project-setup request that has not answered by then is abandoned and
+ * reported `unreachable` (the command's retryable failure). Without it a
+ * server that accepted the connection and never answered held the command,
+ * and the hook's detached `project ensure` helper, indefinitely.
+ */
+export const PROJECT_REQUEST_TIMEOUT_MS = 5_000;
 const action = (state, allowedActions = ['retry', 'cancel']) => ({
     status: 'ACTION_REQUIRED',
     state,
@@ -51,6 +58,8 @@ export function createServerTransport(options) {
     const fetchImpl = options.fetch ?? fetch;
     const credentials = options.credentials ?? createCliCredentials();
     const getCliBearer = options.getCliBearer ?? createCliAuth({ resource, fetch: fetchImpl, credentials }).getCliBearer;
+    /** This request's time: its own bound, cut to what the deadline leaves (0: send nothing). */
+    const requestBudget = () => Math.max(0, Math.min(options.requestTimeoutMs ?? PROJECT_REQUEST_TIMEOUT_MS, (options.deadline ?? Infinity) - Date.now()));
     const rotation = {
         async rotateCli(current) {
             const response = await fetchImpl(`${current.issuer.replace(/\/$/u, '')}/oauth/token`, {
@@ -62,6 +71,8 @@ export function createServerTransport(options) {
                     refresh_token: current.refreshToken,
                     resource,
                 }),
+                // A timeout throws: the credential adapter treats it as a lost response.
+                signal: AbortSignal.timeout(Math.max(1, requestBudget())),
             });
             return {
                 status: response.status,
@@ -77,8 +88,12 @@ export function createServerTransport(options) {
         if (typeof firstBearer !== 'string')
             return signInAction(firstBearer);
         const send = async (bearer) => {
+            const budget = requestBudget();
+            if (budget <= 0)
+                return { status: 503, body: action('unreachable') };
             try {
                 const response = await fetchImpl(`${apiBase}${path}`, {
+                    signal: AbortSignal.timeout(budget),
                     method,
                     headers: {
                         authorization: `Bearer ${bearer}`,

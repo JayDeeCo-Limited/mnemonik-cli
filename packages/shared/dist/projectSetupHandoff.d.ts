@@ -10,6 +10,10 @@ export interface ProjectSetupDiagnostic {
 }
 /** Parse the native tool response, never tool arguments or agent-authored command fields. */
 export declare function setupResponse(value: unknown): Record<string, unknown> | undefined;
+/** What the agent is told while `project ensure` is still running detached. */
+export declare const PROJECT_SETUP_RUNNING = "Mnemonik project setup is still running; call session_bootstrap again in a few seconds.";
+/** The CLI helper's own bound, enforced by the detached supervisor below. */
+export declare const PROJECT_ENSURE_TIMEOUT_MS = 30000;
 export declare function handoffProjectSetup(input: {
     response: unknown;
     cwd: string | undefined;
@@ -18,6 +22,11 @@ export declare function handoffProjectSetup(input: {
     stateFile: string;
     stateDir: string;
     familyId: string | undefined;
+    /**
+     * How long this hook may wait for `project ensure`; defaults to what the
+     * host's hook timeout leaves (hookDeadlineMs less the time since start).
+     */
+    waitMs?: number;
 }): Promise<string | undefined>;
 /** Both doctor and status consume private per-session outcomes, scoped by root hash. */
 export declare function pendingProjectSetup(root: string): Promise<ProjectSetupDiagnostic[]>;

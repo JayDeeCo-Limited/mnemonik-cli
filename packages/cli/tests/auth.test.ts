@@ -766,6 +766,31 @@ describe('stored CLI grant', () => {
     expect(fetcher).toHaveBeenCalledTimes(1);
   });
 
+  // Review of CQ-033: a refresh the server accepted and never answered held
+  // the command (and the hook's detached `project ensure` helper) forever.
+  it('a refresh the server never answers ends as a retryable lost response', async () => {
+    const now = Date.parse('2026-09-11T00:20:00.000Z');
+    const credentials = await stored('2026-09-11T00:15:00.000Z');
+    const fetcher = vi.fn(
+      (_url: string | URL, init?: FetchInit) =>
+        new Promise<Response>((_, reject) =>
+          init?.signal?.addEventListener('abort', () => reject(init.signal?.reason))
+        )
+    );
+    const auth = createCliAuth({
+      credentials,
+      fetch: fetcher as typeof fetch,
+      now: () => now,
+      refreshTimeoutMs: 50,
+    });
+    await expect(auth.getCliBearer()).resolves.toEqual({
+      status: 'ACTION_REQUIRED',
+      reason: 'rotation_response_lost',
+    });
+    // The adapter retries a lost response once, then gives up.
+    expect(fetcher).toHaveBeenCalledTimes(2);
+  });
+
   it('revokes the CLI refresh grant before removing only its local record', async () => {
     const credentials = await stored('2026-09-11T00:15:00.000Z');
     const fetcher = vi.fn(async (_url: string | URL, init?: FetchInit) => {
@@ -888,4 +913,278 @@ it('local CLI sign-in sends the hostname and opens the complete link', async () 
   await auth.signIn();
   expect(observed).toBe(hostname());
   expect(openBrowser).toHaveBeenCalledWith(issued.verification_uri_complete);
+});
+
+describe('sign-out under the CLI credential lease', () => {
+  /** An issuer that rotates refresh tokens and, per RFC 7009, answers 200 to any revocation. */
+  function signedIn() {
+    const issuerState = { current: 'refresh-0', revoked: false, generation: 0 };
+    const rotate = vi.fn(async (current: { refreshToken: string }) => {
+      if (issuerState.revoked || current.refreshToken !== issuerState.current)
+        return { status: 400, body: { error: 'invalid_grant' } };
+      issuerState.current = `refresh-${++issuerState.generation}`;
+      return {
+        status: 200 as const,
+        body: {
+          access_token: `access-${issuerState.generation}`,
+          refresh_token: issuerState.current,
+          token_type: 'Bearer' as const,
+          expires_in: 900,
+          scope: CLI_SCOPES.join(' '),
+        },
+      };
+    });
+    const presented: string[] = [];
+    const revoke = async (token: string) => {
+      presented.push(token);
+      if (token === issuerState.current) issuerState.revoked = true;
+      return new Response('{}', { status: 200 });
+    };
+    return { issuerState, rotate, presented, revoke };
+  }
+  async function seeded() {
+    const parent = await mkdtemp(join(tmpdir(), 'cli-signout-'));
+    dirs.push(parent);
+    const stateDir = join(parent, 'state');
+    await createCredentialAdapter({ stateDir }).putCliOAuth(
+      {
+        issuer,
+        clientId,
+        scopes: [...CLI_SCOPES],
+        familyId: 'local-family-key',
+        lastRotationTime: '2026-09-11T00:00:00.000Z',
+      },
+      {
+        accessToken: 'access-0',
+        refreshToken: 'refresh-0',
+        accessExpiresAt: '1970-01-01T00:00:00.000Z',
+      }
+    );
+    return stateDir;
+  }
+  const barrier = () => {
+    let arrive!: () => void;
+    let open!: () => void;
+    const reached = new Promise<void>((resolve) => (arrive = resolve));
+    const gate = new Promise<void>((resolve) => (open = resolve));
+    return { reached, open, pause: () => (arrive(), gate) };
+  };
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 50));
+  const revokeTokenOf = (init?: FetchInit) =>
+    String(new URLSearchParams(String(init?.body)).get('token'));
+
+  it('logout after a rotation holding the lease revokes the successor and leaves nothing', async () => {
+    const stateDir = await seeded();
+    const server = signedIn();
+    const persist = barrier();
+    const rotation = createCredentialAdapter({
+      stateDir,
+      fault: async (point) => {
+        if (point === 'before_secret_rename') await persist.pause();
+      },
+    }).rotateCli({ rotateCli: server.rotate });
+    await persist.reached;
+    const fetcher = vi.fn(async (_url: string | URL, init?: FetchInit) =>
+      server.revoke(revokeTokenOf(init))
+    );
+    const logout = createCliAuth({
+      credentials: createCredentialAdapter({ stateDir }),
+      fetch: fetcher as typeof fetch,
+    }).logout();
+    await settle();
+    expect(fetcher).not.toHaveBeenCalled();
+    persist.open();
+
+    expect(await rotation).toMatchObject({ refreshToken: 'refresh-1' });
+    await logout;
+    expect(server.presented).toEqual(['refresh-1']);
+    expect(server.issuerState.revoked).toBe(true);
+    expect(await createCredentialAdapter({ stateDir }).readCliOAuth()).toBeNull();
+  });
+
+  it('a rotation behind an in-flight logout finds no credential and recreates nothing', async () => {
+    const stateDir = await seeded();
+    const server = signedIn();
+    const remote = barrier();
+    const fetcher = vi.fn(async (_url: string | URL, init?: FetchInit) => {
+      await remote.pause();
+      return server.revoke(revokeTokenOf(init));
+    });
+    const logout = createCliAuth({
+      credentials: createCredentialAdapter({ stateDir }),
+      fetch: fetcher as typeof fetch,
+    }).logout();
+    await remote.reached;
+    const rotation = createCredentialAdapter({ stateDir }).rotateCli({ rotateCli: server.rotate });
+    await settle();
+    expect(server.rotate).not.toHaveBeenCalled();
+    remote.open();
+
+    await logout;
+    expect(await rotation).toMatchObject({ status: 'ACTION_REQUIRED', reason: 'family_missing' });
+    expect(server.rotate).not.toHaveBeenCalled();
+    expect(server.presented).toEqual(['refresh-0']);
+    expect(server.issuerState.revoked).toBe(true);
+    expect(await createCredentialAdapter({ stateDir }).readCliOAuth()).toBeNull();
+  });
+
+  it('keeps the signed-in credential when the issuer cannot revoke, and retries cleanly', async () => {
+    const stateDir = await seeded();
+    const credentials = createCredentialAdapter({ stateDir });
+    const fetcher = vi
+      .fn()
+      .mockResolvedValueOnce(new Response('{}', { status: 503 }))
+      .mockResolvedValueOnce(new Response('{}', { status: 200 }));
+    const auth = createCliAuth({ credentials, fetch: fetcher as typeof fetch });
+    await expect(auth.logout()).rejects.toMatchObject({ code: 'revoke_failed' });
+    expect(await credentials.readCliOAuth()).toMatchObject({ refreshToken: 'refresh-0' });
+    await auth.logout();
+    expect(await credentials.readCliOAuth()).toBeNull();
+  });
+});
+
+/**
+ * Review follow-ups (CQ-020 area): sign-out holds the CLI lease across an issuer
+ * call, so that call is bounded; sign-in waits for the lease before the device
+ * grant is issued, so a grant is never issued that put() then cannot store.
+ */
+describe('sign-in and sign-out around the CLI credential lease', () => {
+  const metadata = {
+    issuer,
+    clientId,
+    scopes: [...CLI_SCOPES],
+    familyId: 'local-family-key',
+    lastRotationTime: '2026-09-11T00:00:00.000Z',
+  };
+  async function stateDirWithCredential(refreshToken = 'refresh-0') {
+    const parent = await mkdtemp(join(tmpdir(), 'cli-lease-'));
+    dirs.push(parent);
+    const stateDir = join(parent, 'state');
+    await createCredentialAdapter({ stateDir }).putCliOAuth(metadata, refreshToken);
+    return stateDir;
+  }
+  /** A rotation paused mid-persist: it holds the CLI lease until `open()`. */
+  async function leaseHolder(stateDir: string) {
+    let arrive!: () => void;
+    let open!: () => void;
+    const reached = new Promise<void>((resolve) => (arrive = resolve));
+    const gate = new Promise<void>((resolve) => (open = resolve));
+    const rotation = createCredentialAdapter({
+      stateDir,
+      fault: async (point) => {
+        if (point === 'before_secret_rename') {
+          arrive();
+          await gate;
+        }
+      },
+    }).rotateCli({
+      rotateCli: async () => ({
+        status: 200 as const,
+        body: {
+          access_token: 'access-1',
+          refresh_token: 'refresh-1',
+          token_type: 'Bearer' as const,
+          expires_in: 900,
+          scope: CLI_SCOPES.join(' '),
+        },
+      }),
+    });
+    await reached;
+    return { open, rotation };
+  }
+  const signInFetch = (requests: string[]) =>
+    vi.fn(async (url: string | URL) => {
+      const path = new URL(url).pathname;
+      requests.push(path);
+      if (path === '/oauth/device_authorization')
+        return new Response(JSON.stringify(issued), { status: 200 });
+      if (path === '/oauth/token') return token();
+      if (path === '/api/v1/auth/grants') return Response.json({ email: 'owner@example.test' });
+      throw new Error(`unexpected request: ${path}`);
+    });
+
+  it('sign-out bounds the issuer call it makes under the lease, then releases it', async () => {
+    const stateDir = await stateDirWithCredential();
+    const credentials = createCredentialAdapter({ stateDir });
+    const fetcher = vi.fn(
+      (_url: string | URL, init?: FetchInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          const signal = init?.signal;
+          if (!signal) return; // an unbounded call never settles
+          signal.addEventListener('abort', () => reject(signal.reason));
+        })
+    );
+    await expect(
+      createCliAuth({ credentials, fetch: fetcher as typeof fetch, revokeTimeoutMs: 50 }).logout()
+    ).rejects.toMatchObject({ code: 'revoke_failed' });
+    // The credential is kept for a retry, and the lease is free again.
+    expect(await credentials.readCliOAuth()).toMatchObject({ refreshToken: 'refresh-0' });
+    const fast = createCredentialAdapter({ stateDir, lockWaitMs: 200 });
+    await expect(fast.putCliOAuth(metadata, 'refresh-9')).resolves.toBeDefined();
+  });
+
+  it('sign-in waits for a lease holder before a device grant is issued', async () => {
+    const stateDir = await stateDirWithCredential();
+    const holder = await leaseHolder(stateDir);
+    const requests: string[] = [];
+    const signIn = createCliAuth({
+      stateDir,
+      issuer,
+      resource,
+      noBrowser: true,
+      credentials: createCredentialAdapter({ stateDir }),
+      fetch: signInFetch(requests) as typeof fetch,
+      print: () => {},
+      sleep: async () => undefined,
+    }).signIn();
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(requests).toEqual([]);
+    holder.open();
+    await holder.rotation;
+    await expect(signIn).resolves.toMatchObject({ refreshToken: 'refresh' });
+    expect(requests[0]).toBe('/oauth/device_authorization');
+  });
+
+  it('sign-in that cannot get the lease fails before any device grant is issued', async () => {
+    const stateDir = await stateDirWithCredential();
+    const holder = await leaseHolder(stateDir);
+    const requests: string[] = [];
+    try {
+      await expect(
+        createCliAuth({
+          stateDir,
+          issuer,
+          resource,
+          noBrowser: true,
+          credentials: createCredentialAdapter({ stateDir, lockWaitMs: 150 }),
+          fetch: signInFetch(requests) as typeof fetch,
+          print: () => {},
+          sleep: async () => undefined,
+        }).signIn()
+      ).rejects.toThrow();
+      expect(requests).toEqual([]);
+    } finally {
+      holder.open();
+      await holder.rotation;
+    }
+  });
+
+  it('sign-in replaces a stored record whose secret an older crash deleted', async () => {
+    const stateDir = await stateDirWithCredential();
+    const { credentialPaths } = await import('@mnemonik/credentials');
+    await rm(credentialPaths(stateDir).cliSecret);
+    const requests: string[] = [];
+    await expect(
+      createCliAuth({
+        stateDir,
+        issuer,
+        resource,
+        noBrowser: true,
+        credentials: createCredentialAdapter({ stateDir }),
+        fetch: signInFetch(requests) as typeof fetch,
+        print: () => {},
+        sleep: async () => undefined,
+      }).signIn()
+    ).resolves.toMatchObject({ refreshToken: 'refresh' });
+  });
 });

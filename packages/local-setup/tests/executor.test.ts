@@ -1196,3 +1196,39 @@ describe('a setup that waits on a question can always be answered', () => {
     expect(await other.stage(f.options)).toMatchObject({ status: 'staged', projectId });
   });
 });
+
+describe('selected-root setup of a folder whose identity file names another schema', () => {
+  const selectedResolver = {
+    resolveProjectIdentity: (cwd: string, options?: { allowNestedInherit?: boolean }) =>
+      resolveProjectIdentity(cwd, { ...options, selectedRoot: true }),
+  };
+
+  it('refuses a future-version identity before any remote call or write', async () => {
+    const f = await fixture();
+    const future = Buffer.from(
+      JSON.stringify({ schemaVersion: 2, futureIdentity: 'proj_future_0001' }) + '\n'
+    );
+    await writeFile(f.file, future);
+    const executor = createProjectSetupExecutor({ ...f.deps, resolver: selectedResolver });
+    expect(await executor.ensureProject(f.options)).toMatchObject({
+      status: 'ACTION_REQUIRED',
+      state: 'unknown_version',
+    });
+    expect(await executor.stage(f.options)).toMatchObject({ state: 'unknown_version' });
+    expect(await readFile(f.file)).toEqual(future);
+    expect(f.transport.issueSetupRequest).not.toHaveBeenCalled();
+    expect(f.transport.consumeSetupRequest).not.toHaveBeenCalled();
+    expect(await readdir(f.stateDir).catch(() => [])).toEqual([]);
+  });
+
+  it.each(['{}', '{"scan":{"enabled":true}}', '{"schemaVersion":1}'])(
+    'still sets up a ticked folder whose file %s carries no identity',
+    async (text) => {
+      const f = await fixture();
+      await writeFile(f.file, text);
+      const executor = createProjectSetupExecutor({ ...f.deps, resolver: selectedResolver });
+      expect(await executor.ensureProject(f.options)).toMatchObject({ status: 'done' });
+      expect(JSON.parse(await readFile(f.file, 'utf8')).projectId).toBe(projectId);
+    }
+  );
+});

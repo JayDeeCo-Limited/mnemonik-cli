@@ -21,7 +21,7 @@ session_bootstrap -> memory_search -> file_context -> [work] -> memory_add -> me
 
 ### Session start
 - session_bootstrap: loads context, policies, pending tasks (call once, first thing)
-- memory_search: search by task domain; set workflowContext (feature_implementation, debugging, exploration, policy_review)
+- memory_search: search by task domain
 - projects: resolve project IDs if context unclear
 - policy: review safety rules
 
@@ -65,7 +65,6 @@ Never tell the user significant work is done without calling memory_add first in
 ## Memory search tips
 
 - Query should include task intent + key entities
-- Set workflowContext when you know the phase
 - Use currentFile to boost file-linked memories
 - Use filterOnly:true only for narrow filters (no embedding, requires >=1 filter)
 

@@ -1,13 +1,18 @@
 import { type CredentialAdapterOptions, type CredentialStoreKind } from '@mnemonik/credentials';
 /** Every CLI OAuth consumer uses the same process-scoped OS store. */
 export declare function createCliCredentials(options?: CredentialAdapterOptions): {
-    putCliOAuth: (metadata: import("@mnemonik/credentials").CliOAuthMetadata, tokens: import("@mnemonik/credentials").CliOAuthTokens | string) => Promise<{
+    putCliOAuth: (metadata: import("@mnemonik/credentials").CliOAuthMetadata, tokens: import("@mnemonik/credentials").CliOAuthTokens | string) => ReturnType<(metadata: import("@mnemonik/credentials").CliOAuthMetadata, tokens: import("@mnemonik/credentials").CliOAuthTokens | string) => Promise<{
         store: string;
-    }>;
+    }>>;
     readCliOAuth: () => Promise<import("@mnemonik/credentials").CliOAuthCredential | null>;
     rotateCli: (transport: import("@mnemonik/credentials").CliCredentialTransport) => Promise<import("@mnemonik/credentials").ActionRequired | import("@mnemonik/credentials").RetryLater | import("@mnemonik/credentials").CliOAuthCredential>;
     withCliCredential: <T>(transport: import("@mnemonik/credentials").CliCredentialTransport, work: (accessToken: string) => Promise<import("@mnemonik/credentials").WorkResponse<T>>) => Promise<import("@mnemonik/credentials").WorkResponse<T> | import("@mnemonik/credentials").ActionRequired | import("@mnemonik/credentials").RetryLater>;
     removeCliOAuth: () => Promise<void>;
+    revokeCli: (transport: import("@mnemonik/credentials").CliRevocationTransport) => Promise<import("@mnemonik/credentials").ActionRequired | import("@mnemonik/credentials").RetryLater | {
+        status: 'revoked';
+        familyId: string;
+    }>;
+    waitForCliLease: () => Promise<void>;
     putFamily: (componentKind: import("@mnemonik/credentials").ComponentKind, response: import("@mnemonik/credentials").ComponentCredentialResponse) => Promise<import("@mnemonik/credentials").FamilyCredential>;
     readFamily: (familyId: string) => Promise<import("@mnemonik/credentials").FamilyCredential | null>;
     rotateFamily: (familyId: string, transport: import("@mnemonik/credentials").CredentialTransport) => Promise<import("@mnemonik/credentials").RotationResult>;

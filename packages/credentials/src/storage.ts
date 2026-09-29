@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { lstat as nodeLstat, mkdir, open, readdir, rmdir, unlink } from 'node:fs/promises';
-import { constants, type Stats } from 'node:fs';
+import { constants, realpathSync, type Stats } from 'node:fs';
 import { basename, dirname, isAbsolute, join, parse, relative, resolve, sep } from 'node:path';
 import {
   atomicWrite,
@@ -23,11 +23,19 @@ export type CredentialFailureReason =
   | 'acl_identity_unavailable';
 
 export class CredentialError extends Error {
-  constructor(public readonly reason: CredentialFailureReason) {
-    super(reason);
+  constructor(
+    public readonly reason: CredentialFailureReason,
+    message: string = reason
+  ) {
+    super(message);
     this.name = 'CredentialError';
   }
 }
+
+/** What the person does about a linked state root (the reason stays symlink_rejected). */
+const STATE_ROOT_LINK_MESSAGE =
+  'The Mnemonik state directory is a symbolic link. Replace it with a real directory, ' +
+  'or set MNEMONIK_STATE_DIR to one.';
 
 type Lstat = (path: string) => Promise<Stats>;
 export interface SecureFileOptions {
@@ -65,8 +73,40 @@ export function credentialPaths(stateDir = stateDirectory(), familyId?: string) 
 const codeIs = (error: unknown, code: string): boolean =>
   (error as NodeJS.ErrnoException).code === code;
 
+/**
+ * The canonical spelling of a (possibly not yet created) directory: realpath of its longest
+ * existing prefix, with the missing tail appended as given.
+ */
+function canonicalDirectory(path: string): string {
+  const missing: string[] = [];
+  let current = resolve(path);
+  for (;;) {
+    try {
+      return join(realpathSync.native(current), ...missing.reverse());
+    } catch (error) {
+      const parent = dirname(current);
+      if (!codeIs(error, 'ENOENT') || parent === current) return resolve(path);
+      missing.push(basename(current));
+      current = parent;
+    }
+  }
+}
+
+/**
+ * Symlink policy (the credential store design: "reject symlinks, wrong ownership, weak permissions"): the
+ * directories ABOVE the configured state root are canonicalized once, at construction, and
+ * trusted - the user's home or the OS temp directory may legitimately be reached through a
+ * link (/home -> /data/home, macOS /var -> /private/var), and refusing those made every
+ * credential operation fail. The root itself is not resolved: it and every component inside
+ * it are lstat()ed on each use and a symbolic link there is refused (symlink_rejected; for
+ * the root, with a message saying what to do), as are wrong owners and modes; the final open
+ * adds O_NOFOLLOW. A root that is a link when configured, or is planted as one later, is
+ * refused alike.
+ */
 export class SecureFiles {
   readonly stateDir: string;
+  /** The root as configured; paths spelled through it are rebased onto `stateDir`. */
+  private readonly configuredStateDir: string;
   private readonly platform: NodeJS.Platform;
   private readonly lstat: Lstat;
   private readonly uid: number | undefined;
@@ -76,7 +116,13 @@ export class SecureFiles {
   private readonly aclRun?: WindowsAclRun;
 
   constructor(options: SecureFileOptions = {}) {
-    this.stateDir = resolve(options.stateDir ?? stateDirectory());
+    this.configuredStateDir = resolve(options.stateDir ?? stateDirectory());
+    // Only the ancestors are resolved: following the root would trust wherever a link
+    // there points.
+    this.stateDir = join(
+      canonicalDirectory(dirname(this.configuredStateDir)),
+      basename(this.configuredStateDir)
+    );
     this.platform = options.platform ?? process.platform;
     this.lstat = options.lstat ?? nodeLstat;
     this.uid = options.uid ?? process.getuid?.();
@@ -87,7 +133,15 @@ export class SecureFiles {
   }
 
   private assertInsideState(path: string): string {
-    const absolute = resolve(path);
+    let absolute = resolve(path);
+    const fromConfigured = relative(this.configuredStateDir, absolute);
+    if (
+      this.configuredStateDir !== this.stateDir &&
+      fromConfigured !== '..' &&
+      !fromConfigured.startsWith(`..${sep}`) &&
+      !isAbsolute(fromConfigured)
+    )
+      absolute = join(this.stateDir, fromConfigured);
     const fromState = relative(this.stateDir, absolute);
     if (fromState === '..' || fromState.startsWith(`..${sep}`) || isAbsolute(fromState))
       throw new CredentialError('path_outside_state');
@@ -110,6 +164,8 @@ export class SecureFiles {
   private async inspect(path: string, expectFile: boolean, allowMissing: boolean): Promise<void> {
     const absolute = this.assertInsideState(path);
     for (const component of this.components(absolute)) {
+      // Above the canonical root is trusted (see the class comment).
+      if (component !== this.stateDir && !component.startsWith(`${this.stateDir}${sep}`)) continue;
       let value: Stats;
       try {
         value = await this.lstat(component);
@@ -117,10 +173,11 @@ export class SecureFiles {
         if (allowMissing && codeIs(error, 'ENOENT')) continue;
         throw error;
       }
-      if (value.isSymbolicLink()) throw new CredentialError('symlink_rejected');
-      const protectedComponent =
-        component === this.stateDir || component.startsWith(`${this.stateDir}${sep}`);
-      if (!protectedComponent) continue;
+      if (value.isSymbolicLink())
+        throw new CredentialError(
+          'symlink_rejected',
+          component === this.stateDir ? STATE_ROOT_LINK_MESSAGE : undefined
+        );
       const final = component === absolute;
       if (this.platform === 'win32') {
         // Windows has no uid or mode bits to read; the DACL is the permission.

@@ -34,7 +34,22 @@ export interface ServerTransportOptions {
   getCliBearer?: () => Promise<string | { status: string; reason: string }>;
   requestId?: string;
   issueContext(input: Evidence & { projectId?: string }): Promise<CliIssueContext>;
+  /** Each request's own bound (PROJECT_REQUEST_TIMEOUT_MS). */
+  requestTimeoutMs?: number;
+  /**
+   * Epoch ms after which no request is sent and each in flight is cut short
+   * (`project ensure --agent` sets it inside its supervisor's 30 s limit).
+   */
+  deadline?: number;
 }
+
+/**
+ * A project-setup request that has not answered by then is abandoned and
+ * reported `unreachable` (the command's retryable failure). Without it a
+ * server that accepted the connection and never answered held the command,
+ * and the hook's detached `project ensure` helper, indefinitely.
+ */
+export const PROJECT_REQUEST_TIMEOUT_MS = 5_000;
 
 type Json = Record<string, unknown>;
 type HttpResult = { status: number; body: Json } | ActionRequired;
@@ -97,6 +112,15 @@ export function createServerTransport(options: ServerTransportOptions) {
   const credentials = options.credentials ?? createCliCredentials();
   const getCliBearer =
     options.getCliBearer ?? createCliAuth({ resource, fetch: fetchImpl, credentials }).getCliBearer;
+  /** This request's time: its own bound, cut to what the deadline leaves (0: send nothing). */
+  const requestBudget = () =>
+    Math.max(
+      0,
+      Math.min(
+        options.requestTimeoutMs ?? PROJECT_REQUEST_TIMEOUT_MS,
+        (options.deadline ?? Infinity) - Date.now()
+      )
+    );
   const rotation: CliCredentialTransport = {
     async rotateCli(current: CliOAuthCredential) {
       const response = await fetchImpl(`${current.issuer.replace(/\/$/u, '')}/oauth/token`, {
@@ -108,6 +132,8 @@ export function createServerTransport(options: ServerTransportOptions) {
           refresh_token: current.refreshToken,
           resource,
         }),
+        // A timeout throws: the credential adapter treats it as a lost response.
+        signal: AbortSignal.timeout(Math.max(1, requestBudget())),
       });
       return {
         status: response.status,
@@ -128,8 +154,11 @@ export function createServerTransport(options: ServerTransportOptions) {
     const firstBearer = suppliedBearer ?? (await getCliBearer());
     if (typeof firstBearer !== 'string') return signInAction(firstBearer);
     const send = async (bearer: string) => {
+      const budget = requestBudget();
+      if (budget <= 0) return { status: 503, body: action('unreachable') as unknown as Json };
       try {
         const response = await fetchImpl(`${apiBase}${path}`, {
+          signal: AbortSignal.timeout(budget),
           method,
           headers: {
             authorization: `Bearer ${bearer}`,

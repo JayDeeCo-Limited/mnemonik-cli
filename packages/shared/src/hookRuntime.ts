@@ -1,5 +1,6 @@
 import { protectWindowsDirectory, type Execute } from './runtimeSigners.js';
-import { stderr } from 'node:process';
+import { stderr, stdin } from 'node:process';
+import { HOOK_STDIN_TIMEOUT_MS } from './hookTimeouts.js';
 import { resolveProjectIdentity, type ProjectIdentityResolution } from './repositoryRoot.js';
 
 export interface ProjectIdentity {
@@ -8,18 +9,47 @@ export interface ProjectIdentity {
   projectRoot: string;
 }
 
+/**
+ * One resolution per directory per process. A hook process serves one event,
+ * and its handlers resolve the same cwd several times in sequence (each
+ * request builder, each gate report); every resolution runs `git rev-parse`
+ * with a 2 s timeout, so on a slow or hung git the repeats alone could pass
+ * the host's 5 s hook timeout. Only hook runtimes call this (short-lived
+ * processes); project setup clears it after it writes an identity.
+ */
+const identityCache = new Map<string, Promise<ProjectIdentity | null>>();
+
+/** Forget cached resolutions (after project setup wrote a `.mnemonik.json`). */
+export function clearProjectIdentityCache(): void {
+  identityCache.clear();
+}
+
 export async function findProjectIdentity(
   startCwd: string,
   options: { allowNestedInherit?: boolean; maxDepth?: number } = {}
 ): Promise<ProjectIdentity | null> {
   if (!startCwd) return null;
-  const result = await findProjectIdentityDetailed(startCwd, options);
-  if (result.kind !== 'ok') return null;
-  return {
-    projectId: result.identity.projectId,
-    projectName: result.identity.projectName,
-    projectRoot: result.root,
-  };
+  const key = JSON.stringify([
+    startCwd,
+    options.allowNestedInherit ?? null,
+    options.maxDepth ?? null,
+  ]);
+  let pending = identityCache.get(key);
+  if (!pending) {
+    pending = findProjectIdentityDetailed(startCwd, options).then((result) =>
+      result.kind === 'ok'
+        ? {
+            projectId: result.identity.projectId,
+            projectName: result.identity.projectName,
+            projectRoot: result.root,
+          }
+        : null
+    );
+    identityCache.set(key, pending);
+    // A failure is not an answer: the next caller resolves afresh.
+    pending.catch(() => identityCache.delete(key));
+  }
+  return pending;
 }
 
 export async function findProjectIdentityDetailed(
@@ -27,6 +57,64 @@ export async function findProjectIdentityDetailed(
   options: { allowNestedInherit?: boolean; maxDepth?: number } = {}
 ): Promise<ProjectIdentityResolution> {
   return resolveProjectIdentity(startCwd, options);
+}
+
+/** Largest hook payload read from stdin; a bigger one fails open. */
+export const HOOK_STDIN_MAX_BYTES = 1_048_576;
+
+/**
+ * Read a hook's stdin payload, bounded in size and in time. Resolves the text
+ * (a leading BOM removed) when the host closes stdin, or when `timeoutMs`
+ * passes first: then with whatever arrived, which the caller parses like any
+ * other payload (a partial one fails to parse and the hook fails open).
+ * Resolves null past `maxBytes` or on a stream error. After the timeout or
+ * the cap the stream is destroyed, so an unclosed pipe no longer holds the
+ * process open (Grok's hook returns without calling exit).
+ */
+export function readHookStdin(
+  options: {
+    stream?: NodeJS.ReadableStream & { destroy?: () => void };
+    timeoutMs?: number;
+    maxBytes?: number;
+  } = {}
+): Promise<string | null> {
+  const stream = options.stream ?? stdin;
+  const maxBytes = options.maxBytes ?? HOOK_STDIN_MAX_BYTES;
+  return new Promise((resolve) => {
+    const chunks: Buffer[] = [];
+    let bytes = 0;
+    let settled = false;
+    const text = () =>
+      Buffer.concat(chunks)
+        .toString('utf8')
+        .replace(/^\uFEFF/, '');
+    const finish = (value: string | null, release: boolean) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      stream.removeListener('data', onData);
+      stream.removeListener('end', onEnd);
+      if (release) {
+        stream.pause();
+        stream.destroy?.();
+      }
+      resolve(value);
+    };
+    const onData = (chunk: Buffer | string) => {
+      const buffer = typeof chunk === 'string' ? Buffer.from(chunk, 'utf8') : chunk;
+      bytes += buffer.length;
+      if (bytes > maxBytes) return finish(null, true);
+      chunks.push(buffer);
+    };
+    const onEnd = () => finish(text(), false);
+    const timer = setTimeout(
+      () => finish(text(), true),
+      options.timeoutMs ?? HOOK_STDIN_TIMEOUT_MS
+    );
+    stream.on('data', onData);
+    stream.on('end', onEnd);
+    stream.on('error', () => finish(null, false));
+  });
 }
 
 let mismatchEmitted = false;

@@ -1,3 +1,4 @@
+import { createCliAuth } from '../auth/index.js';
 import { createCliCredentials } from '../auth/credentials.js';
 import { apiOrigin } from '@mnemonik/shared';
 import { scannerService, ScannerServiceLimited, } from '../scanner/service.js';
@@ -7,27 +8,53 @@ import { recordPath } from '@mnemonik/local-setup';
 import { reviewScannerProjects } from '../scanner/picker.js';
 import { hostOrder } from './adapters.js';
 import { bytesAt, withInstall, } from './journal.js';
-/** Uses the credential package's locked refresh/revocation path; never journals tokens. */
-export const componentRevoker = (adapter, transport) => async (reference) => (await adapter.revokeFamily(reference, transport)).status === 'revoked';
+/** Uses the credential package's leased revocation path; never journals tokens. */
 export async function revokeInstallComponent(stateDir, reference, fetcher = fetch) {
     const credentials = createCliCredentials({ stateDir });
-    if (!(await credentials.readFamily(reference)))
-        return true;
-    return componentRevoker(credentials, {
+    const revokeUrl = `${apiOrigin()}/api/v1/component-credentials/${encodeURIComponent(reference)}/revoke`;
+    // Revoked only on the server's word. The adapter revokes with the record's token or, after a
+    // crash between the secret and record writes, the orphan secret's.
+    const result = await credentials.revokeFamily(reference, {
         rotateFamily: async () => {
             throw new Error('rotation_not_requested');
         },
-        revokeFamily: async (id, token) => {
-            const response = await fetcher(`${apiOrigin()}/api/v1/component-credentials/${encodeURIComponent(id)}/revoke`, {
+        revokeFamily: async (_id, token) => {
+            const response = await fetcher(revokeUrl, {
                 method: 'POST',
                 headers: { authorization: `Bearer ${token}` },
                 signal: AbortSignal.timeout(10000),
             });
-            return response.status === 200
-                ? { status: 200, body: {} }
-                : { status: response.status, body: { error: `revoke_${response.status}` } };
+            if (response.status === 200)
+                return { status: 200, body: {} };
+            // The issuer's OAuth error, reported with the retained credential.
+            const body = (await response.json().catch(() => ({})));
+            return {
+                status: response.status,
+                body: {
+                    error: typeof body.error === 'string' ? body.error : `revoke_${response.status}`,
+                },
+            };
         },
-    })(reference);
+    });
+    if (result.status === 'revoked')
+        return true;
+    if (result.status !== 'ACTION_REQUIRED' || result.reason !== 'family_missing')
+        return false;
+    // Nothing of the family is on disk, though the journal names it: the crash came after the
+    // journal write and before its secret, or an earlier revocation's journal event was lost.
+    // The server revokes a family of this CLI grant's installation by the CLI's own bearer,
+    // idempotently (200 again once revoked; 404 family_not_found for any other family).
+    const bearer = await createCliAuth({ stateDir, fetch: fetcher })
+        .getCliBearer()
+        .catch(() => null);
+    if (typeof bearer !== 'string')
+        return false;
+    const response = await fetcher(revokeUrl, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${bearer}` },
+        signal: AbortSignal.timeout(10000),
+    });
+    return response.status === 200;
 }
 export const consentMatches = (a, b) => a !== undefined &&
     a.account === b.account &&

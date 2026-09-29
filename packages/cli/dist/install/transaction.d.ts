@@ -1,5 +1,4 @@
 import { type ScannerServiceOptions } from '../scanner/service.js';
-import type { createCredentialAdapter, CredentialTransport } from '@mnemonik/credentials';
 import type { ProjectExecutor } from '../project.js';
 import { type ScannerPickerResult } from '../scanner/picker.js';
 import { type HostAdapter, type HostName, type Target } from './adapters.js';
@@ -59,8 +58,7 @@ export interface InstallDependencies {
     signal?: AbortSignal;
     fault?: (event: MutationKind, journal: Journal) => void | Promise<void>;
 }
-/** Uses the credential package's locked refresh/revocation path; never journals tokens. */
-export declare const componentRevoker: (adapter: ReturnType<typeof createCredentialAdapter>, transport: CredentialTransport) => (reference: string) => Promise<boolean>;
+/** Uses the credential package's leased revocation path; never journals tokens. */
 export declare function revokeInstallComponent(stateDir: string, reference: string, fetcher?: typeof fetch): Promise<boolean>;
 export declare const consentMatches: (a: Consent | undefined, b: Consent) => boolean;
 export declare function installFailureReason(error: unknown): string;

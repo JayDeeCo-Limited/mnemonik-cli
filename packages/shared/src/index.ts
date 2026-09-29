@@ -59,6 +59,12 @@ export {
   TELEMETRY_TIMEOUT_MS,
   POST_TOOL_TIMEOUT_MS,
   MCP_PRECHECK_TIMEOUT_MS,
+  PRECOMPACT_TIMEOUT_MS,
+  HOST_HOOK_TIMEOUT_MS,
+  HOOK_TIMEOUT_MARGIN_MS,
+  HOOK_STDIN_TIMEOUT_MS,
+  hookDeadlineMs,
+  type HookHost,
   withHookTimeout,
 } from './hookTimeouts.js';
 export {

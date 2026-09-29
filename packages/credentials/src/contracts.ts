@@ -94,6 +94,11 @@ export interface CliCredentialTransport {
   rotateCli(credential: CliOAuthCredential): Promise<TransportResponse<CliTokenResponse>>;
 }
 
+export interface CliRevocationTransport {
+  /** Revokes the grant behind `credential` at its issuer; any 200 counts as revoked. */
+  revokeCli(credential: CliOAuthCredential): Promise<TransportResponse<object>>;
+}
+
 export type ActionRequired = {
   status: 'ACTION_REQUIRED';
   reason: string;

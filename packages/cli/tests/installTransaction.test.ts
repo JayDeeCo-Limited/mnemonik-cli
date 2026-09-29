@@ -3,6 +3,7 @@ import { mkdtemp, mkdir, readFile, rm, stat, utimes, writeFile } from 'node:fs/p
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough, Readable } from 'node:stream';
+import { createCredentialAdapter, credentialPaths } from '@mnemonik/credentials';
 import { createProjectSetupExecutor } from '@mnemonik/local-setup';
 import { resolveProjectIdentity } from '@mnemonik/shared';
 import { hostOrder, SimulatedHostAdapter } from '../src/install/adapters.js';
@@ -10,6 +11,7 @@ import { bytesAt, digest, interrupted, withInstall } from '../src/install/journa
 import {
   compensate,
   consentMatches,
+  revokeInstallComponent,
   runInstall,
   type InstallDependencies,
 } from '../src/install/transaction.js';
@@ -416,4 +418,187 @@ it('never starts a post-commit upload without a verified service receipt', async
   const result = await runInstall(f.deps);
   expect(result.reports).toContain('scanner_not_verified');
   expect(upload).not.toHaveBeenCalled();
+});
+
+it('rollback revokes a component family that another process is rotating', async () => {
+  const f = await fixture();
+  const family = '87654321-4321-4321-8321-210987654321';
+  const issued = (generation: number) => ({
+    id: family,
+    access_token: `mnc_${generation}`,
+    refresh_token: `mncr_${generation}`,
+    token_type: 'Bearer' as const,
+    expires_in: 86400,
+    refresh_expires_in: 7_776_000,
+    scope: 'hooks:use',
+    display_prefix: `mnc_${generation}`,
+  });
+  await createCredentialAdapter({ stateDir: f.deps.stateDir }).putFamily('hook', issued(0));
+  // The server accepts only the family's current refresh token.
+  const server = { current: 'mncr_0', revoked: false };
+  let reachPersist!: () => void;
+  let releasePersist!: () => void;
+  const atPersist = new Promise<void>((resolve) => (reachPersist = resolve));
+  const persistGate = new Promise<void>((resolve) => (releasePersist = resolve));
+  const rotation = createCredentialAdapter({
+    stateDir: f.deps.stateDir,
+    fault: async (point) => {
+      if (point !== 'before_secret_rename') return;
+      reachPersist();
+      await persistGate;
+    },
+  }).rotateFamily(family, {
+    rotateFamily: async (_id, token) => {
+      if (token !== server.current) return { status: 400, body: { error: 'invalid_grant' } };
+      server.current = 'mncr_1';
+      return { status: 200, body: issued(1) };
+    },
+    revokeFamily: vi.fn(),
+  });
+  await atPersist;
+  const presented: string[] = [];
+  const fetcher = vi.fn(async (_url: unknown, init?: { headers?: unknown }) => {
+    const token = String((init?.headers as Record<string, string>).authorization).slice(7);
+    presented.push(token);
+    if (server.revoked || token !== server.current)
+      return new Response('{"error":"invalid_grant"}', { status: 400 });
+    server.revoked = true;
+    return new Response('{}', { status: 200 });
+  });
+  f.deps.input.credentials = [{ kind: 'component', reference: family }];
+  f.deps.revokeComponent = (reference) =>
+    revokeInstallComponent(f.deps.stateDir, reference, fetcher as unknown as typeof fetch);
+  let journal!: Parameters<typeof compensate>[0];
+  const rollback = withInstall(f.deps.stateDir, f.deps.input, undefined, (j) => {
+    journal = j;
+    return compensate(j, f.deps);
+  });
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  releasePersist();
+  await rollback;
+
+  expect(await rotation).toMatchObject({ refreshToken: 'mncr_1' });
+  expect(presented).toEqual(['mncr_1']);
+  expect(server.revoked).toBe(true);
+  expect(journal.data.credentials).toEqual([
+    { kind: 'component', reference: family, revoked: true },
+  ]);
+  expect(journal.data.reports.join(' ')).not.toContain('retained; revoke it');
+  expect(
+    await createCredentialAdapter({ stateDir: f.deps.stateDir }).readFamily(family)
+  ).toBeNull();
+});
+
+it.each([
+  ['revokes an orphan secret a crash left without its record', 200, '{}', true],
+  // invalid_grant names no revoked grant (a revoked one answers 200): the grant may be
+  // live, so the orphan secret is kept and reported retained.
+  [
+    'keeps an orphan secret the issuer answers invalid_grant as retained',
+    400,
+    '{"error":"invalid_grant"}',
+    false,
+  ],
+  [
+    'reports an orphan secret the issuer will not revoke as retained',
+    403,
+    '{"error":"forbidden"}',
+    false,
+  ],
+] as const)('rollback %s', async (_label, status, body, revoked) => {
+  const f = await fixture();
+  const family = '87654321-4321-4321-8321-210987654321';
+  await createCredentialAdapter({ stateDir: f.deps.stateDir }).putFamily('hook', {
+    id: family,
+    access_token: 'mnc_orphan',
+    refresh_token: 'mncr_orphan',
+    token_type: 'Bearer',
+    expires_in: 86400,
+    refresh_expires_in: 7_776_000,
+    scope: 'hooks:use',
+    display_prefix: 'mnc_orphan',
+  });
+  // The crash came after the secret write and before the record write.
+  const paths = credentialPaths(f.deps.stateDir, family);
+  await rm(paths.record);
+  const presented: string[] = [];
+  const fetcher = vi.fn(async (_url: unknown, init?: { headers?: unknown }) => {
+    presented.push(String((init?.headers as Record<string, string>).authorization).slice(7));
+    return new Response(body, { status });
+  });
+  f.deps.input.credentials = [{ kind: 'component', reference: family }];
+  f.deps.revokeComponent = (reference) =>
+    revokeInstallComponent(f.deps.stateDir, reference, fetcher as unknown as typeof fetch);
+  let journal!: Parameters<typeof compensate>[0];
+  await withInstall(f.deps.stateDir, f.deps.input, undefined, (j) => {
+    journal = j;
+    return compensate(j, f.deps);
+  });
+
+  expect(presented).toEqual(['mncr_orphan']);
+  expect(journal.data.credentials[0]?.revoked).toBe(revoked || undefined);
+  expect(journal.data.reports.some((line) => line.includes(`${family} retained`))).toBe(!revoked);
+  expect(await bytesAt(paths.secret)).toEqual(revoked ? null : expect.any(Buffer));
+});
+
+it.each([
+  ['revokes through the CLI account', 200, true],
+  ['reports retained when the server does not know the family', 404, false],
+] as const)(
+  'rollback of a family whose secret was never written %s',
+  async (_label, status, revoked) => {
+    const f = await fixture();
+    const family = '87654321-4321-4321-8321-210987654321';
+    // Signed-in CLI with a live access token; the crash came after the journal named the
+    // family and before any of its secret reached the disk.
+    await createCredentialAdapter({ stateDir: f.deps.stateDir }).putCliOAuth(
+      {
+        issuer: 'https://auth.mnemonik.ai',
+        clientId: 'cli',
+        scopes: ['components:manage'],
+        familyId: 'local-family-key',
+        lastRotationTime: new Date().toISOString(),
+      },
+      {
+        accessToken: 'cli-access',
+        refreshToken: 'cli-refresh',
+        accessExpiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+      }
+    );
+    const calls: string[] = [];
+    const fetcher = vi.fn(async (url: unknown, init?: { headers?: unknown }) => {
+      const bearer = String((init?.headers as Record<string, string>).authorization).slice(7);
+      calls.push(`${new URL(String(url)).pathname} ${bearer}`);
+      return new Response(status === 200 ? '{}' : '{"error":"family_not_found"}', { status });
+    });
+    f.deps.input.credentials = [{ kind: 'component', reference: family }];
+    f.deps.revokeComponent = (reference) =>
+      revokeInstallComponent(f.deps.stateDir, reference, fetcher as unknown as typeof fetch);
+    let journal!: Parameters<typeof compensate>[0];
+    await withInstall(f.deps.stateDir, f.deps.input, undefined, (j) => {
+      journal = j;
+      return compensate(j, f.deps);
+    });
+
+    expect(calls).toEqual([`/api/v1/component-credentials/${family}/revoke cli-access`]);
+    expect(journal.data.credentials[0]?.revoked).toBe(revoked || undefined);
+    expect(journal.data.reports.some((line) => line.includes(`${family} retained`))).toBe(!revoked);
+  }
+);
+
+it('reports a family with nothing on disk as retained when the CLI is signed out', async () => {
+  const f = await fixture();
+  const family = '87654321-4321-4321-8321-210987654321';
+  const fetcher = vi.fn();
+  f.deps.input.credentials = [{ kind: 'component', reference: family }];
+  f.deps.revokeComponent = (reference) =>
+    revokeInstallComponent(f.deps.stateDir, reference, fetcher as unknown as typeof fetch);
+  let journal!: Parameters<typeof compensate>[0];
+  await withInstall(f.deps.stateDir, f.deps.input, undefined, (j) => {
+    journal = j;
+    return compensate(j, f.deps);
+  });
+  expect(fetcher).not.toHaveBeenCalled();
+  expect(journal.data.credentials[0]?.revoked).toBeUndefined();
+  expect(journal.data.reports.some((line) => line.includes(`${family} retained`))).toBe(true);
 });

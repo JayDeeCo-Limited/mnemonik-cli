@@ -189,6 +189,7 @@ export async function createRealProjectRuntime(options = {}) {
         credentials,
         getCliBearer: options.getCliBearer,
         requestId: options.requestId,
+        deadline: options.deadline,
         issueContext: async (input) => {
             const context = contexts.get(contextKey(input));
             if (!context)
@@ -679,7 +680,15 @@ async function handoffRequestId(input) {
         throw new Error('invalid_request');
     return value.requestId;
 }
+/** How long `project ensure` may spend on server requests (the supervisor allows 30 s). */
+export const PROJECT_ENSURE_DEADLINE_MS = 25_000;
 export async function ensureProjectForAgent(options) {
+    // Every request of this run ends by this deadline, inside the 30 s the
+    // hook's supervisor allows the helper: a server that never answers ends
+    // the run as `unreachable` (retry) rather than leaving it running. The
+    // sign-in refresh before it is bounded by CLI_REFRESH_TIMEOUT_MS (twice at
+    // most, about 10 s).
+    const deadline = Date.now() + PROJECT_ENSURE_DEADLINE_MS;
     let executor = options.executor;
     if (!executor)
         try {
@@ -693,7 +702,8 @@ export async function ensureProjectForAgent(options) {
             const requestId = options.handoff
                 ? await handoffRequestId(options.input ?? process.stdin)
                 : undefined;
-            executor = (await createRealProjectRuntime({ ...options.runtime, requestId })).executor;
+            executor = (await createRealProjectRuntime({ ...options.runtime, requestId, deadline }))
+                .executor;
         }
         catch (error) {
             const reason = accountFailure(error);

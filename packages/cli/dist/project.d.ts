@@ -53,6 +53,8 @@ export interface RealProjectRuntimeOptions {
     }>;
     requestId?: string;
     fault?: ExecutorDependencies['fault'];
+    /** Epoch ms after which the server transport sends nothing (see ensureProjectForAgent). */
+    deadline?: number;
 }
 export declare function repositoryFingerprint(root: string): Promise<RepositoryFingerprint | null>;
 export declare function createRealProjectRuntime(options?: RealProjectRuntimeOptions): Promise<{
@@ -66,13 +68,18 @@ export declare function createRealProjectRuntime(options?: RealProjectRuntimeOpt
             reason: string;
         }>;
         credentials: {
-            putCliOAuth: (metadata: import("@mnemonik/credentials").CliOAuthMetadata, tokens: import("@mnemonik/credentials").CliOAuthTokens | string) => Promise<{
+            putCliOAuth: (metadata: import("@mnemonik/credentials").CliOAuthMetadata, tokens: import("@mnemonik/credentials").CliOAuthTokens | string) => ReturnType<(metadata: import("@mnemonik/credentials").CliOAuthMetadata, tokens: import("@mnemonik/credentials").CliOAuthTokens | string) => Promise<{
                 store: string;
-            }>;
+            }>>;
             readCliOAuth: () => Promise<import("@mnemonik/credentials").CliOAuthCredential | null>;
             rotateCli: (transport: import("@mnemonik/credentials").CliCredentialTransport) => Promise<import("@mnemonik/credentials").ActionRequired | import("@mnemonik/credentials").RetryLater | import("@mnemonik/credentials").CliOAuthCredential>;
             withCliCredential: <T>(transport: import("@mnemonik/credentials").CliCredentialTransport, work: (accessToken: string) => Promise<import("@mnemonik/credentials").WorkResponse<T>>) => Promise<import("@mnemonik/credentials").WorkResponse<T> | import("@mnemonik/credentials").ActionRequired | import("@mnemonik/credentials").RetryLater>;
             removeCliOAuth: () => Promise<void>;
+            revokeCli: (transport: import("@mnemonik/credentials").CliRevocationTransport) => Promise<import("@mnemonik/credentials").ActionRequired | import("@mnemonik/credentials").RetryLater | {
+                status: 'revoked';
+                familyId: string;
+            }>;
+            waitForCliLease: () => Promise<void>;
             putFamily: (componentKind: import("@mnemonik/credentials").ComponentKind, response: import("@mnemonik/credentials").ComponentCredentialResponse) => Promise<import("@mnemonik/credentials").FamilyCredential>;
             readFamily: (familyId: string) => Promise<import("@mnemonik/credentials").FamilyCredential | null>;
             rotateFamily: (familyId: string, transport: import("@mnemonik/credentials").CredentialTransport) => Promise<import("@mnemonik/credentials").RotationResult>;
@@ -136,6 +143,8 @@ export interface ProjectCommandInput {
     owner?: string;
 }
 export declare function runProjectCommand(input: ProjectCommandInput, deps: ProjectCommandDependencies): Promise<number>;
+/** How long `project ensure` may spend on server requests (the supervisor allows 30 s). */
+export declare const PROJECT_ENSURE_DEADLINE_MS = 25000;
 export declare function ensureProjectForAgent(options: {
     output: Output;
     cwd: string;

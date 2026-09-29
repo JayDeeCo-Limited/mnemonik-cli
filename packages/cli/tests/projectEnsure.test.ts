@@ -5,7 +5,13 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { SetupTransport } from '@mnemonik/local-setup';
 import type { resolveProjectIdentity } from '@mnemonik/shared';
-import { projectExecutor } from '../src/project.js';
+import { Readable } from 'node:stream';
+import { PROJECT_ENSURE_DEADLINE_MS, projectExecutor } from '../src/project.js';
+import {
+  createServerTransport,
+  PROJECT_REQUEST_TIMEOUT_MS,
+  ServerActionRequiredError,
+} from '../src/transport/server.js';
 import { runCli } from '../src/router.js';
 
 const dirs: string[] = [];
@@ -174,4 +180,73 @@ describe('project ensure --agent --json', () => {
     expect(ensureProject).toHaveBeenCalledOnce();
     expect(JSON.parse(stdout.text)).toMatchObject({ status: 'done', projectId });
   });
+});
+
+// Review of CQ-033: project-setup requests had no timeout, so a server that
+// accepted the connection and never answered held `project ensure` (the hook's
+// detached helper) forever. Each request now ends as `unreachable` (retry).
+describe('project-setup requests to a server that never answers', () => {
+  const hanging = vi.fn(
+    (_url: unknown, init?: { signal?: AbortSignal }) =>
+      new Promise<Response>((_, reject) =>
+        init?.signal?.addEventListener('abort', () => reject(init.signal?.reason))
+      )
+  );
+  const transport = (extra: Partial<Parameters<typeof createServerTransport>[0]> = {}) =>
+    createServerTransport({
+      apiBase: 'https://api.example',
+      fetch: hanging as unknown as typeof fetch,
+      getCliBearer: async () => 'token',
+      issueContext: async () => {
+        throw new Error('unused');
+      },
+      ...extra,
+    });
+
+  it('fit inside the helper supervisor: request bound and ensure deadline', () => {
+    expect(PROJECT_REQUEST_TIMEOUT_MS).toBeLessThanOrEqual(PROJECT_ENSURE_DEADLINE_MS);
+    expect(PROJECT_ENSURE_DEADLINE_MS).toBeLessThan(30_000);
+  });
+
+  it('a request is abandoned at its bound and reported unreachable', async () => {
+    hanging.mockClear();
+    const failure = await transport({ requestTimeoutMs: 50 })
+      .accountContext()
+      .catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(ServerActionRequiredError);
+    expect((failure as ServerActionRequiredError).result).toMatchObject({ state: 'unreachable' });
+    expect(hanging).toHaveBeenCalledTimes(1);
+  });
+
+  it('past the deadline nothing is sent', async () => {
+    hanging.mockClear();
+    const failure = await transport({ deadline: Date.now() - 1 })
+      .accountContext()
+      .catch((error: unknown) => error);
+    expect((failure as ServerActionRequiredError).result).toMatchObject({ state: 'unreachable' });
+    expect(hanging).not.toHaveBeenCalled();
+  });
+
+  it('project ensure --agent ends with the retryable action', async () => {
+    const base = await mkdtemp(join(tmpdir(), 'mnemonik-cli-ensure-hang-'));
+    dirs.push(base);
+    const stdout = capture();
+    const started = Date.now();
+    const code = await runCli(['project', 'ensure', '--agent', '--json'], {
+      stdout,
+      stderr: stdout,
+      cwd: base,
+      input: Readable.from([JSON.stringify({ requestId: randomUUID() })]),
+      grantFetch: hanging as unknown as typeof fetch,
+      cliAuth: { getCliBearer: async () => 'token' } as never,
+      projectStateDir: join(base, 'state'),
+    });
+    expect(code).toBe(3);
+    expect(JSON.parse(stdout.text)).toEqual({
+      status: 'action_required',
+      reason: 'unreachable',
+      action: 'retry',
+    });
+    expect(Date.now() - started).toBeLessThan(PROJECT_REQUEST_TIMEOUT_MS + 3_000);
+  }, 15_000);
 });
