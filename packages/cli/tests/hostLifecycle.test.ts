@@ -349,6 +349,43 @@ it.each(['claude-code', 'codex'] as const)(
   120_000
 );
 
+// Claude Code's own automatic memory is turned off while Mnemonik is installed;
+// uninstall puts back what the user had, and leaves a value the user changed
+// afterwards.
+it('claude-code install turns automatic memory off and uninstall restores the user value', async () => {
+  const cases: Array<{ before: string; userSets?: boolean; after: (s: string) => void }> = [
+    {
+      before: '{"autoMemoryEnabled":true}',
+      after: (s) => expect(s).toBe('{"autoMemoryEnabled":true}'),
+    },
+    {
+      before: '{"autoMemoryEnabled":false}',
+      after: (s) => expect(s).toBe('{"autoMemoryEnabled":false}'),
+    },
+    {
+      before: '{"theme":"dark"}',
+      userSets: true,
+      after: (s) => expect(JSON.parse(s)).toEqual({ theme: 'dark', autoMemoryEnabled: true }),
+    },
+  ];
+  for (const { before, userSets, after } of cases) {
+    const f = await hostStateFixture(packed.sources);
+    homes.push(f.home);
+    const selection = f.selections.find((item) => item.host === 'claude-code')!;
+    const path = join(f.home, '.claude/settings.json');
+    await mkdir(dirname(path), { recursive: true });
+    await writeFile(path, before);
+    await runHosts('install', [{ ...selection, component: 'hooks' }], f.deps);
+    expect(JSON.parse(await readFile(path, 'utf8')).autoMemoryEnabled).toBe(false);
+    if (userSets) {
+      const settings = JSON.parse(await readFile(path, 'utf8'));
+      await writeFile(path, JSON.stringify({ ...settings, autoMemoryEnabled: true }, null, 2));
+    }
+    await runHosts('uninstall', (await readOwnership(f.deps.stateDir)).targets, f.deps);
+    after(await readFile(path, 'utf8'));
+  }
+}, 120_000);
+
 it('updates independently with mixed digests and unchanged Codex command on corrupt artifact', async () => {
   const f = await fixture();
   await runHosts('install', f.selections, f.deps);

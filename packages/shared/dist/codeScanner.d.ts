@@ -106,6 +106,21 @@ export declare function isSecretFile(relPath: string): boolean;
  */
 export declare const DEFAULT_INCLUDE_EXTENSIONS: readonly string[];
 /**
+ * Cursor's rule files: `.cursorrules`, and any `.mdc` under `.cursor/rules/`.
+ * Cursor is a launch host, so these are instruction files, the same class as
+ * CLAUDE.md and AGENTS.md. Neither spelling can come in through
+ * `DEFAULT_INCLUDE_EXTENSIONS`: `.cursorrules` has no extension (`extname`
+ * answers ''), and `.mdc` is not a format this scanner reads anywhere else. So
+ * both are admitted by path at the chunking gate (`isChunkable`) and chunked as
+ * Markdown. They are not `.md` paths, so their whole-file content lands in
+ * project_source_content.
+ *
+ * Matched at any depth, because Cursor also reads nested `.cursor/rules`
+ * directories in a monorepo. Case-sensitive, as Cursor spells them. Accepts
+ * OS-native or POSIX separators.
+ */
+export declare function isCursorRulePath(relPath: string): boolean;
+/**
  * Language string for a file path or a bare extension, `'unknown'` when the
  * extension is unmapped. A free function rather than a method because callers
  * that never scan anything (AST grammar resolution, server-side symbol
@@ -258,11 +273,13 @@ export declare class CodeScanner {
      * chunk set may be missing files that still exist on disk - callers
      * deriving removals from the result must not trust it as an inventory.
      * Chunks are secret-scrubbed before returning (same daemon-side
-     * redaction guarantee as `scanFiles`).
+     * redaction guarantee as `scanFiles`). `chunkless` lists the Markdown and
+     * instruction files that chunked to nothing, as `scanFiles` reports them.
      */
     scanDirectoryWithStatus(rootPath: string): Promise<{
         chunks: CodeChunk[];
         complete: boolean;
+        chunkless: string[];
     }>;
     /**
      * Enumerate scan-eligible relative file paths under `rootPath` without
@@ -296,8 +313,14 @@ export declare class CodeScanner {
     /**
      * Scan specific files and extract code chunks.
      * Pass rootPath to compute proper relative file paths in chunk metadata.
+     *
+     * `chunkless`, when given, receives the path (spelled as a chunk's `filePath`)
+     * of every Markdown or instruction file that passed every gate and was read,
+     * but yielded no chunk because each section fell under `minChunkSize`. The
+     * daemon still pushes such a file's whole content: it is a doc the project
+     * owns, and it would otherwise never reach the server.
      */
-    scanFiles(filePaths: string[], rootPath: string): Promise<CodeChunk[]>;
+    scanFiles(filePaths: string[], rootPath: string, chunkless?: string[]): Promise<CodeChunk[]>;
     /**
      * Daemon-side secret redaction: scrub credentials from chunk content
      * before they leave this process. contentHash is recomputed from the

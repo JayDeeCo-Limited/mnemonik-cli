@@ -379,6 +379,26 @@ export const DEFAULT_INCLUDE_EXTENSIONS: readonly string[] = [
 ];
 
 /**
+ * Cursor's rule files: `.cursorrules`, and any `.mdc` under `.cursor/rules/`.
+ * Cursor is a launch host, so these are instruction files, the same class as
+ * CLAUDE.md and AGENTS.md. Neither spelling can come in through
+ * `DEFAULT_INCLUDE_EXTENSIONS`: `.cursorrules` has no extension (`extname`
+ * answers ''), and `.mdc` is not a format this scanner reads anywhere else. So
+ * both are admitted by path at the chunking gate (`isChunkable`) and chunked as
+ * Markdown. They are not `.md` paths, so their whole-file content lands in
+ * project_source_content.
+ *
+ * Matched at any depth, because Cursor also reads nested `.cursor/rules`
+ * directories in a monorepo. Case-sensitive, as Cursor spells them. Accepts
+ * OS-native or POSIX separators.
+ */
+export function isCursorRulePath(relPath: string): boolean {
+  if (!relPath) return false;
+  const posix = relPath.split(sep).join('/');
+  return /(^|\/)\.cursorrules$/.test(posix) || /(^|\/)\.cursor\/rules\/.+\.mdc$/.test(posix);
+}
+
+/**
  * Extension -> language string, the value carried on every chunk and on the
  * wire (`/scan/push` accepts any non-empty string up to 50 chars).
  *
@@ -755,7 +775,12 @@ export class CodeScanner {
    * relative to the scan root (OS-native separators accepted).
    */
   private isChunkable(absOrRelPath: string, relPath: string): boolean {
-    if (!this.includeExtensionSet.has(extname(absOrRelPath).toLowerCase())) return false;
+    if (
+      !this.includeExtensionSet.has(extname(absOrRelPath).toLowerCase()) &&
+      !isCursorRulePath(relPath)
+    ) {
+      return false;
+    }
     if (isAuthorityOnlyPath(relPath)) {
       logDebug('Skipping chunking for authority-collected path', { relPath });
       return false;
@@ -991,16 +1016,18 @@ export class CodeScanner {
    * chunk set may be missing files that still exist on disk - callers
    * deriving removals from the result must not trust it as an inventory.
    * Chunks are secret-scrubbed before returning (same daemon-side
-   * redaction guarantee as `scanFiles`).
+   * redaction guarantee as `scanFiles`). `chunkless` lists the Markdown and
+   * instruction files that chunked to nothing, as `scanFiles` reports them.
    */
   async scanDirectoryWithStatus(
     rootPath: string
-  ): Promise<{ chunks: CodeChunk[]; complete: boolean }> {
+  ): Promise<{ chunks: CodeChunk[]; complete: boolean; chunkless: string[] }> {
     rootPath = await this.canonicalRoot(rootPath);
     const chunks: CodeChunk[] = [];
+    const chunkless: string[] = [];
     const walk: WalkState = { complete: true };
-    await this.traverseDirectory(rootPath, rootPath, chunks, 0, walk);
-    return { chunks: this.scrubChunks(chunks), complete: walk.complete };
+    await this.traverseDirectory(rootPath, rootPath, chunks, 0, walk, [], chunkless);
+    return { chunks: this.scrubChunks(chunks), complete: walk.complete, chunkless };
   }
 
   /**
@@ -1108,8 +1135,18 @@ export class CodeScanner {
   /**
    * Scan specific files and extract code chunks.
    * Pass rootPath to compute proper relative file paths in chunk metadata.
+   *
+   * `chunkless`, when given, receives the path (spelled as a chunk's `filePath`)
+   * of every Markdown or instruction file that passed every gate and was read,
+   * but yielded no chunk because each section fell under `minChunkSize`. The
+   * daemon still pushes such a file's whole content: it is a doc the project
+   * owns, and it would otherwise never reach the server.
    */
-  async scanFiles(filePaths: string[], rootPath: string): Promise<CodeChunk[]> {
+  async scanFiles(
+    filePaths: string[],
+    rootPath: string,
+    chunkless?: string[]
+  ): Promise<CodeChunk[]> {
     rootPath = await this.canonicalRoot(rootPath);
     const chunks: CodeChunk[] = [];
     const ignoreCache = new Map<string, IgnoreLayer | null>();
@@ -1141,7 +1178,12 @@ export class CodeScanner {
         }
 
         if (this.isChunkable(filePath, fileRel)) {
-          const fileChunks = await this.parseFile(filePath, rootPath || filePath);
+          const fileChunks = await this.parseFile(
+            filePath,
+            rootPath || filePath,
+            undefined,
+            chunkless
+          );
           chunks.push(...fileChunks);
         }
       } catch (error) {
@@ -1205,7 +1247,8 @@ export class CodeScanner {
     chunks: CodeChunk[],
     depth: number,
     walk: WalkState,
-    stack: IgnoreStack = []
+    stack: IgnoreStack = [],
+    chunkless?: string[]
   ): Promise<void> {
     // Prevent infinite recursion
     if (depth >= CodeScanner.MAX_DEPTH) {
@@ -1262,11 +1305,19 @@ export class CodeScanner {
         if (stats.isDirectory()) {
           if (this.ignoredByStack(relativePath, true, localStack)) continue; // .gitignore/.mnemonikignore
           if (await isGitBoundary(fullPath)) continue; // another repo's subtree
-          await this.traverseDirectory(fullPath, rootPath, chunks, depth + 1, walk, localStack);
+          await this.traverseDirectory(
+            fullPath,
+            rootPath,
+            chunks,
+            depth + 1,
+            walk,
+            localStack,
+            chunkless
+          );
         } else if (stats.isFile()) {
           if (this.ignoredByStack(relativePath, false, localStack)) continue;
           if (this.isChunkable(fullPath, relativePath)) {
-            const fileChunks = await this.parseFile(fullPath, rootPath, stats);
+            const fileChunks = await this.parseFile(fullPath, rootPath, stats, chunkless);
             chunks.push(...fileChunks);
           }
         }
@@ -1325,7 +1376,8 @@ export class CodeScanner {
   private async parseFile(
     filePath: string,
     rootPath: string,
-    enumerated?: Stats
+    enumerated?: Stats,
+    chunkless?: string[]
   ): Promise<CodeChunk[]> {
     try {
       // Check file size before reading to avoid memory issues
@@ -1364,7 +1416,11 @@ export class CodeScanner {
 
       // Try to extract functions/classes
       if (language === 'markdown') {
-        return this.chunkMarkdown(content, relativePath, stats.size);
+        const sections = this.chunkMarkdown(content, relativePath, stats.size);
+        // Every section fell under minChunkSize (a short CLAUDE.md or
+        // .cursorrules). The file was read and parsed; it chunks to nothing.
+        if (sections.length === 0) chunkless?.push(relativePath);
+        return sections;
       }
 
       const fileMetadata = {
@@ -1628,6 +1684,9 @@ export class CodeScanner {
    * Detect language from file extension
    */
   private detectLanguage(filePath: string): string {
+    // Cursor rule files are Markdown whatever their spelling, so they chunk
+    // at headings like every other instruction file.
+    if (isCursorRulePath(filePath)) return 'markdown';
     return languageForExtension(filePath);
   }
 

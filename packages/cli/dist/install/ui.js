@@ -44,6 +44,10 @@ export function terminalInstallUI(input, output, roots) {
                 `Components: ${d.components.join(', ')}`,
                 ...d.hosts.map((h) => `${h}: ${d.scopes[h]?.requested} -> ${d.scopes[h]?.effective}`),
                 ...d.targets.filter((t) => t.status !== 'restored').map((t) => `${t.kind}: ${t.path}`),
+                // Someone relying on Claude Code's own memory would decide on this.
+                ...(d.hosts.includes('claude-code') && d.components.includes('hooks')
+                    ? ["Claude Code's own memory is turned off; Mnemonik keeps memories instead."]
+                    : []),
                 ...d.projects.map((p) => `Project: ${p.root} ${p.uuid ?? 'setup required'}`),
                 `Roots: ${d.roots.join(', ')}`,
                 'First upload: waiting for Apply',

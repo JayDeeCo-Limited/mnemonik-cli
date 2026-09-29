@@ -4,8 +4,14 @@
  * This is the SINGLE SOURCE OF TRUTH for MCP instructions.
  * Shared instruction content imported by the server.
  *
- * Version: 2.110
- * Updated: 2026-08-27
+ * Version: 2.112
+ * Updated: 2026-09-29
+ *
+ * v2.112 - memory_add names a user's preference: agents were keeping stated
+ *          preferences in the host's own memory files instead of Mnemonik.
+ *
+ * v2.111 - Added memory_ingest to the tool floor: the user can ask the agent to
+ *          bring the project's docs and code comments into memory.
  *
  * v2.110 - Reordered and compressed the universal instructions to fit the
  *          2,048-character transport limit. The first 512 characters now carry
@@ -152,7 +158,7 @@ Project work items live in tasks. A pending list requires action:"list" and stat
 
 Which tool for what:
 - memory_get: hydrates exact originals by id.
-- memory_add: saves a discrete decision or root cause.
+- memory_add: saves a decision, a user's preference, or a root cause.
 - memory_state: corrects wrong, outdated, or conflicting memory.
 - memory_info: explains confidence or origin when memory looks suspect.
 - memory_links: connects related decisions so they surface together.
@@ -161,7 +167,8 @@ Which tool for what:
 - policy: stores durable enforced rules or preferences, not memories.
 - tasks: creates follow-up work and closes completed work.
 - code_search: finds conceptual code when source wording differs.
-- memory_search: finds rationale, intent, decisions, and prior work.`;
+- memory_search: finds rationale, intent, decisions, and prior work.
+- memory_ingest: brings the project's docs and code comments into memory when asked.`;
 /**
  * Get MCP instructions, respecting MNEMONIK_INSTRUCTIONS_ENABLED env var.
  * Set MNEMONIK_INSTRUCTIONS_ENABLED=false to disable for testing.

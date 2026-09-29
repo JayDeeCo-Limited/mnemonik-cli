@@ -4,8 +4,14 @@
  * This is the SINGLE SOURCE OF TRUTH for MCP instructions.
  * Shared instruction content imported by the server.
  *
- * Version: 2.110
- * Updated: 2026-08-27
+ * Version: 2.112
+ * Updated: 2026-09-29
+ *
+ * v2.112 - memory_add names a user's preference: agents were keeping stated
+ *          preferences in the host's own memory files instead of Mnemonik.
+ *
+ * v2.111 - Added memory_ingest to the tool floor: the user can ask the agent to
+ *          bring the project's docs and code comments into memory.
  *
  * v2.110 - Reordered and compressed the universal instructions to fit the
  *          2,048-character transport limit. The first 512 characters now carry
@@ -154,7 +160,7 @@ export declare function getMcpInstructions(): string;
  * Raw instructions content (always returns the content, ignores env var).
  * Use getMcpInstructions() for production code.
  */
-export declare const MCP_INSTRUCTIONS_RAW = "Mnemonik provides persistent project memory: decisions, rationale, tasks, and policies across sessions. If no block begins \"PROJECT_CONTEXT schemaVersion=\", session_bootstrap({ cwd }) loads project context when cwd is the real absolute path of the project root; a placeholder or relative path fails. With that block, context is loaded and no session_bootstrap call is needed. Code and docs show current artifacts, git shows changes, and memory carries the why; memory_search recalls rationale or intent, then Grep or Read verifies current source.\n\nmemory_discover supplies exact schemas and examples for unfamiliar or action-based methods; memory_tools runs their async JavaScript.\n\nRetrieval pages use hydrated for complete records, index for pointer rows, extent for totals, and cursor for continuation. Relevant IDs can be selected before exact originals are hydrated; a refined query or cursor reveals more without paging full bodies merely to discover what exists.\n\nProject work items live in tasks. A pending list requires action:\"list\" and status:\"pending\". Each page is { hydrated, index, extent, cursor }; a complete listing combines hydrated and index and follows cursor until null.\n\nWhich tool for what:\n- memory_get: hydrates exact originals by id.\n- memory_add: saves a discrete decision or root cause.\n- memory_state: corrects wrong, outdated, or conflicting memory.\n- memory_info: explains confidence or origin when memory looks suspect.\n- memory_links: connects related decisions so they surface together.\n- assist: measures coverage when search results are thin or empty.\n- search_summaries: finds past work by topic or date across sessions.\n- policy: stores durable enforced rules or preferences, not memories.\n- tasks: creates follow-up work and closes completed work.\n- code_search: finds conceptual code when source wording differs.\n- memory_search: finds rationale, intent, decisions, and prior work.";
+export declare const MCP_INSTRUCTIONS_RAW = "Mnemonik provides persistent project memory: decisions, rationale, tasks, and policies across sessions. If no block begins \"PROJECT_CONTEXT schemaVersion=\", session_bootstrap({ cwd }) loads project context when cwd is the real absolute path of the project root; a placeholder or relative path fails. With that block, context is loaded and no session_bootstrap call is needed. Code and docs show current artifacts, git shows changes, and memory carries the why; memory_search recalls rationale or intent, then Grep or Read verifies current source.\n\nmemory_discover supplies exact schemas and examples for unfamiliar or action-based methods; memory_tools runs their async JavaScript.\n\nRetrieval pages use hydrated for complete records, index for pointer rows, extent for totals, and cursor for continuation. Relevant IDs can be selected before exact originals are hydrated; a refined query or cursor reveals more without paging full bodies merely to discover what exists.\n\nProject work items live in tasks. A pending list requires action:\"list\" and status:\"pending\". Each page is { hydrated, index, extent, cursor }; a complete listing combines hydrated and index and follows cursor until null.\n\nWhich tool for what:\n- memory_get: hydrates exact originals by id.\n- memory_add: saves a decision, a user's preference, or a root cause.\n- memory_state: corrects wrong, outdated, or conflicting memory.\n- memory_info: explains confidence or origin when memory looks suspect.\n- memory_links: connects related decisions so they surface together.\n- assist: measures coverage when search results are thin or empty.\n- search_summaries: finds past work by topic or date across sessions.\n- policy: stores durable enforced rules or preferences, not memories.\n- tasks: creates follow-up work and closes completed work.\n- code_search: finds conceptual code when source wording differs.\n- memory_search: finds rationale, intent, decisions, and prior work.\n- memory_ingest: brings the project's docs and code comments into memory when asked.";
 /**
  * Default export for convenience.
  * Note: This respects the MNEMONIK_INSTRUCTIONS_ENABLED env var.

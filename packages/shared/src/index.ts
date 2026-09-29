@@ -22,6 +22,7 @@ export {
   isFixturePath,
   isSecretFile,
   isAuthorityOnlyPath,
+  isCursorRulePath,
   logAstCapabilityOnce,
   type CodeChunk,
   type ScanOptions,
