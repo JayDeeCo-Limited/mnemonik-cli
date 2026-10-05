@@ -147,9 +147,12 @@ describe('PKCE loopback flow', () => {
         expect(await fetch(`${redirect.origin}/wrong?state=${state}&iss=${issuer}`)).toMatchObject({
           status: 404,
         });
-        expect(await fetch(`${redirect.origin}/callback?state=wrong&iss=${issuer}`)).toMatchObject({
-          status: 404,
-        });
+        const stale = await fetch(`${redirect.origin}/callback?state=wrong&iss=${issuer}`);
+        expect(stale.status).toBe(404);
+        // A person whose browser reaches a stale or foreign callback reads this.
+        expect(await stale.text()).toBe(
+          'This sign-in link is no longer active. Return to your terminal and run the command again.'
+        );
         expect(
           await fetch(`${redirect.origin}/callback?state=${state}&iss=https://evil.example`)
         ).toMatchObject({ status: 404 });

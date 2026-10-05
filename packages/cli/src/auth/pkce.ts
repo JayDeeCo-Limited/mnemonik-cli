@@ -107,6 +107,10 @@ function parseTokens(response: Response, body: Record<string, unknown>): CliToke
   };
 }
 
+/** What a person reads when their browser reaches a stale or foreign callback. */
+const STALE_CALLBACK_MESSAGE =
+  'This sign-in link is no longer active. Return to your terminal and run the command again.';
+
 export const EDITOR_SIGN_IN_INSTRUCTION = 'Open this link to sign in:';
 export interface EditorLoginOptions {
   /** The editor's own headless login command. */
@@ -239,7 +243,7 @@ export async function runPkce(options: PkceOptions): Promise<PkceResult> {
       !authorities.has(authority)
     ) {
       response.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' });
-      response.end('Not found');
+      response.end(STALE_CALLBACK_MESSAGE);
       return;
     }
     const url = new URL(request.url ?? '/', `http://${authority}`);
@@ -250,7 +254,7 @@ export async function runPkce(options: PkceOptions): Promise<PkceResult> {
       url.searchParams.get('iss') !== issuer
     ) {
       response.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' });
-      response.end('Not found');
+      response.end(STALE_CALLBACK_MESSAGE);
       return;
     }
     response.writeHead(204);

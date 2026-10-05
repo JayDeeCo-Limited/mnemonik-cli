@@ -61,6 +61,8 @@ function parseTokens(response, body) {
         scope: body.scope,
     };
 }
+/** What a person reads when their browser reaches a stale or foreign callback. */
+const STALE_CALLBACK_MESSAGE = 'This sign-in link is no longer active. Return to your terminal and run the command again.';
 export const EDITOR_SIGN_IN_INSTRUCTION = 'Open this link to sign in:';
 /** The editor's exit code, or -1 once the sign-in deadline has passed. */
 async function exitedBy(exited, milliseconds) {
@@ -164,7 +166,7 @@ export async function runPkce(options) {
             (request.url ?? '').split('?', 1)[0] !== '/callback' ||
             !authorities.has(authority)) {
             response.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' });
-            response.end('Not found');
+            response.end(STALE_CALLBACK_MESSAGE);
             return;
         }
         const url = new URL(request.url ?? '/', `http://${authority}`);
@@ -173,7 +175,7 @@ export async function runPkce(options) {
             !timingSafeEqual(receivedState, stateBytes) ||
             url.searchParams.get('iss') !== issuer) {
             response.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' });
-            response.end('Not found');
+            response.end(STALE_CALLBACK_MESSAGE);
             return;
         }
         response.writeHead(204);
