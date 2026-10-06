@@ -1,6 +1,6 @@
 {
   "name": "@mnemonik/shared",
-  "version": "7.114.2",
+  "version": "7.114.3",
   "description": "Shared constants and utilities for Mnemonik packages",
   "repository": {
     "type": "git",
@@ -58,8 +58,8 @@
   "author": "Anthony",
   "license": "SEE LICENSE IN LICENSE",
   "dependencies": {
-    "ignore": "^7.0.6",
-    "web-tree-sitter": "0.26.13"
+    "ignore": "^7.0.12",
+    "web-tree-sitter": "0.27.0"
   },
   "devDependencies": {
     "@types/node": "^20.19.43",
