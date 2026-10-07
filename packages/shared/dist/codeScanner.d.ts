@@ -2,6 +2,7 @@
  * Code Scanner - Parse and chunk source files for embedding
  */
 import { type Stats } from 'fs';
+import { type IndexExclusionReason } from './indexClassifier.js';
 /**
  * The one file-size ceiling in Mnemonik. A file at or below this is scanned,
  * chunked, AND pushed verbatim; a file above it is uniformly outside the
@@ -65,6 +66,24 @@ export interface ScanOptions {
     maxAstParseBytes?: number;
     /** Additional protected paths for isolated homes/tests; defaults can only be extended. */
     protectedPaths?: readonly string[];
+}
+/** The rule-file lines one directory contributed to a walk. */
+export interface IndexRuleFiles {
+    /** .gitignore + .mnemonikignore lines, unioned, in read order. */
+    ignore: string[];
+    /** .gitattributes lines, in read order. */
+    attributes: string[];
+}
+/**
+ * A file a walk declined to index because a soft default excluded it.
+ * `stage: 'content'` means the file was read and its content decided.
+ */
+export interface IndexExcludedFile {
+    /** Root-relative POSIX path, spelled as a chunk's `filePath`. */
+    path: string;
+    reason: IndexExclusionReason;
+    rule: string;
+    stage: 'path' | 'content';
 }
 /**
  * Directory basenames the scanner never indexes, across every ecosystem -
@@ -139,12 +158,11 @@ export declare function isAuthorityOnlyPath(relPath: string): boolean;
  */
 export declare const AUTHORITY_FILE_MATCHERS: Array<(relPath: string) => boolean>;
 /**
- * Segment-anchored match for the `tests/fixtures/` ignore pattern above -
- * matches at the path root or immediately after a `/`, mirroring exactly
- * what `shouldIgnore` compiles `'/tests/fixtures/*'` to. Exported so
- * server-side consumers (e.g. the `/scan/push` route) and query-time
- * consumers (e.g. `MemoryManager.searchCodePointers`'s hygiene exclusions)
- * share one definition instead of hand-rolling copies that can drift.
+ * Segment-anchored match for `tests/fixtures/` - matches at the path root or
+ * immediately after a `/`. Indexing no longer uses it (the fixture rule is the
+ * soft default in indexClassifier.ts, which a project can override); it stays
+ * for query-time hygiene over rows indexed before that rule existed
+ * (`MemoryManager.searchCodePointers`).
  */
 export declare const FIXTURE_PATH_RE: RegExp;
 export declare function isFixturePath(path: string): boolean;
@@ -220,28 +238,59 @@ export declare class CodeScanner {
      */
     private isChunkable;
     /**
-     * Read `.gitignore` + `.mnemonikignore` in `absDir` and compile them into one
-     * ignore layer (the two files are unioned - `.mnemonikignore` is just an
-     * additional gitignore-syntax exclusion list). Returns null when neither file
-     * exists. FAIL-CLOSED: a non-ENOENT read error (EISDIR, EACCES, timeout)
-     * latches `walk.complete = false` so callers deriving *removals* from the walk
-     * treat it as untrustworthy rather than silently ignoring nothing.
+     * Read `.gitignore` + `.mnemonikignore` + `.gitattributes` in `absDir` and
+     * compile them into one layer (the two ignore files are unioned -
+     * `.mnemonikignore` is just an additional gitignore-syntax exclusion list).
+     * Returns null when none of the three exists. FAIL-CLOSED: a non-ENOENT read
+     * error (EISDIR, EACCES, timeout) latches `walk.complete = false` so callers
+     * deriving *removals* from the walk treat it as untrustworthy rather than
+     * silently ignoring nothing.
      */
     private loadIgnoreLayer;
     /**
-     * True when `entryRel` (relative to the scan root) is excluded by any ignore
-     * layer in `stack`. Tested deepest-first: the first layer that explicitly
-     * ignores OR re-includes (via a `!negation`) wins, matching git's rule that a
-     * deeper `.gitignore` overrides a shallower one. Directories are tested with a
-     * trailing slash so `foo/` dir-only rules match the directory itself.
+     * What the .gitignore / .mnemonikignore layers in `stack` say about
+     * `entryRel` (relative to the scan root). Tested deepest-first: the first
+     * layer that explicitly ignores OR re-includes (via a `!negation`) wins,
+     * matching git's rule that a deeper `.gitignore` overrides a shallower one.
+     * Directories are tested with a trailing slash so `foo/` dir-only rules
+     * match the directory itself. `'unignored'` means a negation matched this
+     * path itself; a re-included parent directory leaves its files `'unmatched'`.
      */
+    private ignoreVerdict;
     private ignoredByStack;
+    private static attributeLayers;
+    /**
+     * Skip this directory? User-ignored directories are skipped as before. A
+     * directory a soft default excludes (vendor/, generated/, ...) is pruned too -
+     * nothing under it can be indexed - UNLESS a rule above it could re-include
+     * something inside it: a `!pattern` or a `-linguist-*` attribute. Then the
+     * walk descends and judges each file, so the override works. Rule files
+     * INSIDE a pruned directory are never read: a vendored library's own
+     * .gitignore negations are not the project's intent.
+     */
+    private skipDirectory;
+    /**
+     * The index decision for a file from its path and the rule stack: `null`
+     * when a user ignore rule excludes it, otherwise the classifier's answer
+     * (precedence in indexClassifier.ts). Content rules are the caller's next
+     * step for an included path without an `override`.
+     */
+    private classifyEntry;
     /**
      * Reconstruct the root->parent ignore-layer stack for a single file, for the
      * incremental `scanFiles` path (which has a flat file list, not a recursive
      * walk). Layers are memoized per directory in `cache` across a batch.
      */
     private buildIgnoreStackForFile;
+    /**
+     * A predicate for walkers outside this class (the daemon's file watcher):
+     * true when the walk would descend into `absDir`, by the same rules
+     * `listFiles` applies - user ignore files and soft-default directories,
+     * with their overrides. Rule files are read once per directory for the life
+     * of the returned predicate; take a fresh one after a rule file changes.
+     * Directories outside `rootPath`, and the root itself, always pass.
+     */
+    directoryFilter(rootPath: string): (absDir: string) => Promise<boolean>;
     /**
      * True when any directory strictly between `rootPath` and `filePath`
      * carries its own `.git` entry (see isGitBoundary). Paths that don't
@@ -280,6 +329,8 @@ export declare class CodeScanner {
         chunks: CodeChunk[];
         complete: boolean;
         chunkless: string[];
+        /** Files a soft default excluded by their content (path exclusions are not listed). */
+        excluded: IndexExcludedFile[];
     }>;
     /**
      * Enumerate scan-eligible relative file paths under `rootPath` without
@@ -308,7 +359,20 @@ export declare class CodeScanner {
     listFilesWithStatus(rootPath: string): Promise<{
         paths: string[];
         complete: boolean;
+        /**
+         * Listed paths a project rule re-included (a `!pattern` or a
+         * `-linguist-*` attribute). Content rules do not apply to them; every
+         * other listed path still answers to the content rules when read.
+         */
+        overridden: Set<string>;
     }>;
+    /**
+     * The rule files the last complete `listFilesWithStatus` walk of `rootPath`
+     * applied, by directory ('' = root). Null before the first complete walk.
+     * The daemon uploads these lines so the server judges paths as it did.
+     */
+    indexRuleFiles(rootPath: string): Promise<ReadonlyMap<string, IndexRuleFiles> | null>;
+    private readonly ruleFilesByRoot;
     private traversePaths;
     /**
      * Scan specific files and extract code chunks.
@@ -319,8 +383,13 @@ export declare class CodeScanner {
      * but yielded no chunk because each section fell under `minChunkSize`. The
      * daemon still pushes such a file's whole content: it is a doc the project
      * owns, and it would otherwise never reach the server.
+     *
+     * `excluded`, when given, receives every chunkable file a soft default
+     * excluded (indexClassifier.ts), by path or by content. The daemon tells the
+     * server about content exclusions so the server can retire what an earlier
+     * version of the file left in the index.
      */
-    scanFiles(filePaths: string[], rootPath: string, chunkless?: string[]): Promise<CodeChunk[]>;
+    scanFiles(filePaths: string[], rootPath: string, chunkless?: string[], excluded?: IndexExcludedFile[]): Promise<CodeChunk[]>;
     /**
      * Daemon-side secret redaction: scrub credentials from chunk content
      * before they leave this process. contentHash is recomputed from the

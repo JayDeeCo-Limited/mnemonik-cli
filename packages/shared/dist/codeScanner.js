@@ -12,6 +12,7 @@ import { scrubSecrets } from './secretPatterns.js';
 import { isProtectedLocalPath, protectedLocalPaths } from './protectedPaths.js';
 import { MAX_AST_PARSE_BYTES, MAX_SIGNATURE_CHARS, chunkWithAst, } from './ast/astChunker.js';
 import { astArtifactReport, resolveAstLanguage } from './ast/grammars.js';
+import { classifyForIndex, gitattributesCanReinclude, parseGitattributes, softDefaultForContent, softDefaultForDirectory, } from './indexClassifier.js';
 /**
  * File operation timeout (5 seconds) to prevent hanging on slow/unresponsive filesystems
  */
@@ -120,6 +121,9 @@ const BUILT_IN_IGNORE_FILE_PATTERNS = [
     // `isSecretFile` below, not here. This glob engine cannot express negation
     // (`.env.example` must stay collectable) and its unanchored substring
     // matching would make `.env.*` also swallow `.environment.ts`.
+    //
+    // `/tests/fixtures/*` used to live here. It is now a soft default in
+    // indexClassifier.ts (test fixtures, R2), which a project can re-include.
     '.DS_Store',
     '*.log',
     '*.lock',
@@ -130,7 +134,6 @@ const BUILT_IN_IGNORE_FILE_PATTERNS = [
     '*.bundle.js',
     '*.legacy.js',
     '*.map',
-    '/tests/fixtures/*',
 ];
 /**
  * Files whose CONTENT is a credential rather than code. Today these are
@@ -199,6 +202,8 @@ export function isSecretFile(relPath) {
  * list (e.g. `secrets/`). Matched hierarchically via the `ignore` package.
  */
 const IGNORE_FILE_NAMES = ['.gitignore', '.mnemonikignore'];
+/** Per-directory attributes file: linguist overrides and binary marks (indexClassifier.ts). */
+const ATTRIBUTES_FILE_NAME = '.gitattributes';
 /**
  * Every file type the scanner will chunk, by extension. Matched
  * case-INSENSITIVELY (see `isIncludedExtension`), so lowercase spellings here
@@ -505,12 +510,11 @@ export const AUTHORITY_FILE_MATCHERS = [
     isMigrationSqlAuthorityPath,
 ];
 /**
- * Segment-anchored match for the `tests/fixtures/` ignore pattern above -
- * matches at the path root or immediately after a `/`, mirroring exactly
- * what `shouldIgnore` compiles `'/tests/fixtures/*'` to. Exported so
- * server-side consumers (e.g. the `/scan/push` route) and query-time
- * consumers (e.g. `MemoryManager.searchCodePointers`'s hygiene exclusions)
- * share one definition instead of hand-rolling copies that can drift.
+ * Segment-anchored match for `tests/fixtures/` - matches at the path root or
+ * immediately after a `/`. Indexing no longer uses it (the fixture rule is the
+ * soft default in indexClassifier.ts, which a project can override); it stays
+ * for query-time hygiene over rows indexed before that rule existed
+ * (`MemoryManager.searchCodePointers`).
  */
 export const FIXTURE_PATH_RE = /(^|\/)tests\/fixtures\//;
 export function isFixturePath(path) {
@@ -679,50 +683,67 @@ export class CodeScanner {
         return true;
     }
     /**
-     * Read `.gitignore` + `.mnemonikignore` in `absDir` and compile them into one
-     * ignore layer (the two files are unioned - `.mnemonikignore` is just an
-     * additional gitignore-syntax exclusion list). Returns null when neither file
-     * exists. FAIL-CLOSED: a non-ENOENT read error (EISDIR, EACCES, timeout)
-     * latches `walk.complete = false` so callers deriving *removals* from the walk
-     * treat it as untrustworthy rather than silently ignoring nothing.
+     * Read `.gitignore` + `.mnemonikignore` + `.gitattributes` in `absDir` and
+     * compile them into one layer (the two ignore files are unioned -
+     * `.mnemonikignore` is just an additional gitignore-syntax exclusion list).
+     * Returns null when none of the three exists. FAIL-CLOSED: a non-ENOENT read
+     * error (EISDIR, EACCES, timeout) latches `walk.complete = false` so callers
+     * deriving *removals* from the walk treat it as untrustworthy rather than
+     * silently ignoring nothing.
      */
     async loadIgnoreLayer(absDir, baseRel, walk, rootPath) {
         if (this.isProtected(absDir))
             return null;
-        const patterns = [];
-        for (const name of IGNORE_FILE_NAMES) {
+        const read = async (name) => {
             const filePath = join(absDir, name);
             try {
                 const content = await withTimeout(this.readConfined(filePath, rootPath), FILE_OP_TIMEOUT_MS, `readFile timed out: ${filePath}`);
-                for (const line of content.split(/\r?\n/))
-                    patterns.push(line);
+                return content.split(/\r?\n/);
             }
             catch (err) {
                 if (err.message === 'symlink_skipped')
-                    continue;
+                    return null;
                 if (err?.code !== 'ENOENT') {
                     walk.complete = false;
-                    logDebug('Ignore-file read failed (fail-closed)', { path: filePath, err });
+                    logDebug('Rule-file read failed (fail-closed)', { path: filePath, err });
                 }
+                return null;
             }
+        };
+        const patterns = [];
+        for (const name of IGNORE_FILE_NAMES) {
+            const lines = await read(name);
+            if (lines)
+                patterns.push(...lines);
         }
+        const attributeLines = (await read(ATTRIBUTES_FILE_NAME)) ?? [];
+        if (patterns.length > 0 || attributeLines.length > 0) {
+            walk.rules?.set(baseRel, { ignore: patterns, attributes: attributeLines });
+        }
+        const attributes = attributeLines.length > 0 ? parseGitattributes(attributeLines.join('\n')) : [];
         // `ignore` tolerates blank/comment lines; null when nothing meaningful.
-        if (patterns.length === 0)
+        if (patterns.length === 0 && attributes.length === 0)
             return null;
-        const ig = ignore().add(patterns);
-        return { baseRel, ig };
+        return {
+            baseRel,
+            ig: patterns.length > 0 ? ignore().add(patterns) : null,
+            hasNegation: patterns.some((line) => line.trimStart().startsWith('!')),
+            attributes: attributes.length > 0 ? attributes : null,
+        };
     }
     /**
-     * True when `entryRel` (relative to the scan root) is excluded by any ignore
-     * layer in `stack`. Tested deepest-first: the first layer that explicitly
-     * ignores OR re-includes (via a `!negation`) wins, matching git's rule that a
-     * deeper `.gitignore` overrides a shallower one. Directories are tested with a
-     * trailing slash so `foo/` dir-only rules match the directory itself.
+     * What the .gitignore / .mnemonikignore layers in `stack` say about
+     * `entryRel` (relative to the scan root). Tested deepest-first: the first
+     * layer that explicitly ignores OR re-includes (via a `!negation`) wins,
+     * matching git's rule that a deeper `.gitignore` overrides a shallower one.
+     * Directories are tested with a trailing slash so `foo/` dir-only rules
+     * match the directory itself. `'unignored'` means a negation matched this
+     * path itself; a re-included parent directory leaves its files `'unmatched'`.
      */
-    ignoredByStack(entryRel, isDir, stack) {
+    ignoreVerdict(entryRel, isDir, stack) {
         for (let i = stack.length - 1; i >= 0; i--) {
             const layer = stack[i];
-            if (!layer)
+            if (!layer?.ig)
                 continue;
             const { baseRel, ig } = layer;
             let sub;
@@ -739,11 +760,55 @@ export class CodeScanner {
                 continue;
             const res = ig.test(isDir ? sub + '/' : sub);
             if (res.ignored)
-                return true;
+                return 'ignored';
             if (res.unignored)
-                return false;
+                return 'unignored';
         }
-        return false;
+        return 'unmatched';
+    }
+    ignoredByStack(entryRel, isDir, stack) {
+        return this.ignoreVerdict(entryRel, isDir, stack) === 'ignored';
+    }
+    static attributeLayers(stack) {
+        return stack.flatMap((layer) => layer.attributes ? [{ baseRel: layer.baseRel, rules: layer.attributes }] : []);
+    }
+    /**
+     * Skip this directory? User-ignored directories are skipped as before. A
+     * directory a soft default excludes (vendor/, generated/, ...) is pruned too -
+     * nothing under it can be indexed - UNLESS a rule above it could re-include
+     * something inside it: a `!pattern` or a `-linguist-*` attribute. Then the
+     * walk descends and judges each file, so the override works. Rule files
+     * INSIDE a pruned directory are never read: a vendored library's own
+     * .gitignore negations are not the project's intent.
+     */
+    skipDirectory(relPath, stack) {
+        const posixRel = relPath.split(sep).join('/');
+        const verdict = this.ignoreVerdict(posixRel, true, stack);
+        if (verdict === 'ignored')
+            return true;
+        if (verdict === 'unignored')
+            return false;
+        if (!softDefaultForDirectory(posixRel))
+            return false;
+        const canReinclude = stack.some((layer) => layer.hasNegation) ||
+            gitattributesCanReinclude(CodeScanner.attributeLayers(stack));
+        return !canReinclude;
+    }
+    /**
+     * The index decision for a file from its path and the rule stack: `null`
+     * when a user ignore rule excludes it, otherwise the classifier's answer
+     * (precedence in indexClassifier.ts). Content rules are the caller's next
+     * step for an included path without an `override`.
+     */
+    classifyEntry(relPath, stack) {
+        const posixRel = relPath.split(sep).join('/');
+        const verdict = this.ignoreVerdict(posixRel, false, stack);
+        if (verdict === 'ignored')
+            return null;
+        return classifyForIndex(posixRel, {
+            ignoreFileVerdict: verdict,
+            attributes: CodeScanner.attributeLayers(stack),
+        });
     }
     /**
      * Reconstruct the root->parent ignore-layer stack for a single file, for the
@@ -768,6 +833,32 @@ export class CodeScanner {
                 stack.push(layer);
         }
         return stack;
+    }
+    /**
+     * A predicate for walkers outside this class (the daemon's file watcher):
+     * true when the walk would descend into `absDir`, by the same rules
+     * `listFiles` applies - user ignore files and soft-default directories,
+     * with their overrides. Rule files are read once per directory for the life
+     * of the returned predicate; take a fresh one after a rule file changes.
+     * Directories outside `rootPath`, and the root itself, always pass.
+     */
+    directoryFilter(rootPath) {
+        const cache = new Map();
+        return async (absDir) => {
+            try {
+                const root = await this.canonicalRoot(rootPath);
+                const rel = relative(root, absDir).split(sep).join('/');
+                if (!rel || rel.startsWith('..'))
+                    return true;
+                const stack = await this.buildIgnoreStackForFile(rel, root, cache, { complete: true });
+                return !this.skipDirectory(rel, stack);
+            }
+            catch {
+                // Fail open: watching a directory the walk would skip costs a watch
+                // handle; not watching one it would index loses changes.
+                return true;
+            }
+        };
     }
     /**
      * True when any directory strictly between `rootPath` and `filePath`
@@ -894,9 +985,10 @@ export class CodeScanner {
         rootPath = await this.canonicalRoot(rootPath);
         const chunks = [];
         const chunkless = [];
+        const excluded = [];
         const walk = { complete: true };
-        await this.traverseDirectory(rootPath, rootPath, chunks, 0, walk, [], chunkless);
-        return { chunks: this.scrubChunks(chunks), complete: walk.complete, chunkless };
+        await this.traverseDirectory(rootPath, rootPath, chunks, 0, walk, [], chunkless, excluded);
+        return { chunks: this.scrubChunks(chunks), complete: walk.complete, chunkless, excluded };
     }
     /**
      * Enumerate scan-eligible relative file paths under `rootPath` without
@@ -928,14 +1020,29 @@ export class CodeScanner {
     async listFilesWithStatus(rootPath) {
         rootPath = await this.canonicalRoot(rootPath);
         const paths = [];
-        const walk = { complete: true };
-        await this.traversePaths(rootPath, rootPath, paths, 0, walk);
+        const overridden = new Set();
+        const walk = { complete: true, rules: new Map() };
+        await this.traversePaths(rootPath, rootPath, paths, 0, walk, [], overridden);
+        // Only a complete walk replaces the record: a partial one may be missing
+        // rule files, and uploading it would tell the server fewer rules exist.
+        if (walk.complete && walk.rules)
+            this.ruleFilesByRoot.set(rootPath, walk.rules);
         return {
             paths: paths.filter((p) => !/(^|[/\\])\.\.([/\\]|$)/.test(p)),
             complete: walk.complete,
+            overridden,
         };
     }
-    async traversePaths(currentPath, rootPath, out, depth, walk, stack = []) {
+    /**
+     * The rule files the last complete `listFilesWithStatus` walk of `rootPath`
+     * applied, by directory ('' = root). Null before the first complete walk.
+     * The daemon uploads these lines so the server judges paths as it did.
+     */
+    async indexRuleFiles(rootPath) {
+        return this.ruleFilesByRoot.get(await this.canonicalRoot(rootPath)) ?? null;
+    }
+    ruleFilesByRoot = new Map();
+    async traversePaths(currentPath, rootPath, out, depth, walk, stack = [], overridden) {
         if (depth >= CodeScanner.MAX_DEPTH)
             return;
         if (this.isProtected(currentPath))
@@ -970,18 +1077,22 @@ export class CodeScanner {
                     continue;
                 const stats = lstats;
                 if (stats.isDirectory()) {
-                    if (this.ignoredByStack(relativePath, true, localStack))
-                        continue; // .gitignore/.mnemonikignore
+                    // .gitignore/.mnemonikignore, then soft-default directories
+                    if (this.skipDirectory(relativePath, localStack))
+                        continue;
                     if (await isGitBoundary(fullPath))
                         continue; // another repo's subtree
-                    await this.traversePaths(fullPath, rootPath, out, depth + 1, walk, localStack);
+                    await this.traversePaths(fullPath, rootPath, out, depth + 1, walk, localStack, overridden);
                 }
                 else if (stats.isFile()) {
-                    if (this.ignoredByStack(relativePath, false, localStack))
+                    if (!this.isChunkable(fullPath, relativePath))
                         continue;
-                    if (this.isChunkable(fullPath, relativePath)) {
-                        out.push(relativePath);
-                    }
+                    const decision = this.classifyEntry(relativePath, localStack);
+                    if (!decision?.include)
+                        continue;
+                    out.push(relativePath);
+                    if (decision.override)
+                        overridden?.add(relativePath);
                 }
             }
             catch (error) {
@@ -999,8 +1110,13 @@ export class CodeScanner {
      * but yielded no chunk because each section fell under `minChunkSize`. The
      * daemon still pushes such a file's whole content: it is a doc the project
      * owns, and it would otherwise never reach the server.
+     *
+     * `excluded`, when given, receives every chunkable file a soft default
+     * excluded (indexClassifier.ts), by path or by content. The daemon tells the
+     * server about content exclusions so the server can retire what an earlier
+     * version of the file left in the index.
      */
-    async scanFiles(filePaths, rootPath, chunkless) {
+    async scanFiles(filePaths, rootPath, chunkless, excluded) {
         rootPath = await this.canonicalRoot(rootPath);
         const chunks = [];
         const ignoreCache = new Map();
@@ -1015,15 +1131,6 @@ export class CodeScanner {
                 if (this.shouldIgnore(fileRel)) {
                     continue;
                 }
-                // Honor .gitignore/.mnemonikignore on the incremental path too, by
-                // reconstructing this file's ancestor ignore-layer stack (memoized
-                // per directory across the batch).
-                if (rootPath && !fileRel.startsWith('..')) {
-                    const stack = await this.buildIgnoreStackForFile(fileRel, rootPath, ignoreCache, walk);
-                    if (this.ignoredByStack(fileRel, false, stack)) {
-                        continue;
-                    }
-                }
                 // Explicit file lists arrive from watcher events, which can race a
                 // worktree/nested-clone appearing - apply the same nested-git-boundary
                 // rule the walks use (an ancestor between root and the file carrying
@@ -1031,10 +1138,30 @@ export class CodeScanner {
                 if (rootPath && (await this.insideNestedGitBoundary(filePath, rootPath))) {
                     continue;
                 }
-                if (this.isChunkable(filePath, fileRel)) {
-                    const fileChunks = await this.parseFile(filePath, rootPath || filePath, undefined, chunkless);
-                    chunks.push(...fileChunks);
+                if (!this.isChunkable(filePath, fileRel))
+                    continue;
+                // Honor .gitignore/.mnemonikignore/.gitattributes on the incremental
+                // path too, by reconstructing this file's ancestor rule stack (memoized
+                // per directory across the batch), and judge it exactly as the walks do.
+                let applyContentRules = true;
+                if (rootPath && !fileRel.startsWith('..')) {
+                    const stack = await this.buildIgnoreStackForFile(fileRel, rootPath, ignoreCache, walk);
+                    const decision = this.classifyEntry(fileRel, stack);
+                    if (!decision)
+                        continue;
+                    if (!decision.include) {
+                        excluded?.push({
+                            path: fileRel,
+                            reason: decision.reason,
+                            rule: decision.rule,
+                            stage: 'path',
+                        });
+                        continue;
+                    }
+                    applyContentRules = !decision.override;
                 }
+                const fileChunks = await this.parseFile(filePath, rootPath || filePath, undefined, chunkless, { applyContentRules, ...(excluded ? { excluded } : {}) });
+                chunks.push(...fileChunks);
             }
             catch (error) {
                 logDebug('Error scanning file', { filePath, error });
@@ -1089,7 +1216,7 @@ export class CodeScanner {
      * Recursively traverse directory
      * Added depth parameter with max limit
      */
-    async traverseDirectory(currentPath, rootPath, chunks, depth, walk, stack = [], chunkless) {
+    async traverseDirectory(currentPath, rootPath, chunks, depth, walk, stack = [], chunkless, excluded) {
         // Prevent infinite recursion
         if (depth >= CodeScanner.MAX_DEPTH) {
             logDebug('Max directory depth reached, skipping', { path: currentPath, depth });
@@ -1131,19 +1258,24 @@ export class CodeScanner {
                     continue;
                 const stats = lstats;
                 if (stats.isDirectory()) {
-                    if (this.ignoredByStack(relativePath, true, localStack))
-                        continue; // .gitignore/.mnemonikignore
+                    // .gitignore/.mnemonikignore, then soft-default directories
+                    if (this.skipDirectory(relativePath, localStack))
+                        continue;
                     if (await isGitBoundary(fullPath))
                         continue; // another repo's subtree
-                    await this.traverseDirectory(fullPath, rootPath, chunks, depth + 1, walk, localStack, chunkless);
+                    await this.traverseDirectory(fullPath, rootPath, chunks, depth + 1, walk, localStack, chunkless, excluded);
                 }
                 else if (stats.isFile()) {
-                    if (this.ignoredByStack(relativePath, false, localStack))
+                    if (!this.isChunkable(fullPath, relativePath))
                         continue;
-                    if (this.isChunkable(fullPath, relativePath)) {
-                        const fileChunks = await this.parseFile(fullPath, rootPath, stats, chunkless);
-                        chunks.push(...fileChunks);
-                    }
+                    const decision = this.classifyEntry(relativePath, localStack);
+                    if (!decision?.include)
+                        continue;
+                    const fileChunks = await this.parseFile(fullPath, rootPath, stats, chunkless, {
+                        applyContentRules: !decision.override,
+                        ...(excluded ? { excluded } : {}),
+                    });
+                    chunks.push(...fileChunks);
                 }
             }
             catch (error) {
@@ -1196,7 +1328,9 @@ export class CodeScanner {
      * chunked here can always be shipped and stored verbatim.
      */
     static MAX_FILE_SIZE = MAX_SCANNED_FILE_BYTES;
-    async parseFile(filePath, rootPath, enumerated, chunkless) {
+    async parseFile(filePath, rootPath, enumerated, chunkless, contentGate = {
+        applyContentRules: true,
+    }) {
         try {
             // Check file size before reading to avoid memory issues
             // Wrap stat with timeout
@@ -1212,18 +1346,39 @@ export class CodeScanner {
             }
             // Wrap readFile with timeout
             let content = await withTimeout(this.readConfined(filePath, rootPath, stats), FILE_OP_TIMEOUT_MS, `readFile timed out: ${filePath}`);
+            const relativePath = relative(rootPath, filePath);
+            // Content soft defaults (binary, generated header, minified, data dump),
+            // read from the SCRUBBED text because that is what the server receives
+            // and re-judges - the two sides must not straddle a threshold. A NUL in
+            // the first 8,000 bytes now means "binary, skip" (git's heuristic)
+            // instead of strip-and-index.
+            if (contentGate.applyContentRules) {
+                const byContent = softDefaultForContent(relativePath, scrubSecrets(content));
+                if (byContent) {
+                    contentGate.excluded?.push({
+                        path: relativePath.split(sep).join('/'),
+                        reason: byContent.reason,
+                        rule: byContent.rule,
+                        stage: 'content',
+                    });
+                    logDebug('Skipping file excluded by a content soft default', {
+                        filePath: relativePath,
+                        ...byContent,
+                    });
+                    return [];
+                }
+            }
             // NUL sanitation (ingestion boundary, daemon side): Postgres `text`
             // columns reject the literal NUL byte (U+0000) - a single one aborts
-            // the whole INSERT/UPDATE. Some source files legitimately contain
-            // them. Strip before any chunking so every chunk's content, its
-            // contentHash, and its embedding all agree - mirrors the server-side
-            // strip in ProjectManager (kept as defense in depth for content that
-            // reaches the server via an older scanner) but doing it here means
-            // the daemon never even transmits the NUL bytes.
+            // the whole INSERT/UPDATE. Text that is otherwise included can still
+            // carry a stray NUL past the binary window. Strip before any chunking so
+            // every chunk's content, its contentHash, and its embedding all agree -
+            // mirrors the server-side strip in ProjectManager (kept as defense in
+            // depth for content that reaches the server via an older scanner) but
+            // doing it here means the daemon never even transmits the NUL bytes.
             if (content.includes('\0')) {
                 content = content.replace(/\0/g, '');
             }
-            const relativePath = relative(rootPath, filePath);
             const language = this.detectLanguage(filePath);
             // Try to extract functions/classes
             if (language === 'markdown') {
