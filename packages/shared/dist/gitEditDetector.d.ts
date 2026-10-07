@@ -47,6 +47,24 @@
  *   tree clean by the time it is observed, so the dirty diff sees nothing.
  *   HEAD is recorded per root at every observation; only commits made since
  *   the last observation count, and never a merge.
+ *
+ * Three more (2026-10-07), found by a session whose push was gated a dozen
+ * times for edits it never made:
+ * - A nested repository or worktree directory is not an edit. `git status`
+ *   lists one as a single `dir/` entry when its parent does not ignore it, so
+ *   creating a worktree under the checkout counted as a file edit.
+ * - A shell call that runs a git command importing other content (merge,
+ *   cherry-pick, rebase, pull, am, revert, reset, stash pop/apply) credits
+ *   nothing: what it leaves dirty or commits was written elsewhere.
+ * - A pending report for a path whose repository directory no longer exists
+ *   (a removed worktree) is dropped, not re-sent: the files are gone because
+ *   the checkout was removed, not because this session deleted them.
+ *
+ * Each report also carries where the edit happened (`editScope`): the git
+ * worktree and repository of the file, or a mark that the file lies outside
+ * the project's repository (/tmp, another repository, a `.git` directory). The
+ * server counts only project edits, and gates a push on the uncheckpointed
+ * files it carries (`describeHandoffs`).
  */
 /**
  * The current dirty set as absolute paths, or null when cwd is not inside a
@@ -74,6 +92,79 @@ export declare function diffGitDirtySnapshot(snapshotFile: string, cwd: string, 
  * report pre-existing dirt.
  */
 export declare function addPathsToGitDirtySnapshot(snapshotFile: string, paths: string[]): void;
+/** Where a reported edit happened, as sent to track-ide-edit. */
+export interface EditScope {
+    /** The git worktree root that holds the file. Absent when unknown or not in git. */
+    editRoot?: string;
+    /**
+     * The repository (git common directory) that holds the file: the same for
+     * every worktree of one repository, so an edit made in a subagent's worktree
+     * still matches a push of the merged result from the main checkout.
+     */
+    editRepo?: string;
+    /** The file is not project work: outside the project's repository, or inside `.git`. */
+    outsideProject?: true;
+}
+/**
+ * Where `filePath` lies relative to the project the agent works in.
+ *
+ * `anchorDir` is the project directory: the host's project root when it has
+ * one (Claude Code's CLAUDE_PROJECT_DIR), else the event's cwd. A file is
+ * project work when it is in the same git repository as the anchor (any of
+ * its worktrees), or, when the anchor is not in git, inside the anchor.
+ * Anything that cannot be determined is reported as unknown (no claim), so an
+ * unreadable directory never hides an edit.
+ */
+export declare function editScope(filePath: string, cwd: string, anchorDir?: string): EditScope;
+/** One handoff in a shell command. */
+export interface HandoffTarget {
+    /** Where it runs: null means the event's cwd. */
+    directory: string | null;
+    /** For a git push: the revisions whose new commits it sends. Absent for other handoffs. */
+    revisions?: string[];
+}
+/**
+ * The handoffs a shell command performs. Empty when it hands nothing off.
+ * Quoted text and here-document bodies are data, not commands; a `git push`
+ * that only deletes refs or is a dry run is not a handoff. `cd <dir>` before
+ * the handoff, and `git -C <dir>`, move it; a directory that cannot be known
+ * from the text (`cd ~`, `cd $X`, `cd -`) falls back to the event's cwd.
+ */
+export declare function parseHandoffCommand(toolName: string, command: string): HandoffTarget[];
+/** Most commits and files a push description carries. */
+/**
+ * Bounds of a push description. Past any of them the description says only
+ * the repository, and the server falls back to every uncheckpointed edit in
+ * it: a description must never be partial, because a partial one could leave
+ * an edited file out and quiet the gate. The server's request schema accepts
+ * exactly these bounds, so a description can never fail the whole request.
+ */
+export declare const HANDOFF_LIMITS: {
+    readonly commits: 200;
+    readonly files: 500;
+    readonly pathLength: 1024;
+    readonly handoffs: 10;
+};
+/** What one handoff carries, as the host sends it to the server's handoff gate. */
+export interface HandoffDescription {
+    /** The repository (git common directory) it runs in. Absent when not in git or unknown. */
+    repo?: string;
+    /**
+     * For a git push: the repository-relative paths changed by the commits it
+     * sends (those on no remote-tracking ref). Absent when unknown, and for
+     * other handoffs (a deploy ships the working tree, not commits).
+     */
+    files?: string[];
+}
+/**
+ * Per handoff in a shell command, what it carries: its repository and, for a
+ * git push, the files its new commits change. The server gates the handoff
+ * only when one of those files was edited by the session (any of its agents)
+ * after its last checkpoint. Empty when the command hands nothing off. A
+ * description that cannot be complete omits `files`, and the server then
+ * gates on every uncheckpointed edit in the repository.
+ */
+export declare function describeHandoffs(toolName: string, command: string, cwd: string): HandoffDescription[];
 /**
  * The fingerprint a host sends with an edit report: the first 32 hex chars of
  * the sha256 of the file's current content, 'absent' when the file does not

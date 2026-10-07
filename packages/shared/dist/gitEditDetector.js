@@ -47,11 +47,29 @@
  *   tree clean by the time it is observed, so the dirty diff sees nothing.
  *   HEAD is recorded per root at every observation; only commits made since
  *   the last observation count, and never a merge.
+ *
+ * Three more (2026-10-07), found by a session whose push was gated a dozen
+ * times for edits it never made:
+ * - A nested repository or worktree directory is not an edit. `git status`
+ *   lists one as a single `dir/` entry when its parent does not ignore it, so
+ *   creating a worktree under the checkout counted as a file edit.
+ * - A shell call that runs a git command importing other content (merge,
+ *   cherry-pick, rebase, pull, am, revert, reset, stash pop/apply) credits
+ *   nothing: what it leaves dirty or commits was written elsewhere.
+ * - A pending report for a path whose repository directory no longer exists
+ *   (a removed worktree) is dropped, not re-sent: the files are gone because
+ *   the checkout was removed, not because this session deleted them.
+ *
+ * Each report also carries where the edit happened (`editScope`): the git
+ * worktree and repository of the file, or a mark that the file lies outside
+ * the project's repository (/tmp, another repository, a `.git` directory). The
+ * server counts only project edits, and gates a push on the uncheckpointed
+ * files it carries (`describeHandoffs`).
  */
 import { execFileSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
-import { dirname, isAbsolute, join } from 'node:path';
+import { mkdirSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync, } from 'node:fs';
+import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { performance } from 'node:perf_hooks';
 /** Bounded so a pathological repo cannot stall the hook's PostToolUse turn. */
 const GIT_REV_PARSE_TIMEOUT_MS = 400;
@@ -100,14 +118,28 @@ export function listGitDirtyPaths(cwd) {
         // "XY <path>"; a rename/copy entry is followed by the ORIGINAL path as its
         // own NUL token - consume it so it is never misread as a status entry.
         const statusCode = entry.slice(0, 2);
-        paths.push(join(root, entry.slice(3)));
         if (statusCode.startsWith('R') || statusCode.startsWith('C'))
             i++;
+        // With --untracked-files=all every untracked FILE is listed on its own; the
+        // only entry that ends in a slash is a nested repository or worktree, which
+        // git never descends into. Its appearance is a checkout, not an edit.
+        if (entry.endsWith('/'))
+            continue;
+        paths.push(join(root, entry.slice(3)));
         if (paths.length > MAX_SNAPSHOT_PATHS)
             return null;
     }
     return { root, paths };
 }
+/**
+ * Git commands that bring content written elsewhere into the working tree.
+ * What a merge (squash included), cherry-pick, rebase, pull, am, revert, reset
+ * or stash pop/apply leaves dirty or commits is not this session's edit.
+ * Classifying the command is coarse on purpose: a shell call that also edits a
+ * file in the same command is credited nothing, which errs toward silence
+ * (the next edit to that file is still credited).
+ */
+const GIT_CONTENT_IMPORT_RE = /\bgit\s+(?:-C\s+\S+\s+)?(?:merge|cherry-pick|rebase|pull|am|revert|reset|stash\s+(?:pop|apply))\b/;
 /** HEAD of the repo at cwd, or undefined before the first commit. */
 function currentHead(cwd) {
     return (runGit(cwd, ['rev-parse', '--verify', '-q', 'HEAD'], GIT_REV_PARSE_TIMEOUT_MS)?.trim() ||
@@ -232,6 +264,11 @@ export function diffGitDirtySnapshot(snapshotFile, cwd, command = '') {
         writeRoot(snapshotFile, current.root, { paths: current.paths, head });
         return [];
     }
+    if (GIT_CONTENT_IMPORT_RE.test(command)) {
+        // Absorb: everything dirty now is known, nothing is credited.
+        writeRoot(snapshotFile, current.root, { paths: current.paths, head });
+        return [];
+    }
     const known = new Set(baseline.paths);
     const additions = current.paths.filter((path) => !known.has(path));
     if (head && head !== baseline.head && /\bgit\s+commit\b/.test(command)) {
@@ -264,6 +301,470 @@ export function addPathsToGitDirtySnapshot(snapshotFile, paths) {
             continue;
         entry.paths = [...entry.paths, path];
         writeRoot(snapshotFile, root, entry);
+    }
+}
+/**
+ * One process handles one hook event, and an event reports up to 25 paths,
+ * mostly in the same few directories: remember each directory's answer.
+ */
+const gitLocationCache = new Map();
+function canonicalPath(path) {
+    try {
+        return realpathSync(path);
+    }
+    catch {
+        return path;
+    }
+}
+/** The directory a `.git` FILE (a linked worktree or submodule) points at, or null. */
+function gitDirFromFile(dotGitFile, root) {
+    try {
+        const match = /^gitdir:\s*(.+)$/m.exec(readFileSync(dotGitFile, 'utf8'));
+        return match?.[1] ? resolve(root, match[1].trim()) : null;
+    }
+    catch {
+        return null;
+    }
+}
+/** A linked worktree's git dir names its repository in `commondir`; otherwise it is its own. */
+function commonDirOf(gitDir) {
+    try {
+        const relative = readFileSync(join(gitDir, 'commondir'), 'utf8').trim();
+        return relative ? resolve(gitDir, relative) : gitDir;
+    }
+    catch {
+        return gitDir;
+    }
+}
+/**
+ * Git skips a `.git` that is not a repository (a stray empty `/tmp/.git` is
+ * real): it must hold `HEAD`, and its repository must hold `objects`.
+ */
+function isGitDir(gitDir) {
+    try {
+        return (statSync(join(gitDir, 'HEAD')).isFile() &&
+            statSync(join(commonDirOf(gitDir), 'objects')).isDirectory());
+    }
+    catch {
+        return false;
+    }
+}
+/**
+ * The git location of a directory, found the way git finds it: the nearest
+ * ancestor holding a valid `.git`. A `.git` directory is the repository; a `.git`
+ * file (linked worktree) points at a git dir whose `commondir` names the
+ * repository. 'none' when no ancestor holds `.git`; null when the file system
+ * would not say (permissions), which callers treat as unknown, never as
+ * "outside". Read from the file system rather than by running git: a hook
+ * reports up to 25 paths inside a time budget, and a process per path would
+ * spend it.
+ */
+function gitLocation(dir) {
+    const cached = gitLocationCache.get(dir);
+    if (cached !== undefined)
+        return cached;
+    let result = 'none';
+    for (let current = dir;;) {
+        const dotGit = join(current, '.git');
+        let stat;
+        try {
+            stat = statSync(dotGit);
+        }
+        catch (error) {
+            const code = error.code;
+            if (code !== 'ENOENT' && code !== 'ENOTDIR') {
+                result = null;
+                break;
+            }
+        }
+        if (stat?.isDirectory() && isGitDir(dotGit)) {
+            result = { root: current, commonDir: canonicalPath(dotGit) };
+            break;
+        }
+        if (stat?.isFile()) {
+            const gitDir = gitDirFromFile(dotGit, current);
+            if (gitDir && isGitDir(gitDir)) {
+                result = { root: current, commonDir: canonicalPath(commonDirOf(gitDir)) };
+                break;
+            }
+        }
+        const parent = dirname(current);
+        if (parent === current)
+            break;
+        current = parent;
+    }
+    gitLocationCache.set(dir, result);
+    return result;
+}
+/** The deepest existing directory at or above `path` (a deleted file's parent may be gone). */
+function nearestExistingDirectory(path) {
+    let current = path;
+    for (;;) {
+        try {
+            if (statSync(current).isDirectory())
+                return current;
+        }
+        catch {
+            // Missing: try the parent.
+        }
+        const parent = dirname(current);
+        if (parent === current)
+            return current;
+        current = parent;
+    }
+}
+function isWithin(path, dir) {
+    const base = dir.endsWith('/') ? dir : `${dir}/`;
+    return path === dir || path.startsWith(base);
+}
+/**
+ * Where `filePath` lies relative to the project the agent works in.
+ *
+ * `anchorDir` is the project directory: the host's project root when it has
+ * one (Claude Code's CLAUDE_PROJECT_DIR), else the event's cwd. A file is
+ * project work when it is in the same git repository as the anchor (any of
+ * its worktrees), or, when the anchor is not in git, inside the anchor.
+ * Anything that cannot be determined is reported as unknown (no claim), so an
+ * unreadable directory never hides an edit.
+ */
+export function editScope(filePath, cwd, anchorDir = cwd) {
+    if (!filePath)
+        return {};
+    const absolute = isAbsolute(filePath) ? filePath : join(cwd, filePath);
+    if (/(?:^|\/)\.git(?:\/|$)/.test(absolute))
+        return { outsideProject: true };
+    const file = gitLocation(nearestExistingDirectory(dirname(absolute)));
+    const anchor = anchorDir ? gitLocation(anchorDir) : null;
+    const editRoot = file && file !== 'none' ? { editRoot: file.root, editRepo: file.commonDir } : {};
+    if (file === null || anchor === null)
+        return editRoot;
+    if (anchor === 'none') {
+        return isWithin(absolute, anchorDir) ? editRoot : { outsideProject: true };
+    }
+    if (file === 'none' || file.commonDir !== anchor.commonDir)
+        return { outsideProject: true };
+    return editRoot;
+}
+// - Which shell commands hand work off, and what they hand off -
+//
+// The server gates a handoff (git push, PR, deploy) on uncheckpointed work.
+// It used to match handoff words anywhere in the command text and count every
+// edit the session had ever reported. One parser, shared by the server and the
+// hosts, now says which commands hand work off; the host, which has the
+// repository, says what a push carries.
+const SHELL_TOOLS = new Set(['bash', 'shell', 'terminal', 'run_terminal_command']);
+/** Here-document bodies are data (a script being written, a commit message), never commands. */
+function stripHereDocuments(command) {
+    const kept = [];
+    let terminator = null;
+    for (const line of command.split('\n')) {
+        if (terminator) {
+            const candidate = terminator.stripTabs ? line.replace(/^\t+/, '') : line;
+            if (candidate.trim() === terminator.word)
+                terminator = null;
+            continue;
+        }
+        kept.push(line);
+        const opener = /(?<!<)<<(?!<)(-?)\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\2/.exec(line);
+        if (opener)
+            terminator = { word: opener[3] ?? '', stripTabs: opener[1] === '-' };
+    }
+    return kept.join('\n');
+}
+/** Placeholder delimiters for quoted text: private-use code points, never typed in a command. */
+const QUOTE_OPEN = '';
+const QUOTE_CLOSE = '';
+/**
+ * Replace every quoted string with an opaque placeholder so handoff words
+ * inside quotes (a grep pattern, a commit message) are never read as commands.
+ * The quoted text is kept so a quoted directory or ref can be restored.
+ */
+function maskQuotes(text) {
+    const quoted = [];
+    let skeleton = '';
+    let i = 0;
+    while (i < text.length) {
+        const char = text[i];
+        if (char === '\\' && i + 1 < text.length) {
+            skeleton += text.slice(i, i + 2);
+            i += 2;
+            continue;
+        }
+        if (char === "'" || char === '"') {
+            let j = i + 1;
+            let body = '';
+            while (j < text.length && text[j] !== char) {
+                if (char === '"' && text[j] === '\\' && j + 1 < text.length) {
+                    body += text[j + 1];
+                    j += 2;
+                    continue;
+                }
+                body += text[j];
+                j += 1;
+            }
+            quoted.push(body);
+            skeleton += `${QUOTE_OPEN}${quoted.length - 1}${QUOTE_CLOSE}`;
+            i = j + 1;
+            continue;
+        }
+        skeleton += char;
+        i += 1;
+    }
+    return { skeleton, quoted };
+}
+function restoreQuoted(word, quoted) {
+    return word.replace(new RegExp(`${QUOTE_OPEN}(\\d+)${QUOTE_CLOSE}`, 'g'), (_match, index) => quoted[Number(index)] ?? '');
+}
+/** Command separators; `&` only when it is not part of a redirection (2>&1, &>). */
+const SEGMENT_SEPARATOR = /\|\||&&|;|\||\n|[()]|(?<![<>])&(?!>)/;
+/** A token that is a redirection (2>&1, >file, >>, <); a bare operator takes the next token. */
+const REDIRECTION = /^\d*(?:[<>]|&>)/;
+const BARE_REDIRECTION = /^\d*(?:[<>]{1,2}|&>)&?$/;
+/** Options of `git push` that take a separate value. */
+const PUSH_OPTIONS_WITH_VALUE = new Set([
+    '-o',
+    '--push-option',
+    '--repo',
+    '--receive-pack',
+    '--exec',
+]);
+/**
+ * The revisions a `git push <args>` sends, or null when it sends no work:
+ * only ref deletions (`--delete`, `-d`, `:ref` refspecs) or a dry run.
+ */
+function pushRevisions(args) {
+    const positional = [];
+    const extra = [];
+    for (let k = 0; k < args.length; k++) {
+        const arg = args[k] ?? '';
+        if (REDIRECTION.test(arg)) {
+            if (BARE_REDIRECTION.test(arg))
+                k += 1;
+            continue;
+        }
+        if (arg === '--delete' || arg === '--dry-run')
+            return null;
+        if (/^-[A-Za-z]+$/.test(arg) && /[dn]/.test(arg.slice(1)))
+            return null;
+        if (arg === '--all' || arg === '--branches' || arg === '--mirror')
+            extra.push('--branches');
+        if (arg === '--tags')
+            extra.push('--tags');
+        if (arg.startsWith('-')) {
+            if (PUSH_OPTIONS_WITH_VALUE.has(arg))
+                k += 1;
+            continue;
+        }
+        positional.push(arg);
+    }
+    const refspecs = positional.slice(1);
+    if (refspecs.length > 0 && refspecs.every((refspec) => refspec.startsWith(':')))
+        return null;
+    const revisions = [];
+    for (let k = 0; k < refspecs.length; k++) {
+        const refspec = refspecs[k] ?? '';
+        if (refspec === 'tag' && refspecs[k + 1]) {
+            revisions.push(`refs/tags/${refspecs[k + 1]}`);
+            k += 1;
+            continue;
+        }
+        const source = refspec.replace(/^\+/, '').split(':')[0];
+        if (source)
+            revisions.push(source);
+    }
+    if (revisions.length === 0 && extra.length === 0)
+        revisions.push('HEAD');
+    return [...revisions, ...extra];
+}
+/** `git [global options] push <args>`: the push args and any `-C` directory, else null. */
+function gitPush(words) {
+    for (let i = 0; i < words.length; i++) {
+        if (words[i] !== 'git' && !/\/git$/.test(words[i] ?? ''))
+            continue;
+        let j = i + 1;
+        let directory = null;
+        while (j < words.length && (words[j] ?? '').startsWith('-')) {
+            const option = words[j];
+            if (option === '-C' && j + 1 < words.length) {
+                directory = words[j + 1] ?? null;
+                j += 2;
+                continue;
+            }
+            if (option === '-c' || /^--(?:git-dir|work-tree|namespace)$/.test(option ?? '')) {
+                j += 2;
+                continue;
+            }
+            j += 1;
+        }
+        if (words[j] === 'push')
+            return { args: words.slice(j + 1), directory };
+    }
+    return null;
+}
+const OTHER_HANDOFFS = [
+    /\bgh\s+(?:pr\s+(?:create|merge)|release\s+create)\b/,
+    /\b(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?deploy\b/,
+    /\b(?:vercel|wrangler|serverless|sls|sam|cdk|sst|fly|railway|netlify|dokploy)\s+deploy\b/,
+    /\bterraform\s+apply\b/,
+    /\bkubectl\s+apply\b/,
+];
+function joinDirectory(base, next) {
+    if (isAbsolute(next) || base === null)
+        return next;
+    return join(base, next);
+}
+/**
+ * The handoffs a shell command performs. Empty when it hands nothing off.
+ * Quoted text and here-document bodies are data, not commands; a `git push`
+ * that only deletes refs or is a dry run is not a handoff. `cd <dir>` before
+ * the handoff, and `git -C <dir>`, move it; a directory that cannot be known
+ * from the text (`cd ~`, `cd $X`, `cd -`) falls back to the event's cwd.
+ */
+export function parseHandoffCommand(toolName, command) {
+    if (!SHELL_TOOLS.has(toolName.trim().toLowerCase()))
+        return [];
+    if (!command.trim())
+        return [];
+    const { skeleton, quoted } = maskQuotes(stripHereDocuments(command));
+    const targets = [];
+    let directory = null;
+    for (const segment of skeleton.split(SEGMENT_SEPARATOR)) {
+        const words = segment.trim().split(/\s+/).filter(Boolean);
+        if (words.length === 0)
+            continue;
+        if (words[0] === 'cd' || words[0] === 'pushd') {
+            const target = words[1] === undefined ? undefined : restoreQuoted(words[1], quoted);
+            directory =
+                target === undefined || target === '-' || target.startsWith('~') || target.includes('$')
+                    ? null
+                    : joinDirectory(directory, target);
+            continue;
+        }
+        const push = gitPush(words);
+        if (push) {
+            const revisions = pushRevisions(push.args.map((arg) => restoreQuoted(arg, quoted)));
+            if (revisions) {
+                targets.push({
+                    directory: push.directory
+                        ? joinDirectory(directory, restoreQuoted(push.directory, quoted))
+                        : directory,
+                    revisions,
+                });
+            }
+            continue;
+        }
+        if (OTHER_HANDOFFS.some((pattern) => pattern.test(segment.toLowerCase()))) {
+            targets.push({ directory });
+        }
+    }
+    return targets;
+}
+/** Most commits and files a push description carries. */
+/**
+ * Bounds of a push description. Past any of them the description says only
+ * the repository, and the server falls back to every uncheckpointed edit in
+ * it: a description must never be partial, because a partial one could leave
+ * an edited file out and quiet the gate. The server's request schema accepts
+ * exactly these bounds, so a description can never fail the whole request.
+ */
+export const HANDOFF_LIMITS = {
+    commits: 200,
+    files: 500,
+    pathLength: 1024,
+    handoffs: 10,
+};
+/** Marks the start of each commit in the `git log` output below. */
+const COMMIT_MARKER = '\u001ecommit';
+/**
+ * Files changed by commits reachable from `revisions` and on no
+ * remote-tracking ref, or undefined when that cannot be said in full: git
+ * failed (a revision it does not know, a timeout), or the push is past a
+ * bound in HANDOFF_LIMITS.
+ */
+function pushedFiles(dir, revisions) {
+    const out = runGit(dir, [
+        'log',
+        '--no-renames',
+        '--name-only',
+        // git refuses a raw control character in a format; %x1e is its escape.
+        '--format=%x1ecommit',
+        '-n',
+        String(HANDOFF_LIMITS.commits + 1),
+        ...revisions,
+        '--not',
+        '--remotes',
+        '--',
+    ], GIT_STATUS_TIMEOUT_MS);
+    if (out === null)
+        return undefined;
+    const lines = out.split('\n').filter(Boolean);
+    const commits = lines.filter((line) => line === COMMIT_MARKER).length;
+    const files = [...new Set(lines.filter((line) => line !== COMMIT_MARKER))];
+    if (commits > HANDOFF_LIMITS.commits ||
+        files.length > HANDOFF_LIMITS.files ||
+        files.some((path) => path.length > HANDOFF_LIMITS.pathLength)) {
+        return undefined;
+    }
+    return files;
+}
+/**
+ * Per handoff in a shell command, what it carries: its repository and, for a
+ * git push, the files its new commits change. The server gates the handoff
+ * only when one of those files was edited by the session (any of its agents)
+ * after its last checkpoint. Empty when the command hands nothing off. A
+ * description that cannot be complete omits `files`, and the server then
+ * gates on every uncheckpointed edit in the repository.
+ */
+export function describeHandoffs(toolName, command, cwd) {
+    const targets = parseHandoffCommand(toolName, command);
+    // More handoffs than the server accepts: describe none, and the server
+    // judges each by every uncheckpointed edit.
+    if (targets.length > HANDOFF_LIMITS.handoffs)
+        return [];
+    return targets.map((target) => {
+        const dir = target.directory ? resolve(cwd, target.directory) : cwd;
+        const location = gitLocation(dir);
+        if (!location || location === 'none')
+            return {};
+        const files = target.revisions ? pushedFiles(dir, target.revisions) : undefined;
+        return { repo: location.commonDir, ...(files ? { files } : {}) };
+    });
+}
+/** Forget every recorded repository whose directory no longer exists. */
+function pruneRemovedRoots(snapshotFile) {
+    const snapshot = readSnapshot(snapshotFile);
+    if (!snapshot)
+        return;
+    const roots = Object.fromEntries(Object.entries(snapshot.roots).filter(([root]) => {
+        try {
+            return statSync(root).isDirectory();
+        }
+        catch {
+            return false;
+        }
+    }));
+    try {
+        writeFileWhole(snapshotFile, JSON.stringify({ v: 2, roots }));
+    }
+    catch {
+        // Best-effort: a stale root only costs a stat on the next event.
+    }
+}
+/**
+ * The recorded repository root holding `path` no longer exists: its worktree
+ * was removed. A report for such a path is not an edit by this session.
+ */
+function recordedRootRemoved(snapshot, path) {
+    if (!snapshot)
+        return false;
+    const root = rootFor(snapshot, path);
+    if (!root)
+        return false;
+    try {
+        return !statSync(root).isDirectory();
+    }
+    catch {
+        return true;
     }
 }
 /** Largest file whose content is hashed for an edit fingerprint, in bytes. */
@@ -477,6 +978,17 @@ export async function reportEditsWithinBudget(options) {
     for (const path of options.paths) {
         retryState.pending[path] ??= { attempts: 0, firstAt: start, nextAt: start };
     }
+    const snapshot = readSnapshot(options.snapshotFile);
+    let rootsRemoved = false;
+    for (const path of Object.keys(retryState.pending)) {
+        if (!recordedRootRemoved(snapshot, path))
+            continue;
+        delete retryState.pending[path];
+        rootsRemoved = true;
+        log(`mnemonik: edit report for ${path} dropped (its repository was removed)`);
+    }
+    if (rootsRemoved)
+        pruneRemovedRoots(options.snapshotFile);
     const due = [...new Set([...options.paths, ...Object.keys(retryState.pending)])].filter((path) => retryState.pending[path] && retryState.pending[path].nextAt <= start);
     let queue = (retryState.pausedUntil ?? 0) > start ? [] : due;
     while (queue.length > 0) {
