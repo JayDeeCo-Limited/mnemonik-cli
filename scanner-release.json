@@ -1,15 +1,15 @@
 {
-  "version": "7.120.7",
-  "digestsSha256": "cf840904eb98e7c4b467900993e0893b9b0e5f8bc841f32a3b5f129d17918788",
+  "version": "7.121.0",
+  "digestsSha256": "dd07c6538d29312799a5a4eb5134e199027fa8707292f612e1f441a53bf654cb",
   "platforms": {
     "darwin-arm64": {
       "schemaVersion": 1,
       "artifact": "scanner",
-      "version": "7.120.7",
+      "version": "7.121.0",
       "entry": "scanner-darwin-arm64",
       "files": {
         "scanner-darwin-arm64": {
-          "sha256": "9dc7946089f2f64ac56405fd9395752fa9d91d748a20fcd3c0412147de01e516",
+          "sha256": "6c6203c738224ffc5e8a44a3d862e25d24e1ad9b3f113cbfea179366dc838e59",
           "size": 155885344,
           "executable": true
         }
@@ -17,7 +17,7 @@
       "totalSize": 155885344,
       "source": {
         "kind": "release",
-        "url": "https://github.com/JayDeeCo-Limited/mnemonik-cli/releases/download/scanner-v7.120.7/"
+        "url": "https://github.com/JayDeeCo-Limited/mnemonik-cli/releases/download/scanner-v7.121.0/"
       },
       "signer": {
         "platform": "darwin",
@@ -29,11 +29,11 @@
     "darwin-x64": {
       "schemaVersion": 1,
       "artifact": "scanner",
-      "version": "7.120.7",
+      "version": "7.121.0",
       "entry": "scanner-darwin-x64",
       "files": {
         "scanner-darwin-x64": {
-          "sha256": "3b70f2232e55c7d46cf6aeeeb276cd5c20414215b1e016b1a8dadc00d8d1e474",
+          "sha256": "dd0a749e435659a18b2f1f2975222df18ee2b569a3ed1d1a0532b9aa3e8a99bd",
           "size": 157653040,
           "executable": true
         }
@@ -41,7 +41,7 @@
       "totalSize": 157653040,
       "source": {
         "kind": "release",
-        "url": "https://github.com/JayDeeCo-Limited/mnemonik-cli/releases/download/scanner-v7.120.7/"
+        "url": "https://github.com/JayDeeCo-Limited/mnemonik-cli/releases/download/scanner-v7.121.0/"
       },
       "signer": {
         "platform": "darwin",
@@ -53,16 +53,16 @@
     "linux-arm64": {
       "schemaVersion": 1,
       "artifact": "scanner",
-      "version": "7.120.7",
+      "version": "7.121.0",
       "entry": "scanner-linux-arm64",
       "files": {
         "scanner-linux-arm64": {
-          "sha256": "68d013e96853748434a4541b2ee68fced1d172ae274c31cfe56acfb90ea74cc1",
+          "sha256": "aa9634771d971ddaa0560f32a08ace8e3035ce959933e9d0a36db96da284dfca",
           "size": 156896384,
           "executable": true
         },
         "scanner-linux-arm64.minisig": {
-          "sha256": "c99b0b76d0ac170df2e2461ac17193f9b71158ae8d94297e18c5ed0e1f6550fb",
+          "sha256": "59e63924b0f44229e6a8a82c3d5bd97e19b788986b4bbae562a1fbab436f8107",
           "size": 314,
           "executable": false
         }
@@ -70,7 +70,7 @@
       "totalSize": 156896698,
       "source": {
         "kind": "release",
-        "url": "https://github.com/JayDeeCo-Limited/mnemonik-cli/releases/download/scanner-v7.120.7/"
+        "url": "https://github.com/JayDeeCo-Limited/mnemonik-cli/releases/download/scanner-v7.121.0/"
       },
       "signer": {
         "platform": "linux",
@@ -83,16 +83,16 @@
     "linux-x64": {
       "schemaVersion": 1,
       "artifact": "scanner",
-      "version": "7.120.7",
+      "version": "7.121.0",
       "entry": "scanner-linux-x64",
       "files": {
         "scanner-linux-x64": {
-          "sha256": "321971a2e64df34f336c4a1ba9a48eba6eb6b56c6069007bd4996eb535a2c7b0",
+          "sha256": "f7139b746a3b479fa2c02e77d5a3ba193c39de66a01121b21dfcd0848defd995",
           "size": 160566464,
           "executable": true
         },
         "scanner-linux-x64.minisig": {
-          "sha256": "899b86aa84593075adfa3085cd68aec9626d361a1b10f07d2de5672549ac44be",
+          "sha256": "8d59d757635a5943b3037897c3ea6f5742ca6663397353f87cf5be50a2c22376",
           "size": 312,
           "executable": false
         }
@@ -100,7 +100,7 @@
       "totalSize": 160566776,
       "source": {
         "kind": "release",
-        "url": "https://github.com/JayDeeCo-Limited/mnemonik-cli/releases/download/scanner-v7.120.7/"
+        "url": "https://github.com/JayDeeCo-Limited/mnemonik-cli/releases/download/scanner-v7.121.0/"
       },
       "signer": {
         "platform": "linux",
@@ -113,11 +113,11 @@
     "win-x64": {
       "schemaVersion": 1,
       "artifact": "scanner",
-      "version": "7.120.7",
+      "version": "7.121.0",
       "entry": "scanner-win-x64.exe",
       "files": {
         "scanner-win-x64.exe": {
-          "sha256": "13a1fdf502a0a4bd6805faf014bc85242336470481ffa45b23327d375b55175c",
+          "sha256": "78786a34472746d6685a370aee7768d41c79bd6e2f1a42b668955ff70c4c65c5",
           "size": 127651840,
           "executable": true
         }
@@ -125,7 +125,7 @@
       "totalSize": 127651840,
       "source": {
         "kind": "release",
-        "url": "https://github.com/JayDeeCo-Limited/mnemonik-cli/releases/download/scanner-v7.120.7/"
+        "url": "https://github.com/JayDeeCo-Limited/mnemonik-cli/releases/download/scanner-v7.121.0/"
       },
       "signingStatus": "unsigned",
       "disclosureVersion": "2026.09.1"
