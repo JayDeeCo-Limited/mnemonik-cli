@@ -50,6 +50,16 @@ export declare function fitContextItems(items: readonly ContextBudgetItem[], opt
  */
 export declare function contextItemsFromText(text: string, envelopeName: string, memoryIds?: readonly string[]): ContextBudgetItem[];
 /**
+ * True when `text` is the bootstrap digest payload itself: a <system-reminder>
+ * opening, one header line, then the canonical `PROJECT_CONTEXT schemaVersion=`
+ * body (wrapBootstrapReminder's shape). Matched at the start and by structure,
+ * never by a phrase anywhere in the text: recalled memories quote both the
+ * header and the body marker, and a substring test once treated such memories
+ * as the digest while missing the digest itself after its header was renamed
+ * (2026-10-10).
+ */
+export declare function isBootstrapDigestPayload(text: string): boolean;
+/**
  * The explicit call that re-fetches a bootstrap digest, for the item that
  * carries one. A shed emission without a route leaves no stub, so a digest
  * shed for budget once vanished without a trace (2026-10-10); with this route

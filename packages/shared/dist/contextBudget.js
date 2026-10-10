@@ -182,6 +182,18 @@ export function contextItemsFromText(text, envelopeName, memoryIds = []) {
     return [...parsed.memories, ...(parsed.trailer ? [parsed.trailer] : [])];
 }
 /**
+ * True when `text` is the bootstrap digest payload itself: a <system-reminder>
+ * opening, one header line, then the canonical `PROJECT_CONTEXT schemaVersion=`
+ * body (wrapBootstrapReminder's shape). Matched at the start and by structure,
+ * never by a phrase anywhere in the text: recalled memories quote both the
+ * header and the body marker, and a substring test once treated such memories
+ * as the digest while missing the digest itself after its header was renamed
+ * (2026-10-10).
+ */
+export function isBootstrapDigestPayload(text) {
+    return /^\s*<system-reminder>\n[^\n]*\nPROJECT_CONTEXT schemaVersion=/.test(text);
+}
+/**
  * The explicit call that re-fetches a bootstrap digest, for the item that
  * carries one. A shed emission without a route leaves no stub, so a digest
  * shed for budget once vanished without a trace (2026-10-10); with this route
@@ -189,7 +201,7 @@ export function contextItemsFromText(text, envelopeName, memoryIds = []) {
  * `cwd=` line supplies the scope.
  */
 export function projectContextRetrievalRoute(text) {
-    if (!text.includes('PROJECT_CONTEXT schemaVersion='))
+    if (!isBootstrapDigestPayload(text))
         return undefined;
     const cwd = /^cwd=(.+)$/m.exec(text)?.[1]?.trim();
     return cwd ? `session_bootstrap({ cwd: ${JSON.stringify(cwd)} })` : 'session_bootstrap';
