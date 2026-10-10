@@ -260,6 +260,13 @@ const readinessMessages = [
         },
     ],
     [
+        /scanner_unsupported_mac_x64/u,
+        {
+            sentence: 'Mac project indexing requires Apple Silicon with ARM64 Node.js.',
+            nextStep: 'Use ARM64 Node.js on an Apple Silicon Mac, or use Linux or Windows for project indexing.',
+        },
+    ],
+    [
         /manifest_missing/u,
         {
             sentence: 'Mnemonik could not find the files for this version.',

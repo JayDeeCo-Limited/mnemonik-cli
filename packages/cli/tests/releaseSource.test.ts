@@ -58,6 +58,29 @@ describe('release source trust boundary', () => {
     expect(source.files.scanner).toEqual(content);
     await expect(releaseBytes(address)).rejects.toMatchObject({ reason: 'permission' });
   });
+  it('refuses x64 Mac scanner acquisition before fetching, including older release manifests', async () => {
+    let fetched = false;
+    const fetcher: typeof fetch = async () => {
+      fetched = true;
+      throw new Error('unexpected fetch');
+    };
+    const olderRelease = {
+      ...trusted,
+      platforms: { ...trusted.platforms, 'darwin-x64': trusted.platforms['linux-x64']! },
+    };
+    await expect(scannerReleaseSource(olderRelease, fetcher, 'darwin-x64')).rejects.toThrow(
+      'scanner_unsupported_mac_x64'
+    );
+    expect(fetched).toBe(false);
+  });
+  it('accepts the Apple Silicon scanner platform through the existing verified acquisition path', async () => {
+    const source = await scannerReleaseSource(
+      { ...trusted, platforms: { 'darwin-arm64': trusted.platforms['linux-x64']! } },
+      fixture(),
+      'darwin-arm64'
+    );
+    expect(source.files.scanner).toEqual(content);
+  });
   it('refuses a digest index changed at the release origin', async () => {
     await expect(
       scannerReleaseSource(trusted, fixture(Buffer.concat([index, Buffer.from(' ')])), 'linux-x64')

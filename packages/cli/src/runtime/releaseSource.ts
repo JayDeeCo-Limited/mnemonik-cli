@@ -274,6 +274,7 @@ export async function scannerReleaseSource(
   fetcher: Fetch = fetch,
   platform = `${process.platform === 'win32' ? 'win' : process.platform}-${process.arch}`
 ): Promise<RuntimeSource> {
+  if (platform === 'darwin-x64') throw new Error('scanner_unsupported_mac_x64');
   if (!/^\d+\.\d+\.\d+(?:-[\w.-]+)?$/.test(trusted.version)) throw new RuntimeError('permission');
   const manifest = trusted.platforms[platform];
   const base = `${releaseRoot}scanner-v${trusted.version}/`;

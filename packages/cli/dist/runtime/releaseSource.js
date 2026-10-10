@@ -230,6 +230,8 @@ export async function signedReleaseManifest(version, fetcher = fetch, identity =
     return manifest;
 }
 export async function scannerReleaseSource(trusted, fetcher = fetch, platform = `${process.platform === 'win32' ? 'win' : process.platform}-${process.arch}`) {
+    if (platform === 'darwin-x64')
+        throw new Error('scanner_unsupported_mac_x64');
     if (!/^\d+\.\d+\.\d+(?:-[\w.-]+)?$/.test(trusted.version))
         throw new RuntimeError('permission');
     const manifest = trusted.platforms[platform];

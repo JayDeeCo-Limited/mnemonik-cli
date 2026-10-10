@@ -10,6 +10,12 @@ import { DiagnosticsError } from '../src/diagnostics.js';
 import { humanReport } from '../src/humanReason.js';
 
 const directories: string[] = [];
+it('explains that x64 Mac project indexing requires Apple Silicon with ARM64 Node.js', () => {
+  expect(humanReport('scanner: scanner_unsupported_mac_x64.')).toBe(
+    'Mac project indexing requires Apple Silicon with ARM64 Node.js.\n' +
+      'Use ARM64 Node.js on an Apple Silicon Mac, or use Linux or Windows for project indexing.'
+  );
+});
 it.each([401, 403])('explains a refused revocation sign-in (%s)', async (status) => {
   const f = await fixture();
   await mkdir(join(f.deps.installStateDir!, 'scanner'), { recursive: true });
