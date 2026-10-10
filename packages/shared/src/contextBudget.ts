@@ -238,6 +238,19 @@ export function contextItemsFromText(
   return [...parsed.memories, ...(parsed.trailer ? [parsed.trailer] : [])];
 }
 
+/**
+ * The explicit call that re-fetches a bootstrap digest, for the item that
+ * carries one. A shed emission without a route leaves no stub, so a digest
+ * shed for budget once vanished without a trace (2026-10-10); with this route
+ * the not-reached marker names the call that brings it back. The digest's own
+ * `cwd=` line supplies the scope.
+ */
+export function projectContextRetrievalRoute(text: string): string | undefined {
+  if (!text.includes('PROJECT_CONTEXT schemaVersion=')) return undefined;
+  const cwd = /^cwd=(.+)$/m.exec(text)?.[1]?.trim();
+  return cwd ? `session_bootstrap({ cwd: ${JSON.stringify(cwd)} })` : 'session_bootstrap';
+}
+
 /** Fit one rendered envelope while preserving its exact under-budget bytes. */
 export function fitContextText(
   text: string,

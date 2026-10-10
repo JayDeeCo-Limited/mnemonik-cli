@@ -49,6 +49,14 @@ export declare function fitContextItems(items: readonly ContextBudgetItem[], opt
  * wire format does not carry trailing memory pointers.
  */
 export declare function contextItemsFromText(text: string, envelopeName: string, memoryIds?: readonly string[]): ContextBudgetItem[];
+/**
+ * The explicit call that re-fetches a bootstrap digest, for the item that
+ * carries one. A shed emission without a route leaves no stub, so a digest
+ * shed for budget once vanished without a trace (2026-10-10); with this route
+ * the not-reached marker names the call that brings it back. The digest's own
+ * `cwd=` line supplies the scope.
+ */
+export declare function projectContextRetrievalRoute(text: string): string | undefined;
 /** Fit one rendered envelope while preserving its exact under-budget bytes. */
 export declare function fitContextText(text: string, envelopeName: string, opts: {
     budget: number;
