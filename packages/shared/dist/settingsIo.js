@@ -91,12 +91,12 @@ function lockOwnerIsAlive(raw) {
         return errorCode(error) === 'EPERM';
     }
 }
-async function removeStaleLock(lockPath) {
+async function removeStaleLock(lockPath, staleMs = LOCK_STALE_MS) {
     const info = await lstat(lockPath);
     if (!info.isDirectory()) {
         throw new Error(`Refusing unsafe non-directory installer lock ${lockPath}`);
     }
-    if (Date.now() - info.mtimeMs <= LOCK_STALE_MS)
+    if (Date.now() - info.mtimeMs <= staleMs)
         return false;
     const entries = await readdir(lockPath);
     if (entries.length === 0) {
@@ -110,9 +110,10 @@ async function removeStaleLock(lockPath) {
             throw error;
         }
     }
-    if (entries.length !== 1 || !entries[0].startsWith('owner-'))
+    const [entry] = entries;
+    if (entries.length !== 1 || entry === undefined || !entry.startsWith('owner-'))
         return false;
-    const tokenPath = join(lockPath, entries[0]);
+    const tokenPath = join(lockPath, entry);
     const owner = await readFile(tokenPath, 'utf8');
     if (lockOwnerIsAlive(owner))
         return false;
@@ -134,10 +135,10 @@ async function removeStaleLock(lockPath) {
         throw error;
     }
 }
-async function acquireLock(lockPath) {
+async function acquireLock(lockPath, options = {}) {
     await mkdir(dirname(lockPath), { recursive: true });
     const owner = `${process.pid} ${Date.now()} ${randomBytes(12).toString('hex')}\n`;
-    for (let attempt = 0; attempt < LOCK_RETRIES; attempt += 1) {
+    for (let attempt = 0; attempt < (options.retries ?? LOCK_RETRIES); attempt += 1) {
         try {
             await mkdir(lockPath, { mode: 0o700 });
             const tokenPath = join(lockPath, `owner-${process.pid}-${randomBytes(12).toString('hex')}`);
@@ -161,7 +162,7 @@ async function acquireLock(lockPath) {
                 throw error;
             }
             try {
-                if (await removeStaleLock(lockPath))
+                if (await removeStaleLock(lockPath, options.staleMs))
                     continue;
             }
             catch (inspectError) {
@@ -169,13 +170,13 @@ async function acquireLock(lockPath) {
                     continue;
                 throw inspectError;
             }
-            await new Promise((resolveDelay) => setTimeout(resolveDelay, LOCK_RETRY_MS));
+            await new Promise((resolveDelay) => setTimeout(resolveDelay, options.retryMs ?? LOCK_RETRY_MS));
         }
     }
     throw new Error(`Timed out waiting for installer lock ${lockPath}`);
 }
-export async function withFileLock(lockPath, action) {
-    const tokenPath = await acquireLock(lockPath);
+export async function withFileLock(lockPath, action, options) {
+    const tokenPath = await acquireLock(lockPath, options);
     try {
         return await action();
     }
@@ -192,7 +193,10 @@ export async function withFileLock(lockPath, action) {
 }
 export async function withFileLocks(lockPaths, action) {
     const ordered = [...new Set(lockPaths)].sort();
-    const acquire = (index) => index >= ordered.length ? action() : withFileLock(ordered[index], () => acquire(index + 1));
+    const acquire = (index) => {
+        const lockPath = ordered[index];
+        return lockPath === undefined ? action() : withFileLock(lockPath, () => acquire(index + 1));
+    };
     return acquire(0);
 }
 export async function readTextIfExists(path) {

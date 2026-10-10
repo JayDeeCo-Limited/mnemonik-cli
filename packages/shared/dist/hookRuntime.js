@@ -217,4 +217,5 @@ export async function bindHookContext(input, familyId, hmac, post, options = {})
 export * from './runtimeReader.js';
 export * from './runtimeSigners.js';
 export * from './projectSetupHandoff.js';
+export * from './hookConversation.js';
 //# sourceMappingURL=hookRuntime.js.map

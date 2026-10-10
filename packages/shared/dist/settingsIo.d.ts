@@ -6,7 +6,12 @@ export declare function installerConfigLockPath(configPath: string, runtimeParen
 export declare function canonicalizeConfigTargets(paths: string[]): Promise<string[]>;
 /** @internal Shared by atomic settings writes and durable runtime installation. */
 export declare function syncDirectory(path: string): Promise<void>;
-export declare function withFileLock<T>(lockPath: string, action: () => Promise<T>): Promise<T>;
+interface FileLockOptions {
+    staleMs?: number;
+    retries?: number;
+    retryMs?: number;
+}
+export declare function withFileLock<T>(lockPath: string, action: () => Promise<T>, options?: FileLockOptions): Promise<T>;
 export declare function withFileLocks<T>(lockPaths: string[], action: () => Promise<T>): Promise<T>;
 export declare function readTextIfExists(path: string): Promise<string | null>;
 export declare function atomicWriteText(path: string, next: string, expectedCurrent: string | null, options?: {
@@ -19,4 +24,5 @@ export interface AtomicTextChange {
     next: string | null;
 }
 export declare function atomicWriteTransaction(changes: AtomicTextChange[]): Promise<void>;
+export {};
 //# sourceMappingURL=settingsIo.d.ts.map

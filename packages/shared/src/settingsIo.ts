@@ -111,12 +111,12 @@ function lockOwnerIsAlive(raw: string): boolean {
   }
 }
 
-async function removeStaleLock(lockPath: string): Promise<boolean> {
+async function removeStaleLock(lockPath: string, staleMs = LOCK_STALE_MS): Promise<boolean> {
   const info = await lstat(lockPath);
   if (!info.isDirectory()) {
     throw new Error(`Refusing unsafe non-directory installer lock ${lockPath}`);
   }
-  if (Date.now() - info.mtimeMs <= LOCK_STALE_MS) return false;
+  if (Date.now() - info.mtimeMs <= staleMs) return false;
   const entries = await readdir(lockPath);
   if (entries.length === 0) {
     try {
@@ -127,8 +127,9 @@ async function removeStaleLock(lockPath: string): Promise<boolean> {
       throw error;
     }
   }
-  if (entries.length !== 1 || !entries[0].startsWith('owner-')) return false;
-  const tokenPath = join(lockPath, entries[0]);
+  const [entry] = entries;
+  if (entries.length !== 1 || entry === undefined || !entry.startsWith('owner-')) return false;
+  const tokenPath = join(lockPath, entry);
   const owner = await readFile(tokenPath, 'utf8');
   if (lockOwnerIsAlive(owner)) return false;
   try {
@@ -146,10 +147,16 @@ async function removeStaleLock(lockPath: string): Promise<boolean> {
   }
 }
 
-async function acquireLock(lockPath: string): Promise<string> {
+interface FileLockOptions {
+  staleMs?: number;
+  retries?: number;
+  retryMs?: number;
+}
+
+async function acquireLock(lockPath: string, options: FileLockOptions = {}): Promise<string> {
   await mkdir(dirname(lockPath), { recursive: true });
   const owner = `${process.pid} ${Date.now()} ${randomBytes(12).toString('hex')}\n`;
-  for (let attempt = 0; attempt < LOCK_RETRIES; attempt += 1) {
+  for (let attempt = 0; attempt < (options.retries ?? LOCK_RETRIES); attempt += 1) {
     try {
       await mkdir(lockPath, { mode: 0o700 });
       const tokenPath = join(lockPath, `owner-${process.pid}-${randomBytes(12).toString('hex')}`);
@@ -170,19 +177,25 @@ async function acquireLock(lockPath: string): Promise<string> {
         throw error;
       }
       try {
-        if (await removeStaleLock(lockPath)) continue;
+        if (await removeStaleLock(lockPath, options.staleMs)) continue;
       } catch (inspectError) {
         if (errorCode(inspectError) === 'ENOENT') continue;
         throw inspectError;
       }
-      await new Promise<void>((resolveDelay) => setTimeout(resolveDelay, LOCK_RETRY_MS));
+      await new Promise<void>((resolveDelay) =>
+        setTimeout(resolveDelay, options.retryMs ?? LOCK_RETRY_MS)
+      );
     }
   }
   throw new Error(`Timed out waiting for installer lock ${lockPath}`);
 }
 
-export async function withFileLock<T>(lockPath: string, action: () => Promise<T>): Promise<T> {
-  const tokenPath = await acquireLock(lockPath);
+export async function withFileLock<T>(
+  lockPath: string,
+  action: () => Promise<T>,
+  options?: FileLockOptions
+): Promise<T> {
+  const tokenPath = await acquireLock(lockPath, options);
   try {
     return await action();
   } finally {
@@ -198,8 +211,10 @@ export async function withFileLock<T>(lockPath: string, action: () => Promise<T>
 
 export async function withFileLocks<T>(lockPaths: string[], action: () => Promise<T>): Promise<T> {
   const ordered = [...new Set(lockPaths)].sort();
-  const acquire = (index: number): Promise<T> =>
-    index >= ordered.length ? action() : withFileLock(ordered[index], () => acquire(index + 1));
+  const acquire = (index: number): Promise<T> => {
+    const lockPath = ordered[index];
+    return lockPath === undefined ? action() : withFileLock(lockPath, () => acquire(index + 1));
+  };
   return acquire(0);
 }
 

@@ -60,4 +60,5 @@ export declare function bindHookContext(input: HookBindingInput, familyId: strin
 export * from './runtimeReader.js';
 export * from './runtimeSigners.js';
 export * from './projectSetupHandoff.js';
+export * from './hookConversation.js';
 //# sourceMappingURL=hookRuntime.d.ts.map
