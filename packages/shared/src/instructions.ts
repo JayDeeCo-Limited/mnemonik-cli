@@ -159,7 +159,7 @@ Project work items live in tasks. A pending list requires action:"list" and stat
 
 Which tool for what:
 - memory_get: hydrates exact originals by id.
-- memory_add: saves a decision, a user's preference, or a root cause.
+- memory_add: records an experience: a decision and why, what the user said, what you found.
 - memory_state: corrects wrong, outdated, or conflicting memory.
 - memory_info: explains confidence or origin when memory looks suspect.
 - memory_links: connects related decisions so they surface together.
