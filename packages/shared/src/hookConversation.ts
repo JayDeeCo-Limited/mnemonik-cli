@@ -152,6 +152,7 @@ export class HookConversation {
       (url.endsWith('/hooks/mcp-precheck') ||
         (url.endsWith('/hooks/injections') &&
           ['SessionStart', 'SubagentStart', 'UserPromptSubmit'].includes(String(body.event))));
+    let rejected: string | undefined;
     const send = async () => {
       await this.load();
       const response = await post({
@@ -161,11 +162,21 @@ export class HookConversation {
           ...(this.conversationId ? { conversationId: this.conversationId } : {}),
         }),
       });
+      const result = response.ok
+        ? ((await response
+            .clone()
+            .json()
+            .catch(() => null)) as {
+            ok?: unknown;
+            reason?: unknown;
+            conversationId?: unknown;
+          } | null)
+        : null;
+      if (this.conversationId && result?.ok === false && result.reason === 'invalid_conversation') {
+        rejected = this.conversationId;
+        return response;
+      }
       if (acquisition && response.ok) {
-        const result = (await response
-          .clone()
-          .json()
-          .catch(() => null)) as { conversationId?: unknown } | null;
         if (boundedHandle(result?.conversationId)) {
           if (this.conversationId && this.conversationId !== result.conversationId)
             throw new Error('conversation response mismatch');
@@ -174,7 +185,21 @@ export class HookConversation {
       } else if (this.conversationId) await this.save(this.conversationId);
       return response;
     };
-    return acquisition ? this.locked(send) : send();
+    const response = acquisition ? await this.locked(send) : await send();
+    // The server refused the cached handle (a signing-secret rotation, say).
+    // Forget it so the next acquiring event mints a fresh one; this request
+    // is never resent, and a handle another event acquired meanwhile stays.
+    if (rejected) await this.forget(rejected);
+    return response;
+  }
+
+  private async forget(id: string): Promise<void> {
+    await this.locked(async () => {
+      await this.load();
+      if (this.conversationId !== id) return;
+      await rm(this.input.stateFile, { force: true });
+      this.conversationId = undefined;
+    }).catch(() => undefined);
   }
 
   /** Grok adopts only an authenticated explicit-bootstrap tool result. */
