@@ -1,6 +1,7 @@
 export { CODEX_TRUST_MESSAGE } from './humanReason.js';
 import { cliCredentialStatus } from './auth/credentials.js';
-import type { CodingToolSignInState } from './auth/status.js';
+import type { CodingToolSignInResult, CodingToolSignInState } from './auth/status.js';
+import type { StoredSignIn } from './auth/claudeCodeSignIn.js';
 import { type ScannerReceipt } from './scanner/control.js';
 import { type ScannerServiceOptions } from './scanner/service.js';
 import type { Readable } from 'node:stream';
@@ -133,6 +134,11 @@ export interface CodingToolStatus {
     signIn: CodingToolSignInState | 'unknown';
     /** When the tool last renewed its sign-in; dates use, never decides it. */
     lastUsedAt: string | null;
+    /**
+     * What the coding tool itself stores for Mnemonik on this machine, when it
+     * was read (Claude Code only). Token values are never read out.
+     */
+    stored?: StoredSignIn;
     /** Commands the agent runs to fix what is wrong with this tool, in order; empty when none. */
     actions: string[];
     /**
@@ -153,10 +159,7 @@ export declare function codingToolStatuses(editors: ReadonlyArray<{
     host: string;
     name: string;
     hooks: boolean;
-}>, conditions: readonly ReadinessCondition[], signIns: ReadonlyMap<string, {
-    state: CodingToolSignInState;
-    lastUsedAt: string | null;
-}> | undefined): CodingToolStatus[];
+}>, conditions: readonly ReadinessCondition[], signIns: ReadonlyMap<string, CodingToolSignInResult> | undefined): CodingToolStatus[];
 /**
  * The status document with each tool's sign-in added. A tool signed out on
  * this machine is a condition of the installation: status never says the
@@ -168,6 +171,8 @@ export declare function withCodingTools<T extends ReadinessDocument & {
 }>(document: T, tools: readonly CodingToolStatus[]): T & {
     codingTools: CodingToolStatus[];
 };
+/** A stored sign-in whose access has expired and that the tool renews by itself. */
+export declare const renewsMessage: (tool: string) => string;
 /**
  * One line per tool, for a person, at a glance: signed in or not, and the one
  * short command when there is something to do. Hooks, last use and the rest

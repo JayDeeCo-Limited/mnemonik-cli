@@ -1,4 +1,5 @@
 import type { HostName } from '@mnemonik/shared';
+import type { StoredSignIn } from './claudeCodeSignIn.js';
 export interface AccountGrant {
     deviceInstallationId?: string | null;
     id: string;
@@ -54,15 +55,32 @@ export declare function codingToolSignIn(host: HostName, here: GrantStatus, ever
     state: CodingToolSignInState;
     lastUsedAt: string | null;
 };
+export type CodingToolSignInResult = {
+    state: CodingToolSignInState;
+    lastUsedAt: string | null;
+    /** What the coding tool itself holds here; read for Claude Code only. */
+    stored?: StoredSignIn;
+};
+/**
+ * Claude Code's sign-in on this machine: the server's verdict, held to what
+ * Claude Code itself stores (2026-10-12 outage). The server decides signed out
+ * (revoked or expired grants); only the stored credential can say signed in.
+ * Holding nothing it can use, Claude Code is signed out where the server knows
+ * a sign-in here, otherwise not set up; holding something, it is what the server
+ * says. A store that cannot be read, or a server that cannot, vouches for
+ * nothing: no claim, unless the server alone already decides signed out.
+ */
+export declare function withStoredSignIn(server: CodingToolSignInResult | undefined, stored: StoredSignIn | undefined): CodingToolSignInResult | undefined;
 /** "just now", "5 minutes ago", "1 hour ago", "3 days ago", or "never". */
 export declare function relativeTime(time: number | null, now: number): string;
 /**
  * One line per host for plain `auth status`: editors first, then the rest,
  * each by most recent use. Grant ids, dates and scopes are for --json.
+ * `onThisComputer` rewrites a host's summary with what the tool itself stores here.
  */
 export declare function grantSummaryLines(grants: readonly (AccountGrant & {
     host: string;
-})[], editors: Readonly<Record<string, string>>, now?: number): string[];
+})[], editors: Readonly<Record<string, string>>, now?: number, onThisComputer?: Readonly<Record<string, (summary: string) => string>>): string[];
 export declare function grantTransport(getBearer: () => Promise<string>, fetcher?: typeof fetch): {
     /** Every machine's unrevoked sign-ins, or with `here` every sign-in on this one. */
     list(options?: {

@@ -245,6 +245,86 @@ describe('codingToolSignIn: one tool on this machine', () => {
   });
 });
 
+// 2026-10-12: an outage emptied Claude Code's stored sign-in on
+// this computer and auth status still said Claude Code was signed in.
+describe('auth status says what Claude Code stores on this computer', () => {
+  const KEY = 'mnemonik|7aea917cc798c31f';
+  async function stored(entry: Record<string, unknown> | null, args: string[] = []) {
+    const { mkdirSync, writeFileSync } = await import('node:fs');
+    vi.useFakeTimers({ now: NOW, toFake: ['Date'] });
+    const home = mkdtempSync(join(tmpdir(), 'auth-status-'));
+    homes.push(home);
+    writeFileSync(
+      join(home, '.claude.json'),
+      JSON.stringify({
+        mcpServers: {
+          mnemonik: {
+            type: 'http',
+            url: 'https://api.mnemonik.dev/mcp',
+            headers: { 'x-mnemonik-installation-id': 'c8553445-83f4-47f6-a84d-4eb7804eb6e6' },
+          },
+        },
+      })
+    );
+    if (entry) {
+      mkdirSync(join(home, '.claude'));
+      writeFileSync(
+        join(home, '.claude/.credentials.json'),
+        JSON.stringify({ mcpOAuth: { [KEY]: entry } })
+      );
+    }
+    const stdout = { text: '', write: (chunk: string) => void (stdout.text += chunk) };
+    const deps: CliDependencies = {
+      home,
+      stdout,
+      stderr: { write: () => undefined },
+      claudeCodeStore: { platform: 'linux', env: {} },
+      hostManagement: {
+        stateDir: join(home, 'state'),
+        account: 'owner',
+        grants: {
+          list: async () => ({
+            account: 'owner',
+            email: 'daemonhunt@gmail.com',
+            grants: [grant('Claude Code', 12), grant('Codex', 70)],
+          }),
+          revoke: async () => undefined,
+        },
+      },
+    };
+    const code = await runCli(['auth', 'status', ...args], deps);
+    return { code, stdout: stdout.text };
+  }
+
+  it('signed in: the row as before', async () => {
+    const result = await stored({ accessToken: 'a', refreshToken: 'r', expiresAt: NOW + 3e6 });
+    expect(result.stdout.split('\n')[1]).toBe(
+      'Claude Code  signed in, last used 12 minutes ago (1 sign-in)'
+    );
+  });
+
+  it('expired but refreshable: signed in, and Claude Code renews it', async () => {
+    const result = await stored({ accessToken: 'a', refreshToken: 'r', expiresAt: NOW - 3e6 });
+    expect(result.stdout.split('\n')[1]).toBe(
+      'Claude Code  signed in, last used 12 minutes ago (1 sign-in). The sign-in renews automatically the next time Claude Code connects.'
+    );
+  });
+
+  it('nothing stored: not signed in on this computer, with the step in Claude Code', async () => {
+    for (const entry of [{ accessToken: '' }, null]) {
+      const result = await stored(entry);
+      expect(result.code).toBe(0);
+      expect(result.stdout.split('\n').slice(1, 3)).toEqual([
+        'Claude Code  not signed in on this computer. In Claude Code, type /mcp, choose mnemonik, then Authenticate.',
+        'Codex        signed in, last used 1 hour ago (1 sign-in)',
+      ]);
+    }
+    const json = JSON.parse((await stored({ accessToken: '' }, ['--json'])).stdout);
+    expect(json.stored).toEqual({ 'claude-code': { state: 'missing', expiresAt: null } });
+    expect(json.grants).toHaveLength(2);
+  });
+});
+
 describe('auth status counts only valid sign-ins as signed in', () => {
   it('leaves an expired or revoked sign-in out of the signed-in rows', async () => {
     const result = await status([

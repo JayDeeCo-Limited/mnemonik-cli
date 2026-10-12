@@ -696,6 +696,7 @@ export function codingToolStatuses(editors, conditions, signIns) {
             hooks,
             signIn: signIn?.state ?? 'unknown',
             lastUsedAt: signIn?.lastUsedAt ?? null,
+            ...(signIn?.stored ? { stored: signIn.stored } : {}),
             actions: [
                 ...(hooks === 'missing' ? ['mnemonik repair'] : []),
                 ...(hooks === 'approval_pending' && trust?.action ? [trust.action] : []),
@@ -744,6 +745,8 @@ export function withCodingTools(document, tools) {
         codingTools: [...tools],
     };
 }
+/** A stored sign-in whose access has expired and that the tool renews by itself. */
+export const renewsMessage = (tool) => `The sign-in renews automatically the next time ${tool} connects.`;
 /**
  * One line per tool, for a person, at a glance: signed in or not, and the one
  * short command when there is something to do. Hooks, last use and the rest
@@ -754,7 +757,11 @@ export function withCodingTools(document, tools) {
 export function codingToolLines(tools) {
     return tools.flatMap((tool) => {
         if (tool.signIn === 'signed_in')
-            return [`${tool.name}: signed in.`];
+            return [
+                tool.stored?.state === 'refreshable'
+                    ? `${tool.name}: signed in. ${renewsMessage(tool.name)}`
+                    : `${tool.name}: signed in.`,
+            ];
         if (tool.signIn === 'signed_in_elsewhere')
             return [`${tool.name}: signed in on another of your machines.`];
         if (tool.signIn !== 'not_set_up')

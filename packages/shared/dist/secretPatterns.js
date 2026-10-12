@@ -20,7 +20,8 @@
  *      Slack (xox*), Google (AIza), Anthropic (sk-ant-), npm (npm_/npms_)
  *   7. Credentials inside scheme://user:pass@host connection strings
  *   8. Authorization: Bearer headers
- *   9. Standalone high-entropy tokens matching no known prefix
+ *   9. Command-line passwords given to sshpass
+ *  10. Standalone high-entropy tokens matching no known prefix
  *      (`redactHighEntropyTokens` - heavily guarded, see below)
  *
  * False-positive cost: a few legitimate strings get replaced with the
@@ -83,6 +84,15 @@ export const SECRET_PATTERNS = [
     // `Bearer $MNEMONIK_PROXY_TOKEN`) are left intact - redacting those would
     // destroy the instruction without hiding a secret.
     /Authorization\s*:\s*Bearer\s+[A-Za-z0-9._~+/-]+=*/gi,
+    // sshpass -p <password> (also -p'<password>' and -p"<password>"): only the
+    // password word is consumed, so the command stays readable. A shell
+    // expansion (`$PASS`, `"$PASS"`), a `<placeholder>`, an earlier redaction
+    // and quoted punctuation are left, and so is prose about the flag: a bare all-lower-case
+    // word counts only when the command sshpass runs (ssh, scp, ...) follows it.
+    // Eleven scanned chunks in production carried a root password this way
+    // (2026-10-12); the server's memory redactor (src/core/redactCredentials.ts)
+    // has the same rule.
+    /(?<=\bsshpass(?:[ \t]+-[a-oq-zA-Z]\S*)*[ \t]+-p[ \t]*)(?:'(?![$<]|\[REDACTED\])(?=[^'\n]*[A-Za-z0-9])[^'\n]+'|"(?![$<]|\[REDACTED\])(?=[^"\n]*[A-Za-z0-9])[^"\n]+"|(?![$<'"`(),[{\\]|\[REDACTED\]|[a-z]+[.,:;!?)]*(?![^\s'"`])(?![ \t]+(?:ssh|scp|sftp|rsync|ssh-copy-id|ansible[\w-]*)(?![\w-])))[^\s'"`;|&]+)/g,
 ];
 /**
  * Replace recognized secret shapes in `text` with the redaction

@@ -29,6 +29,10 @@ for (const key of [
   'MNEMONIK_TOKEN',
   'DBUS_SESSION_BUS_ADDRESS',
   'SSH_AUTH_SOCK',
+  // Where Claude Code keeps its stored sign-in (auth/claudeCodeSignIn.ts).
+  'CLAUDE_CONFIG_DIR',
+  'CLAUDE_SECURESTORAGE_CONFIG_DIR',
+  'CLAUDE_CODE_FORCE_WINDOWS_CREDMAN',
 ])
   delete process.env[key];
 delete process.env.XDG_STATE_HOME;

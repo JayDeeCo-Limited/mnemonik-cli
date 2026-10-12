@@ -1,5 +1,6 @@
 import { apiOrigin, hostForGrantClient } from '@mnemonik/shared';
 import type { HostName } from '@mnemonik/shared';
+import type { StoredSignIn } from './claudeCodeSignIn.js';
 
 export interface AccountGrant {
   deviceInstallationId?: string | null;
@@ -108,6 +109,41 @@ export function codingToolSignIn(
     : { state: 'not_set_up', lastUsedAt: null };
 }
 
+export type CodingToolSignInResult = {
+  state: CodingToolSignInState;
+  lastUsedAt: string | null;
+  /** What the coding tool itself holds here; read for Claude Code only. */
+  stored?: StoredSignIn;
+};
+
+/**
+ * Claude Code's sign-in on this machine: the server's verdict, held to what
+ * Claude Code itself stores (2026-10-12 outage). The server decides signed out
+ * (revoked or expired grants); only the stored credential can say signed in.
+ * Holding nothing it can use, Claude Code is signed out where the server knows
+ * a sign-in here, otherwise not set up; holding something, it is what the server
+ * says. A store that cannot be read, or a server that cannot, vouches for
+ * nothing: no claim, unless the server alone already decides signed out.
+ */
+export function withStoredSignIn(
+  server: CodingToolSignInResult | undefined,
+  stored: StoredSignIn | undefined
+): CodingToolSignInResult | undefined {
+  if (!stored) return server;
+  if (stored.state === 'missing')
+    return {
+      state:
+        server?.state === 'signed_in' || server?.state === 'signed_out'
+          ? 'signed_out'
+          : 'not_set_up',
+      lastUsedAt: null,
+      stored,
+    };
+  if (!server) return undefined;
+  if (stored.state === 'unreadable' && server.state === 'signed_in') return undefined;
+  return { ...server, stored };
+}
+
 /** "just now", "5 minutes ago", "1 hour ago", "3 days ago", or "never". */
 export function relativeTime(time: number | null, now: number): string {
   if (time === null) return 'never';
@@ -125,18 +161,21 @@ export function relativeTime(time: number | null, now: number): string {
 /**
  * One line per host for plain `auth status`: editors first, then the rest,
  * each by most recent use. Grant ids, dates and scopes are for --json.
+ * `onThisComputer` rewrites a host's summary with what the tool itself stores here.
  */
 export function grantSummaryLines(
   grants: readonly (AccountGrant & { host: string })[],
   editors: Readonly<Record<string, string>>,
-  now = Date.now()
+  now = Date.now(),
+  onThisComputer: Readonly<Record<string, (summary: string) => string>> = {}
 ): string[] {
   const rows = new Map<
     string,
-    { name: string; editor: boolean; last: number | null; count: number }
+    { host: string; name: string; editor: boolean; last: number | null; count: number }
   >();
   for (const grant of grants) {
     const row = rows.get(grant.host) ?? {
+      host: grant.host,
       name: editors[grant.host] ?? grant.host,
       editor: grant.host in editors,
       last: null,
@@ -151,10 +190,10 @@ export function grantSummaryLines(
     (a, b) => Number(b.editor) - Number(a.editor) || (b.last ?? 0) - (a.last ?? 0)
   );
   const width = Math.max(...ordered.map((row) => row.name.length)) + 2;
-  return ordered.map(
-    (row) =>
-      `${row.name.padEnd(width)}signed in, last used ${relativeTime(row.last, now)} (${row.count} sign-in${row.count === 1 ? '' : 's'})`
-  );
+  return ordered.map((row) => {
+    const summary = `signed in, last used ${relativeTime(row.last, now)} (${row.count} sign-in${row.count === 1 ? '' : 's'})`;
+    return `${row.name.padEnd(width)}${onThisComputer[row.host]?.(summary) ?? summary}`;
+  });
 }
 
 export function grantTransport(getBearer: () => Promise<string>, fetcher: typeof fetch = fetch) {

@@ -73,6 +73,7 @@ import { evaluateRoot } from './project/eligibility.js';
 import { accountActions } from './transport/server.js';
 import {
   apiOrigin,
+  CODING_TOOL_SIGN_IN,
   describeReadiness,
   serializeReadiness as baseReadiness,
   type ProjectReadinessInput,
@@ -86,8 +87,11 @@ import {
   grantSummaryLines,
   relativeTime,
   validGrant,
+  withStoredSignIn,
+  type CodingToolSignInResult,
   type GrantStatus,
 } from './auth/status.js';
+import { claudeCodeStoredSignIn, type ClaudeCodeStoreOptions } from './auth/claudeCodeSignIn.js';
 import { createCliAuth } from './auth/index.js';
 import { OAuthProtocolError, runEditorLogin, type EditorLoginOverrides } from './auth/pkce.js';
 import { currentInstallSession, ensureInstallSession } from './auth/installSession.js';
@@ -111,6 +115,7 @@ import {
   mcpTurnOnAction,
   renderStatusSummaries,
   renderRefusals,
+  renewsMessage,
   REPORT_NOT_SENT,
   renderScannerFailure,
   statusExitCode,
@@ -225,10 +230,17 @@ export const CODEX_SIGNED_IN_MESSAGE = 'Codex is signed in to Mnemonik.';
 export const signedInElsewhereMessage = (editor: string) =>
   `${editor} is already signed in to Mnemonik from another of your machines.`;
 /** A coding tool with a valid sign-in on this machine; `mnemonik connect` has nothing to do. */
-export const alreadySignedInMessage = (editor: string, lastUsedAt: string | null) =>
+export const alreadySignedInMessage = (
+  editor: string,
+  lastUsedAt: string | null,
+  refreshable = false
+) =>
   `${editor} is already signed in to Mnemonik on this computer${
     lastUsedAt ? `, last used ${relativeTime(Date.parse(lastUsedAt), Date.now())}` : ''
-  }.`;
+  }.${refreshable ? ` ${renewsMessage(editor)}` : ''}`;
+/** The coding tool itself holds no Mnemonik sign-in it can use on this machine. */
+export const notSignedInHereMessage = (editor: string) =>
+  `${editor} is not signed in to Mnemonik on this computer.`;
 /** For the agent running `connect --json`: what to do with the link it was given. */
 export const SIGN_IN_LINK_REASON =
   'Give this link to the person to approve the Codex sign-in. This command finishes when they do.';
@@ -656,6 +668,8 @@ export interface CliDependencies {
   statusDetails?: StatusDocumentInput['details'];
   codexTrustConditions?: () => Promise<readonly ReadinessCondition[]>;
   diagnostics?: DiagnosticsDependencies;
+  /** Where Claude Code's own stored sign-in is read: this platform, environment and Keychain by default. */
+  claudeCodeStore?: Omit<ClaudeCodeStoreOptions, 'home'>;
 }
 
 function auth(deps: CliDependencies, output: Output, noBrowser: boolean) {
@@ -1499,18 +1513,44 @@ function refusalStateDir(deps: CliDependencies): string {
   );
 }
 
+/** What Claude Code itself stores for Mnemonik here; undefined when it has no OAuth declaration. */
+const claudeCodeStored = (deps: CliDependencies) =>
+  claudeCodeStoredSignIn({ home: deps.home ?? homedir(), ...deps.claudeCodeStore });
+
 /**
- * Each coding tool's sign-in on this machine, as the server holds it and by the
- * console's validity rule. Undefined when it cannot be read (this computer's
- * own sign-in is unusable, or Mnemonik cannot be reached): then nothing is
- * claimed either way. Bounded like the readiness upload.
+ * Each coding tool's sign-in on this machine, as the server holds it by the
+ * console's validity rule, and for Claude Code held to what Claude Code itself
+ * stores (withStoredSignIn). A tool missing from the map is unknown: nothing is
+ * claimed either way. Undefined when nothing could be read.
  */
 async function codingToolSignIns(
   deps: CliDependencies,
   output: Output,
   hosts: readonly (typeof hostOrder)[number][]
-): Promise<Map<string, ReturnType<typeof codingToolSignIn>> | undefined> {
+): Promise<Map<string, CodingToolSignInResult> | undefined> {
   if (!hosts.length) return new Map();
+  const [server, stored] = await Promise.all([
+    serverSignIns(deps, output, hosts),
+    hosts.includes('claude-code') ? claudeCodeStored(deps) : undefined,
+  ]);
+  if (!stored) return server;
+  const result = new Map<string, CodingToolSignInResult>(server ?? []);
+  const claudeCode = withStoredSignIn(server?.get('claude-code'), stored);
+  if (claudeCode) result.set('claude-code', claudeCode);
+  else result.delete('claude-code');
+  return server || claudeCode ? result : undefined;
+}
+
+/**
+ * Each coding tool's sign-in on this machine, as the server holds it. Undefined
+ * when it cannot be read (this computer's own sign-in is unusable, or Mnemonik
+ * cannot be reached). Bounded like the readiness upload.
+ */
+async function serverSignIns(
+  deps: CliDependencies,
+  output: Output,
+  hosts: readonly (typeof hostOrder)[number][]
+): Promise<Map<string, CodingToolSignInResult> | undefined> {
   const bearer = await auth(deps, output, false)
     .getCliBearer()
     .catch(() => undefined);
@@ -1522,7 +1562,9 @@ async function codingToolSignIns(
   );
   const here = await grants.list({ here: true }).catch(() => undefined);
   if (!here) return undefined;
-  const result = new Map(hosts.map((host) => [host, codingToolSignIn(host, here)] as const));
+  const result = new Map<string, CodingToolSignInResult>(
+    hosts.map((host) => [host, codingToolSignIn(host, here)] as const)
+  );
   // Only an editor that can run on another machine is looked for there.
   if ([...result].some(([host, signIn]) => host === 'cursor' && signIn.state !== 'signed_in')) {
     const everywhere: GrantStatus | undefined = await grants.list().catch(() => undefined);
@@ -2370,7 +2412,8 @@ export async function runCli(args: string[], deps: CliDependencies = {}): Promis
     // A coding tool already holding a valid sign-in on this machine (or, for an
     // editor that opens this machine from another one, there) needs nothing.
     // Idle time is not signed out: the tool renews its sign-in when next used.
-    // An unreachable server says nothing, and sign-in goes ahead as before.
+    // Claude Code is signed in only if Claude Code itself still stores the
+    // sign-in. An unreachable server says nothing, and sign-in goes ahead.
     const signIn =
       editor?.mcp === 'ready' ? await codingToolSignIns(deps, output, [host]) : undefined;
     const current = signIn?.get(host);
@@ -2378,7 +2421,11 @@ export async function runCli(args: string[], deps: CliDependencies = {}): Promis
       const message =
         current.state === 'signed_in_elsewhere'
           ? signedInElsewhereMessage(launchHostLabels[host])
-          : alreadySignedInMessage(launchHostLabels[host], current.lastUsedAt);
+          : alreadySignedInMessage(
+              launchHostLabels[host],
+              current.lastUsedAt,
+              current.stored?.state === 'refreshable'
+            );
       if (parsed.flags.has('json'))
         output.json(
           current.state === 'signed_in'
@@ -2386,6 +2433,7 @@ export async function runCli(args: string[], deps: CliDependencies = {}): Promis
                 status: 'READY',
                 signIn: current.state,
                 lastUsedAt: current.lastUsedAt,
+                ...(current.stored ? { stored: current.stored } : {}),
                 reason: message,
               }
             : { status: 'READY', reason: message }
@@ -2438,7 +2486,9 @@ export async function runCli(args: string[], deps: CliDependencies = {}): Promis
       editor?.mcp === 'disabled'
         ? `${editor.name} connection is turned off.`
         : editor?.mcp === 'ready'
-          ? 'Finish signing in to Mnemonik in the coding tool.'
+          ? current?.stored?.state === 'missing'
+            ? notSignedInHereMessage(launchHostLabels[host])
+            : 'Finish signing in to Mnemonik in the coding tool.'
           : `${launchHostLabels[host]} connection is missing.`;
     const actions =
       editor?.mcp === 'ready'
@@ -2448,7 +2498,13 @@ export async function runCli(args: string[], deps: CliDependencies = {}): Promis
               ? mcpTurnOnAction[host]
               : 'Run mnemonik install to set it up again.',
           ];
-    if (parsed.flags.has('json')) output.json({ status: 'ACTION_REQUIRED', reason, actions });
+    if (parsed.flags.has('json'))
+      output.json({
+        status: 'ACTION_REQUIRED',
+        reason,
+        actions,
+        ...(current?.stored ? { stored: current.stored } : {}),
+      });
     else {
       output.line(reason);
       for (const action of actions) output.line(action);
@@ -2914,7 +2970,15 @@ export async function runCli(args: string[], deps: CliDependencies = {}): Promis
         .map((g) => ({ ...g, host: grantHost(g) ?? g.clientName ?? g.clientId }));
       // Revoked, expired and unfinished sign-ins stay in --json with their status.
       const signedIn = grants.filter(validGrant);
-      if (parsed.flags.has('json')) output.json({ account: status.account, grants });
+      // The account's sign-ins say a Claude Code sign-in exists; what Claude
+      // Code stores on this computer says whether it can use one here.
+      const stored = !host || host === 'claude-code' ? await claudeCodeStored(deps) : undefined;
+      if (parsed.flags.has('json'))
+        output.json({
+          account: status.account,
+          grants,
+          ...(stored ? { stored: { 'claude-code': stored } } : {}),
+        });
       else if (!signedIn.length)
         output.line(
           host
@@ -2923,7 +2987,17 @@ export async function runCli(args: string[], deps: CliDependencies = {}): Promis
         );
       else {
         output.signedInAs(status.email);
-        for (const line of grantSummaryLines(signedIn, launchHostLabels)) output.line(line);
+        const signInStep = CODING_TOOL_SIGN_IN['claude-code'];
+        const claudeCode = (summary: string) =>
+          stored?.state === 'missing'
+            ? `not signed in on this computer.${'step' in signInStep ? ` ${signInStep.step}` : ''}`
+            : stored?.state === 'refreshable'
+              ? `${summary}. ${renewsMessage('Claude Code')}`
+              : summary;
+        for (const line of grantSummaryLines(signedIn, launchHostLabels, Date.now(), {
+          'claude-code': claudeCode,
+        }))
+          output.line(line);
         output.line(
           'Older sign-ins stay valid until `mnemonik auth logout`. `mnemonik auth status --json` lists every one.'
         );

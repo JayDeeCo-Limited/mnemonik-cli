@@ -701,6 +701,128 @@ describe('status says each coding tool sign-in on this machine', () => {
     );
   }, 20_000);
 
+  // 2026-10-12: an outage emptied Claude Code's stored sign-in;
+  // the server's grant stayed valid and status said signed in. Claude Code's own
+  // store now decides whether it is signed in on this machine.
+  describe('held to what Claude Code itself stores', () => {
+    const KEY = 'mnemonik|7aea917cc798c31f';
+    async function storedMachine(entry: Record<string, unknown> | null) {
+      const { join } = await import('node:path');
+      const machine = await claudeCodeOnly();
+      await machine.put(join(machine.home, '.claude.json'), {
+        mcpServers: {
+          mnemonik: {
+            type: 'http',
+            url: 'https://api.mnemonik.dev/mcp',
+            headers: { 'x-mnemonik-installation-id': HERE },
+          },
+        },
+      });
+      if (entry)
+        await machine.put(join(machine.home, '.claude/.credentials.json'), {
+          claudeAiOauth: { accessToken: 'claude-ai-never-shown' },
+          mcpOAuth: { [KEY]: { serverName: 'mnemonik', ...entry } },
+        });
+      return machine;
+    }
+    const linux = { claudeCodeStore: { platform: 'linux' as const, env: {} } };
+
+    it('signed in: Claude Code holds an access token that has not expired', async () => {
+      vi.stubGlobal('fetch', async () => Response.json({}));
+      const machine = await storedMachine({
+        accessToken: 'a-never-shown',
+        refreshToken: 'r-never-shown',
+        expiresAt: Date.now() + 3_000_000,
+      });
+      const { deps } = server([claudeSignIn('connected', hoursAgo(1))]);
+      const human = await machine.invoke('status', { ...deps, ...linux });
+      expect(human).toEqual({
+        code: 0,
+        text: 'Mnemonik is installed and working.\nClaude Code: signed in.\n',
+      });
+    }, 20_000);
+
+    it('expired but refreshable: signed in, and says Claude Code renews it', async () => {
+      vi.stubGlobal('fetch', async () => Response.json({}));
+      const machine = await storedMachine({
+        accessToken: 'a-never-shown',
+        refreshToken: 'r-never-shown',
+        expiresAt: Date.now() - 45 * 3_600_000,
+      });
+      const signedIn = [claudeSignIn('connected', hoursAgo(45))];
+      const human = await machine.invoke('status', { ...server(signedIn).deps, ...linux });
+      expect(human).toEqual({
+        code: 0,
+        text: 'Mnemonik is installed and working.\nClaude Code: signed in. The sign-in renews automatically the next time Claude Code connects.\n',
+      });
+      const json = await machine.invoke('status', { ...server(signedIn).deps, ...linux }, [
+        '--json',
+      ]);
+      expect(JSON.parse(json.text).codingTools).toEqual([
+        expect.objectContaining({
+          host: 'claude-code',
+          signIn: 'signed_in',
+          stored: { state: 'refreshable', expiresAt: expect.any(String) },
+          actions: [],
+          personSteps: [],
+        }),
+      ]);
+      expect(json.text).not.toContain('never-shown');
+    }, 20_000);
+
+    it('nothing stored while the server grant is valid: signed out, never working', async () => {
+      vi.stubGlobal('fetch', async () => Response.json({}));
+      // The entry the 2026-10-12 outage left: no access or refresh token.
+      const machine = await storedMachine({ accessToken: '', clientId: 'client' });
+      const signedIn = [claudeSignIn('connected', hoursAgo(2))];
+      const human = await machine.invoke('status', { ...server(signedIn).deps, ...linux });
+      expect(human).toEqual({
+        code: 3,
+        text: 'Installation: Needs attention.\nClaude Code is signed out of Mnemonik.\nIn Claude Code, type /mcp, choose mnemonik, then Authenticate.\n',
+      });
+      const json = JSON.parse(
+        (await machine.invoke('status', { ...server(signedIn).deps, ...linux }, ['--json'])).text
+      );
+      expect(json.installation.state).toBe('ACTION_REQUIRED');
+      expect(json.codingTools).toEqual([
+        expect.objectContaining({
+          signIn: 'signed_out',
+          stored: { state: 'missing', expiresAt: null },
+          personSteps: ['In Claude Code, type /mcp, choose mnemonik, then Authenticate.'],
+        }),
+      ]);
+    }, 20_000);
+
+    it('nothing stored and Mnemonik unreachable: still says not signed in, from this machine', async () => {
+      vi.stubGlobal('fetch', async () => Response.json({}));
+      const machine = await storedMachine(null);
+      const human = await machine.invoke('status', {
+        cliAuth: {
+          signIn: async () => undefined,
+          getCliBearer: async () => 'access-token',
+          logout: async () => undefined,
+        },
+        grantFetch: async () => {
+          throw new TypeError('fetch failed');
+        },
+        ...linux,
+      });
+      expect(human.text).toContain(
+        'Claude Code: not signed in. In Claude Code, type /mcp, choose mnemonik, then Authenticate.\n'
+      );
+    }, 20_000);
+
+    it('a store that cannot be read claims nothing, even with a valid grant', async () => {
+      vi.stubGlobal('fetch', async () => Response.json({}));
+      const machine = await storedMachine({ accessToken: 'a-never-shown' });
+      const human = await machine.invoke('status', {
+        ...server([claudeSignIn('connected', hoursAgo(1))]).deps,
+        claudeCodeStore: { platform: 'linux', env: { CLAUDE_CONFIG_DIR: '/elsewhere' } },
+      });
+      expect(human).toEqual({ code: 0, text: 'Mnemonik is installed and working.\n' });
+    }, 20_000);
+  });
+
   it('Codex signed out: the short connect command, which the agent can run for the person', async () => {
     vi.stubGlobal('fetch', async () => Response.json({}));
     const { join } = await import('node:path');

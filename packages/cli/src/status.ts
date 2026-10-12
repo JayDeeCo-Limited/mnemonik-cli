@@ -7,7 +7,8 @@ import {
 } from './humanReason.js';
 export { CODEX_TRUST_MESSAGE } from './humanReason.js';
 import { cliCredentialStatus } from './auth/credentials.js';
-import type { CodingToolSignInState } from './auth/status.js';
+import type { CodingToolSignInResult, CodingToolSignInState } from './auth/status.js';
+import type { StoredSignIn } from './auth/claudeCodeSignIn.js';
 import { readOwnership } from './install/ownership.js';
 import {
   pausedForConsent,
@@ -955,6 +956,11 @@ export interface CodingToolStatus {
   signIn: CodingToolSignInState | 'unknown';
   /** When the tool last renewed its sign-in; dates use, never decides it. */
   lastUsedAt: string | null;
+  /**
+   * What the coding tool itself stores for Mnemonik on this machine, when it
+   * was read (Claude Code only). Token values are never read out.
+   */
+  stored?: StoredSignIn;
   /** Commands the agent runs to fix what is wrong with this tool, in order; empty when none. */
   actions: string[];
   /**
@@ -987,8 +993,7 @@ export async function installedCodingTools(home: string, stateDir: string) {
 export function codingToolStatuses(
   editors: ReadonlyArray<{ host: string; name: string; hooks: boolean }>,
   conditions: readonly ReadinessCondition[],
-  signIns:
-    ReadonlyMap<string, { state: CodingToolSignInState; lastUsedAt: string | null }> | undefined
+  signIns: ReadonlyMap<string, CodingToolSignInResult> | undefined
 ): CodingToolStatus[] {
   return editors.map((editor) => {
     const trust = conditions.find(
@@ -1011,6 +1016,7 @@ export function codingToolStatuses(
       hooks,
       signIn: signIn?.state ?? 'unknown',
       lastUsedAt: signIn?.lastUsedAt ?? null,
+      ...(signIn?.stored ? { stored: signIn.stored } : {}),
       actions: [
         ...(hooks === 'missing' ? ['mnemonik repair'] : []),
         ...(hooks === 'approval_pending' && trust?.action ? [trust.action] : []),
@@ -1064,6 +1070,10 @@ export function withCodingTools<
   };
 }
 
+/** A stored sign-in whose access has expired and that the tool renews by itself. */
+export const renewsMessage = (tool: string) =>
+  `The sign-in renews automatically the next time ${tool} connects.`;
+
 /**
  * One line per tool, for a person, at a glance: signed in or not, and the one
  * short command when there is something to do. Hooks, last use and the rest
@@ -1073,7 +1083,12 @@ export function withCodingTools<
  */
 export function codingToolLines(tools: readonly CodingToolStatus[]): string[] {
   return tools.flatMap((tool) => {
-    if (tool.signIn === 'signed_in') return [`${tool.name}: signed in.`];
+    if (tool.signIn === 'signed_in')
+      return [
+        tool.stored?.state === 'refreshable'
+          ? `${tool.name}: signed in. ${renewsMessage(tool.name)}`
+          : `${tool.name}: signed in.`,
+      ];
     if (tool.signIn === 'signed_in_elsewhere')
       return [`${tool.name}: signed in on another of your machines.`];
     if (tool.signIn !== 'not_set_up') return [];

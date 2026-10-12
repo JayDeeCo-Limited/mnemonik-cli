@@ -20,7 +20,8 @@
  *      Slack (xox*), Google (AIza), Anthropic (sk-ant-), npm (npm_/npms_)
  *   7. Credentials inside scheme://user:pass@host connection strings
  *   8. Authorization: Bearer headers
- *   9. Standalone high-entropy tokens matching no known prefix
+ *   9. Command-line passwords given to sshpass
+ *  10. Standalone high-entropy tokens matching no known prefix
  *      (`redactHighEntropyTokens` - heavily guarded, see below)
  *
  * False-positive cost: a few legitimate strings get replaced with the

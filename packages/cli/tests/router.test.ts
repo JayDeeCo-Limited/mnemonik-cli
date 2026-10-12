@@ -1211,6 +1211,89 @@ describe('connect with the coding tool already signed in on this machine', () =>
     });
   });
 
+  // 2026-10-12: an outage emptied Claude Code's stored sign-in
+  // while the server's grant stayed valid, and connect said it was signed in.
+  describe('held to what Claude Code itself stores', () => {
+    const declaration = {
+      type: 'http',
+      url: 'https://api.mnemonik.dev/mcp',
+      headers: { 'x-mnemonik-installation-id': HERE },
+    };
+    const KEY = 'mnemonik|7aea917cc798c31f';
+    async function connectStored(entry: Record<string, unknown>, args: string[] = []) {
+      const { mkdir, writeFile } = await import('node:fs/promises');
+      const { deps, stdout } = fixture();
+      await writeFile(
+        join(deps.home!, '.claude.json'),
+        JSON.stringify({ mcpServers: { mnemonik: declaration } })
+      );
+      await mkdir(join(deps.home!, '.claude'), { recursive: true });
+      await writeFile(
+        join(deps.home!, '.claude/.credentials.json'),
+        JSON.stringify({ mcpOAuth: { [KEY]: { serverName: 'mnemonik', ...entry } } })
+      );
+      deps.claudeCodeStore = { platform: 'linux', env: {} };
+      const lastUsed = new Date(Date.now() - 45 * 3_600_000).toISOString();
+      deps.grantFetch = vi.fn(async () =>
+        Response.json({
+          deviceInstallationId: HERE,
+          account: 'owner',
+          grants: [signIn('Claude Code', 'connected', lastUsed)],
+        })
+      ) as typeof fetch;
+      deps.editorLogin = {
+        spawn: (() => {
+          throw new Error('connect never signs Claude Code in from a terminal');
+        }) as unknown as NonNullable<CliDependencies['editorLogin']>['spawn'],
+      };
+      const code = await runCli(['connect', 'claude-code', ...args], deps);
+      return { code, stdout: stdout.text };
+    }
+
+    it('signed in: a stored access token that has not expired', async () => {
+      expect(
+        await connectStored({ accessToken: 'a', refreshToken: 'r', expiresAt: Date.now() + 3e6 })
+      ).toEqual({
+        code: 0,
+        stdout:
+          'Claude Code is already signed in to Mnemonik on this computer, last used 1 day ago.\n',
+      });
+    });
+
+    it('expired but refreshable: signed in, and it says Claude Code renews it', async () => {
+      const entry = { accessToken: 'a', refreshToken: 'r', expiresAt: Date.now() - 3e6 };
+      expect(await connectStored(entry)).toEqual({
+        code: 0,
+        stdout:
+          'Claude Code is already signed in to Mnemonik on this computer, last used 1 day ago. The sign-in renews automatically the next time Claude Code connects.\n',
+      });
+      const json = await connectStored(entry, ['--json']);
+      expect(JSON.parse(json.stdout)).toMatchObject({
+        status: 'READY',
+        signIn: 'signed_in',
+        stored: { state: 'refreshable', expiresAt: expect.any(String) },
+      });
+    });
+
+    it('nothing stored: not signed in, whatever the server holds; the step is /mcp', async () => {
+      const result = await connectStored({ accessToken: '', clientId: 'client' });
+      expect(result).toEqual({
+        code: 3,
+        stdout:
+          'Claude Code is not signed in to Mnemonik on this computer.\n' +
+          'Claude Code      type /mcp, choose mnemonik, then Authenticate\n',
+      });
+      const json = await connectStored({ accessToken: '' }, ['--json']);
+      expect(JSON.parse(json.stdout)).toEqual({
+        status: 'ACTION_REQUIRED',
+        reason: 'Claude Code is not signed in to Mnemonik on this computer.',
+        actions: ['Claude Code      type /mcp, choose mnemonik, then Authenticate'],
+        stored: { state: 'missing', expiresAt: null },
+      });
+      expect(json.stdout).not.toMatch(/accessToken|refreshToken/u);
+    });
+  });
+
   it('only a revoked or expired sign-in here: Claude Code is asked to sign in inside Claude Code', async () => {
     const result = await connect('claude-code', [
       signIn('Claude Code', 'disconnected', null),
