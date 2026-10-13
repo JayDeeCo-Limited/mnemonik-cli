@@ -5,14 +5,13 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   CLAUDE_CODE_KEYCHAIN_SERVICE,
   claudeCodeCredentialKey,
-  claudeCodeStoredSignIn,
+  claudeCodeStoredAuthorization,
   type ClaudeCodeStoreOptions,
   type KeychainRead,
 } from '../src/auth/claudeCodeSignIn.js';
-import { withStoredSignIn } from '../src/auth/status.js';
 
-// 2026-10-12: a network outage emptied Claude Code's stored
-// Mnemonik sign-in while the server still held a valid grant, and status said
+// 2026-10-12: a network outage emptied Claude Code's stored Mnemonik
+// authorization while the server still held a valid grant, and status said
 // signed in. Claude Code's own store is read here, by key names only.
 
 const NOW = Date.parse('2026-10-12T10:00:00.000Z');
@@ -49,7 +48,13 @@ function machine(server: unknown = declaration, extra: Record<string, unknown> =
     );
   };
   const read = (options: Partial<ClaudeCodeStoreOptions> = {}) =>
-    claudeCodeStoredSignIn({ home, platform: 'linux', env: {}, now: () => NOW, ...options });
+    claudeCodeStoredAuthorization({
+      home,
+      platform: 'linux',
+      env: {},
+      now: () => NOW,
+      ...options,
+    });
   return { home, credentials, read };
 }
 
@@ -66,7 +71,7 @@ const document = (fields: Record<string, unknown>, key = KEY) => ({
 const neverShown = (value: unknown) =>
   expect(JSON.stringify(value)).not.toMatch(/never-shown|access-token|refresh-token/u);
 
-describe('the stored sign-in Claude Code keys by its declaration', () => {
+describe('the stored authorization Claude Code keys by its declaration', () => {
   it('is the key Claude Code itself uses', () => {
     expect(claudeCodeCredentialKey('mnemonik', declaration)).toBe(KEY);
     // Claude Code reads streamable-http as http before keying.
@@ -78,32 +83,32 @@ describe('the stored sign-in Claude Code keys by its declaration', () => {
   });
 });
 
-describe('Claude Code stored sign-in states, from its credentials file', () => {
-  it('signed in: an access token that has not expired', async () => {
+describe('Claude Code stored authorization states, from its credentials file', () => {
+  it('authorized: an access token that has not expired', async () => {
     const m = machine();
     m.credentials(document({ accessToken: ACCESS, refreshToken: REFRESH, expiresAt: NOW + HOUR }));
     const stored = await m.read();
     expect(stored).toEqual({
-      state: 'signed_in',
+      state: 'authorized',
       expiresAt: new Date(NOW + HOUR).toISOString(),
     });
     neverShown(stored);
   });
 
-  it('expired but refreshable: Claude Code renews it the next time it connects', async () => {
+  it('renewable: the access token expired and Claude Code renews it the next time it connects', async () => {
     const m = machine();
     m.credentials(
       document({ accessToken: ACCESS, refreshToken: REFRESH, expiresAt: NOW - 45 * HOUR })
     );
     expect(await m.read()).toEqual({
-      state: 'refreshable',
+      state: 'renewable',
       expiresAt: new Date(NOW - 45 * HOUR).toISOString(),
     });
     m.credentials(document({ accessToken: '', refreshToken: REFRESH }));
-    expect(await m.read()).toEqual({ state: 'refreshable', expiresAt: null });
+    expect(await m.read()).toEqual({ state: 'renewable', expiresAt: null });
   });
 
-  it('not signed in: the entry the 2026-10-12 outage left, with no access or refresh token', async () => {
+  it('missing: the entry the 2026-10-12 outage left, with no access or refresh token', async () => {
     const m = machine();
     m.credentials(
       document({
@@ -117,7 +122,7 @@ describe('Claude Code stored sign-in states, from its credentials file', () => {
     neverShown(stored);
   });
 
-  it('not signed in: an expired access token with nothing to renew it', async () => {
+  it('missing: an expired access token with nothing to renew it', async () => {
     const m = machine();
     m.credentials(document({ accessToken: ACCESS, expiresAt: NOW - HOUR }));
     expect(await m.read()).toEqual({
@@ -126,7 +131,7 @@ describe('Claude Code stored sign-in states, from its credentials file', () => {
     });
   });
 
-  it('not signed in: no entry for this declaration, only one for older headers', async () => {
+  it('missing: no entry for this declaration, only one for older headers', async () => {
     const m = machine();
     const older = claudeCodeCredentialKey('mnemonik', { ...declaration, headers: {} });
     m.credentials(document({ accessToken: ACCESS, refreshToken: REFRESH }, older));
@@ -135,19 +140,23 @@ describe('Claude Code stored sign-in states, from its credentials file', () => {
     expect(await m.read()).toEqual({ state: 'missing', expiresAt: null });
   });
 
-  it('not signed in: no credentials file at all', async () => {
+  it('missing: no credentials file at all', async () => {
     expect(await machine().read()).toEqual({ state: 'missing', expiresAt: null });
   });
 
-  it('unreadable: a file that is not JSON, or not a file, claims nothing', async () => {
+  it('unreadable: a file that is not JSON, or not a file, claims nothing and says why', async () => {
     const m = machine();
     m.credentials(`{"mcpOAuth": {"${KEY}": {"accessToken": "${ACCESS}"`);
     const stored = await m.read();
-    expect(stored).toEqual({ state: 'unreadable', expiresAt: null });
+    expect(stored).toEqual({ state: 'unreadable', expiresAt: null, reason: 'file_unreadable' });
     neverShown(stored);
     const n = machine();
     mkdirSync(join(n.home, '.claude', '.credentials.json'), { recursive: true });
-    expect(await n.read()).toEqual({ state: 'unreadable', expiresAt: null });
+    expect(await n.read()).toEqual({
+      state: 'unreadable',
+      expiresAt: null,
+      reason: 'file_unreadable',
+    });
   });
 
   it('unreadable: Claude Code configured to keep its credentials elsewhere', async () => {
@@ -156,14 +165,16 @@ describe('Claude Code stored sign-in states, from its credentials file', () => {
     expect(await m.read({ env: { CLAUDE_CONFIG_DIR: '/elsewhere' } })).toEqual({
       state: 'unreadable',
       expiresAt: null,
+      reason: 'custom_folder',
     });
     expect(await m.read({ env: { CLAUDE_SECURESTORAGE_CONFIG_DIR: '' } })).toEqual({
       state: 'unreadable',
       expiresAt: null,
+      reason: 'custom_folder',
     });
   });
 
-  it('nothing to read: no Mnemonik HTTP declaration that signs in with OAuth', async () => {
+  it('nothing to read: no Mnemonik HTTP declaration that authorizes with OAuth', async () => {
     expect(await machine(null).read()).toBeUndefined();
     expect(await machine({ url: declaration.url }).read()).toBeUndefined();
     expect(await machine({ type: 'stdio', command: 'mnemonik' }).read()).toBeUndefined();
@@ -208,27 +219,37 @@ describe('macOS: the login Keychain first, the file only when it holds no item',
     const item = keychain({ code: 44, stdout: '' });
     expect(
       await m.read({ platform: 'darwin', env: { USER: 'owner' }, keychain: item.read })
-    ).toMatchObject({ state: 'signed_in' });
+    ).toMatchObject({ state: 'authorized' });
     expect(
       await machine().read({ platform: 'darwin', env: { USER: 'owner' }, keychain: item.read })
     ).toEqual({ state: 'missing', expiresAt: null });
   });
 
-  it('a locked or unavailable Keychain claims nothing', async () => {
+  it('a locked or unavailable Keychain claims nothing, and says which', async () => {
     const m = machine();
     m.credentials(document({ accessToken: ACCESS }));
-    for (const result of [
-      { code: 36, stdout: '' },
-      { code: null, stdout: '' },
-      { code: 0, stdout: 'not json' },
-    ])
+    for (const [result, reason] of [
+      // Over SSH: errSecInteractionNotAllowed, the 2026-10-12 Mac case.
+      [{ code: 36, stdout: '' }, 'keychain_locked'],
+      [{ code: 51, stdout: '' }, 'keychain_unreadable'],
+      [{ code: null, stdout: '' }, 'keychain_unreadable'],
+      [{ code: 0, stdout: 'not json' }, 'keychain_unreadable'],
+    ] as const)
       expect(
         await m.read({
           platform: 'darwin',
           env: { USER: 'owner' },
           keychain: keychain(result).read,
         })
-      ).toEqual({ state: 'unreadable', expiresAt: null });
+      ).toEqual({ state: 'unreadable', expiresAt: null, reason });
+    const thrown: KeychainRead = async () => {
+      throw new Error('spawn failed');
+    };
+    expect(await m.read({ platform: 'darwin', env: { USER: 'owner' }, keychain: thrown })).toEqual({
+      state: 'unreadable',
+      expiresAt: null,
+      reason: 'keychain_unreadable',
+    });
   });
 
   it('an account name Claude Code would not use becomes claude-code-user', async () => {
@@ -238,71 +259,25 @@ describe('macOS: the login Keychain first, the file only when it holds no item',
   });
 });
 
-describe('Windows: the credentials file unless Credential Manager holds the sign-in', () => {
+describe('Windows: the credentials file unless Credential Manager holds the authorization', () => {
   it('reads the file by default', async () => {
     const m = machine();
     m.credentials(document({ accessToken: '', refreshToken: REFRESH }));
-    expect(await m.read({ platform: 'win32' })).toEqual({ state: 'refreshable', expiresAt: null });
+    expect(await m.read({ platform: 'win32' })).toEqual({ state: 'renewable', expiresAt: null });
   });
 
-  it('Credential Manager in use: claims nothing', async () => {
+  it('Credential Manager in use: claims nothing, and says so', async () => {
     const forced = machine();
     expect(
       await forced.read({ platform: 'win32', env: { CLAUDE_CODE_FORCE_WINDOWS_CREDMAN: '1' } })
-    ).toEqual({ state: 'unreadable', expiresAt: null });
+    ).toEqual({ state: 'unreadable', expiresAt: null, reason: 'credential_manager' });
     const flagged = machine(declaration, {
       cachedGrowthBookFeatures: { tengu_windows_credman: true },
     });
     expect(await flagged.read({ platform: 'win32' })).toEqual({
       state: 'unreadable',
       expiresAt: null,
+      reason: 'credential_manager',
     });
-  });
-});
-
-describe('withStoredSignIn: the server says a sign-in exists, Claude Code says whether it holds it', () => {
-  const at = '2026-10-11T09:00:00.000Z';
-  const signedIn = { state: 'signed_in' as const, lastUsedAt: at };
-  const missing = { state: 'missing' as const, expiresAt: null };
-  const refreshable = { state: 'refreshable' as const, expiresAt: at };
-  const unreadable = { state: 'unreadable' as const, expiresAt: null };
-
-  it('a valid grant and nothing stored: signed out, the outage case', () => {
-    expect(withStoredSignIn(signedIn, missing)).toEqual({
-      state: 'signed_out',
-      lastUsedAt: null,
-      stored: missing,
-    });
-  });
-
-  it('a valid grant and a stored sign-in Claude Code renews: signed in', () => {
-    expect(withStoredSignIn(signedIn, refreshable)).toEqual({ ...signedIn, stored: refreshable });
-  });
-
-  it('nothing stored and no sign-in the server knows here, or no server: not set up', () => {
-    expect(withStoredSignIn({ state: 'not_set_up', lastUsedAt: null }, missing)).toMatchObject({
-      state: 'not_set_up',
-    });
-    expect(withStoredSignIn(undefined, missing)).toEqual({
-      state: 'not_set_up',
-      lastUsedAt: null,
-      stored: missing,
-    });
-  });
-
-  it('a revoked or expired grant stays signed out whatever is stored', () => {
-    const out = { state: 'signed_out' as const, lastUsedAt: null };
-    expect(withStoredSignIn(out, refreshable)).toEqual({ ...out, stored: refreshable });
-    expect(withStoredSignIn(out, unreadable)).toEqual({ ...out, stored: unreadable });
-  });
-
-  it('a store or a server that cannot be read vouches for nothing', () => {
-    expect(withStoredSignIn(signedIn, unreadable)).toBeUndefined();
-    expect(withStoredSignIn(undefined, refreshable)).toBeUndefined();
-    expect(withStoredSignIn(undefined, unreadable)).toBeUndefined();
-  });
-
-  it('no Claude Code declaration to read: the server alone, as before', () => {
-    expect(withStoredSignIn(signedIn, undefined)).toBe(signedIn);
   });
 });

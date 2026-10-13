@@ -1,6 +1,9 @@
 import { APPROVAL_REASONS, approvalMessage, messageFor as humanMessageFor, SCANNER_APPROVAL_ACTION, SCANNER_APPROVAL_NOTE, } from './humanReason.js';
 export { CODEX_TRUST_MESSAGE } from './humanReason.js';
 import { cliCredentialStatus } from './auth/credentials.js';
+import { createCliCredentials } from './auth/credentials.js';
+import { mcpAuthorization } from './auth/status.js';
+import { cliLine, hooksLine, mcpLine, hooksNotAuthorizedReason, mcpNotAuthorizedReason, scannerLine, } from './authorizationWords.js';
 import { readOwnership } from './install/ownership.js';
 import { pausedForConsent, resumeAbandonedPause, scannerReceipt, } from './scanner/control.js';
 import { scannerService, ScannerServiceLimited, SCANNER_RESTART_MESSAGE, SCANNER_RESTART_ACTION, } from './scanner/service.js';
@@ -82,6 +85,10 @@ export async function localEditorStatus(home) {
         catch {
             /* Report the connection as missing below. */
         }
+        // The authorization the hooks use, when their command names it.
+        const credentialFamily = commands
+            .map((command) => /--credential-family (\S+)/u.exec(command)?.[1])
+            .find((id) => !!id);
         return {
             host,
             name,
@@ -89,6 +96,7 @@ export async function localEditorStatus(home) {
             // presence of ~/.codex or a project-local .cursor is not a choice.
             marked: commands.length > 0 || object(declaration),
             hooks,
+            ...(credentialFamily ? { credentialFamily } : {}),
             mcp: !object(declaration)
                 ? 'missing'
                 : declaration.enabled === false || declaration.disabled === true
@@ -307,13 +315,12 @@ function attentionLines(summary, rendered, conditions = [], agent = false) {
     return lines;
 }
 /**
- * `status` could not tell the console about this machine because this
- * computer's sign-in is unusable (L-166). Wording decided 2026-09-25; the fix
- * is the approved renew step.
+ * `status` could not tell the console about this machine because the CLI's own
+ * sign-in could not be used (L-166): expired, revoked, or locked in the macOS
+ * Keychain over SSH. The CLI line of the authorization block gives the step.
  */
 export const REPORT_NOT_SENT = {
-    sentence: 'The console has not heard from this machine because its sign-in no longer works.',
-    nextStep: humanMessageFor('renew').nextStep,
+    sentence: 'The console has not heard from this computer because the CLI sign-in could not be used.',
 };
 export function renderStatusSummaries(document, output, 
 /** agent: no person at a terminal; an approval step names what the agent runs. */
@@ -379,7 +386,7 @@ export function refusalLines(batches, withPaths = false) {
 export function scannerFailureCause(failure) {
     switch (failure.kind) {
         case 'credential_refused':
-            return "The server refused this computer's indexing sign-in. Run mnemonik repair.";
+            return 'Mnemonik no longer accepts the scanner authorization on this computer. Run mnemonik repair.';
         case 'push_rejected':
             return `The server rejected an upload from this computer.${failure.reason ? ` The server said: ${failure.reason}.` : ''}`;
         case 'watcher_error':
@@ -663,9 +670,10 @@ export async function collectStatusDocument(input) {
 }
 const serializeReadiness = (input) => devReadiness(baseReadiness(input));
 /**
- * How a signed-out tool signs in again: a step inside the coding tool for the
- * tools only the person can sign in (Claude Code, Cursor), else the short
- * command an agent runs and hands the person the link it prints (Codex).
+ * How a tool whose MCP connection is not authorized gets authorized again: a
+ * step inside the tool for the tools only the person can authorize (Claude
+ * Code, Cursor), else the short command an agent runs, handing the person the
+ * link it prints (Codex).
  */
 function signInFix(host) {
     const signIn = CODING_TOOL_SIGN_IN[host];
@@ -678,31 +686,71 @@ export async function installedCodingTools(home, stateDir) {
     const owned = (await readOwnership(stateDir)).targets.map((target) => target.host);
     return (await localEditorStatus(home)).filter((editor) => editor.marked || owned.includes(editor.host));
 }
-export function codingToolStatuses(editors, conditions, signIns) {
+const hookConditionKinds = new Set([
+    'hooks_missing',
+    'hook_not_verified',
+    'host_trust_pending',
+    'selected_component_failed',
+]);
+/**
+ * Each tool's hooks' own authorization: the credential the installer recorded
+ * for them (or their command names), stored here and inside its refresh
+ * window. Hooks that name none sign in some other way, which is not read here.
+ */
+export async function hookAuthorizations(stateDir, editors, now = Date.now()) {
+    const owned = (await readOwnership(stateDir)).targets;
+    const credentials = createCliCredentials({ stateDir });
+    return new Map(await Promise.all(editors.map(async (editor) => {
+        const id = owned.find((target) => target.host === editor.host && target.component === 'hooks')
+            ?.credentialFamily || editor.credentialFamily;
+        if (!id)
+            return [editor.host, 'unchecked'];
+        const family = await credentials.readFamily(id).catch(() => null);
+        return [
+            editor.host,
+            family && Date.parse(family.refreshExpiresAt) > now ? 'authorized' : 'not_authorized',
+        ];
+    })));
+}
+/** The hooks' state from this machine's files, their own authorization, and the conditions found. */
+function hooksState(host, installed, credential, conditions) {
+    const mine = conditions.filter((condition) => condition.component === host && hookConditionKinds.has(condition.kind));
+    if (mine.some((condition) => condition.kind === 'host_trust_pending'))
+        return 'trust_pending';
+    const missing = mine.find((condition) => condition.kind === 'hooks_missing' ||
+        (condition.kind === 'selected_component_failed' && /hooks/u.test(condition.reason)));
+    if (missing && !/sign-in/u.test(missing.reason))
+        return 'not_installed';
+    if (!installed)
+        return 'not_installed';
+    if (missing || credential === 'not_authorized')
+        return 'not_authorized';
+    const unverified = mine.find((condition) => condition.kind === 'hook_not_verified');
+    if (unverified)
+        return /not installed/u.test(unverified.reason) ? 'not_installed' : 'unchecked';
+    return credential === 'unchecked' ? 'unchecked' : 'authorized';
+}
+/** A tool whose MCP authorization ended here is a condition of the installation (withCodingTools). */
+const ended = (mcp) => mcp?.state === 'not_authorized' &&
+    (mcp.reason === 'revoked_or_expired' || mcp.reason === 'not_held');
+export function codingToolStatuses(editors, conditions, mcp, hookCredentials = new Map()) {
     return editors.map((editor) => {
+        const hooks = hooksState(editor.host, editor.hooks, hookCredentials.get(editor.host), conditions);
         const trust = conditions.find((condition) => condition.kind === 'host_trust_pending' && condition.component === editor.host);
-        const hooks = trust
-            ? 'approval_pending'
-            : editor.hooks &&
-                !conditions.some((condition) => condition.kind === 'hooks_missing' && condition.component === editor.host)
-                ? 'installed'
-                : 'missing';
-        const signIn = signIns?.get(editor.host);
-        const signInNeeded = signIn?.state === 'signed_out' || signIn?.state === 'not_set_up';
+        const authorization = mcp.get(editor.host);
+        const authorizeNeeded = authorization?.state === 'not_authorized';
         const fix = signInFix(editor.host);
         return {
             host: editor.host,
             name: editor.name,
+            mcp: authorization?.state ?? 'unchecked',
             hooks,
-            signIn: signIn?.state ?? 'unknown',
-            lastUsedAt: signIn?.lastUsedAt ?? null,
-            ...(signIn?.stored ? { stored: signIn.stored } : {}),
             actions: [
-                ...(hooks === 'missing' ? ['mnemonik repair'] : []),
-                ...(hooks === 'approval_pending' && trust?.action ? [trust.action] : []),
-                ...(signInNeeded && 'command' in fix ? [fix.command] : []),
+                ...(hooks === 'not_installed' || hooks === 'not_authorized' ? ['mnemonik repair'] : []),
+                ...(hooks === 'trust_pending' && trust?.action ? [trust.action] : []),
+                ...(authorizeNeeded && 'command' in fix ? [fix.command] : []),
             ],
-            personSteps: signInNeeded && 'step' in fix ? [fix.step] : [],
+            personSteps: authorizeNeeded && 'step' in fix ? [fix.step] : [],
         };
     });
 }
@@ -713,23 +761,49 @@ const stateRank = {
     FAILED: 3,
 };
 /**
- * The status document with each tool's sign-in added. A tool signed out on
- * this machine is a condition of the installation: status never says the
- * machine is working while one is. A tool never signed in here is not (it may
- * simply be unused); its line says how to sign in.
+ * The status document with each tool's state added. A tool whose MCP
+ * authorization here was revoked, expired, or is no longer held by the tool,
+ * hooks or a scanner whose own authorization is missing, expired or refused,
+ * is a condition of the installation: status never says the machine is
+ * working while one is. A tool never authorized here is not (it may simply be
+ * unused); its line says how to authorize it.
  */
-export function withCodingTools(document, tools) {
-    const signedOut = tools
-        .filter((tool) => tool.signIn === 'signed_out')
-        .map((tool) => {
-        const fix = signInFix(tool.host);
-        return {
-            kind: 'login_pending',
+export function withCodingTools(document, tools, mcp, 
+/** The scanner's own authorization; one that is gone is a condition too, said once. */
+scanner) {
+    const scannerSaid = (document.conditions ?? []).some((condition) => condition.component === 'scanner' && condition.kind === 'login_pending');
+    const signedOut = [
+        ...((scanner === 'not_authorized' || scanner === 'refused') && !scannerSaid
+            ? [
+                {
+                    kind: 'login_pending',
+                    component: 'scanner',
+                    reason: 'scanner_signed_out',
+                    action: 'mnemonik repair',
+                },
+            ]
+            : []),
+        ...tools
+            .filter((tool) => ended(mcp.get(tool.host)))
+            .map((tool) => {
+            const fix = signInFix(tool.host);
+            return {
+                kind: 'login_pending',
+                component: tool.host,
+                reason: mcpNotAuthorizedReason(tool.name),
+                action: 'step' in fix ? fix.step : fix.command,
+            };
+        }),
+        ...tools
+            .filter((tool) => tool.hooks === 'not_authorized' &&
+            !(document.conditions ?? []).some((condition) => condition.component === tool.host && condition.kind === 'hooks_missing'))
+            .map((tool) => ({
+            kind: 'hooks_missing',
             component: tool.host,
-            reason: `${tool.name} is signed out of Mnemonik.`,
-            action: 'step' in fix ? fix.step : fix.command,
-        };
-    });
+            reason: hooksNotAuthorizedReason(tool.name),
+            action: 'mnemonik repair',
+        })),
+    ];
     if (!signedOut.length)
         return { ...document, codingTools: [...tools] };
     const added = reduceReadiness(signedOut);
@@ -745,29 +819,56 @@ export function withCodingTools(document, tools) {
         codingTools: [...tools],
     };
 }
-/** A stored sign-in whose access has expired and that the tool renews by itself. */
-export const renewsMessage = (tool) => `The sign-in renews automatically the next time ${tool} connects.`;
 /**
- * One line per tool, for a person, at a glance: signed in or not, and the one
- * short command when there is something to do. Hooks, last use and the rest
- * are in `--json`. A signed-out tool is already the installation's attention
- * line, with its command, so it is not said twice; a tool whose sign-in could
- * not be read gets no line.
+ * Background indexing's own authorization on this computer: set up, its
+ * credential stored here and inside its refresh window, and no refusal
+ * reported by the running scanner. The server's record of it is not asked.
  */
-export function codingToolLines(tools) {
-    return tools.flatMap((tool) => {
-        if (tool.signIn === 'signed_in')
-            return [
-                tool.stored?.state === 'refreshable'
-                    ? `${tool.name}: signed in. ${renewsMessage(tool.name)}`
-                    : `${tool.name}: signed in.`,
-            ];
-        if (tool.signIn === 'signed_in_elsewhere')
-            return [`${tool.name}: signed in on another of your machines.`];
-        if (tool.signIn !== 'not_set_up')
-            return [];
-        const fix = signInFix(tool.host);
-        return [`${tool.name}: not signed in. ${'step' in fix ? fix.step : `Run ${fix.command}.`}`];
+export async function scannerAuthorization(stateDir, now = Date.now()) {
+    const state = JSON.parse(await readFile(join(stateDir, 'scanner/state.json'), 'utf8').catch(() => 'null'));
+    if (!state)
+        return 'not_set_up';
+    const receipt = await scannerReceipt(stateDir).catch(() => null);
+    if (receipt?.snapshot?.lifecycle?.reason === 'credential_revoked')
+        return 'refused';
+    const id = state.config?.credentialFamilyId;
+    // An older scanner signs in some other way, which is not read here.
+    if (typeof id !== 'string')
+        return 'unchecked';
+    const family = await createCliCredentials({ stateDir })
+        .readFamily(id)
+        .catch(() => null);
+    return family && Date.parse(family.refreshExpiresAt) > now ? 'authorized' : 'not_authorized';
+}
+/**
+ * The authorization block of `status`: each tool's MCP connection and hooks,
+ * then the scanner and the CLI, one line each, never dropped. A state the
+ * installation's attention lines already give a step for says only what is wrong.
+ */
+export function authorizationEntries(input) {
+    const stepped = (component, kinds) => input.conditions.some((condition) => condition.component === component && kinds.has(condition.kind));
+    const entries = [];
+    for (const tool of input.tools) {
+        const mcp = input.mcp.get(tool.host) ?? mcpAuthorization(undefined, undefined);
+        entries.push({
+            component: 'mcp',
+            host: tool.host,
+            ...mcp,
+            line: mcpLine(tool.name, tool.host, mcp),
+        });
+        entries.push({
+            component: 'hooks',
+            host: tool.host,
+            state: tool.hooks,
+            line: hooksLine(tool.name, tool.hooks, stepped(tool.host, hookConditionKinds)),
+        });
+    }
+    entries.push({
+        component: 'scanner',
+        state: input.scanner,
+        line: scannerLine(input.scanner, stepped('scanner', new Set(['login_pending']))),
     });
+    entries.push({ component: 'cli', ...input.cli, line: cliLine(input.cli) });
+    return entries;
 }
 //# sourceMappingURL=status.js.map

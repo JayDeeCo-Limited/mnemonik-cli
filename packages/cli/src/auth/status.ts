@@ -1,6 +1,6 @@
 import { apiOrigin, hostForGrantClient } from '@mnemonik/shared';
 import type { HostName } from '@mnemonik/shared';
-import type { StoredSignIn } from './claudeCodeSignIn.js';
+import type { StoredAuthorization } from './storedAuthorization.js';
 
 export interface AccountGrant {
   deviceInstallationId?: string | null;
@@ -78,70 +78,119 @@ export function signedInElsewhere(status: GrantStatus, host: HostName) {
   return elsewhereGrants(status, host).length > 0;
 }
 
-export type CodingToolSignInState =
-  'signed_in' | 'signed_in_elsewhere' | 'signed_out' | 'not_set_up';
+/**
+ * A coding tool's MCP authorization on this machine as the server records it.
+ * `authorized_elsewhere`: valid on another of the account's computers, for the
+ * tools that can run there while their hooks run here (Cursor over SSH).
+ */
+export type ServerAuthorizationState =
+  'authorized' | 'authorized_elsewhere' | 'revoked_or_expired' | 'never_authorized';
 
 /**
- * One coding tool's sign-in on this machine, from the server's listing of this
- * installation's sign-ins (`?installation=current`, revoked ones included).
- * Signed out only when it had sign-ins here and none of them is valid; never
- * because of idle time. `everywhere`, the account-wide listing, is read only
- * for editors that can sign in on another machine.
+ * One coding tool's MCP authorization on this machine, from the server's
+ * listing of this installation's grants (`?installation=current`, revoked ones
+ * included). Revoked or expired only when it had grants here and none of them
+ * is valid; never because of idle time. `everywhere`, the account-wide
+ * listing, is read only for tools that can run on another machine.
  */
-export function codingToolSignIn(
+export function serverAuthorization(
   host: HostName,
   here: GrantStatus,
   everywhere?: GrantStatus
-): { state: CodingToolSignInState; lastUsedAt: string | null } {
-  // A server too old to filter lists every machine's sign-ins: keep this one's.
+): { state: ServerAuthorizationState; lastUsedAt: string | null } {
+  // A server too old to filter lists every machine's grants: keep this one's.
   const mine = here.grants.filter(
     (grant) =>
       grantHost(grant) === host &&
       (!here.deviceInstallationId || grant.deviceInstallationId === here.deviceInstallationId)
   );
   const valid = mine.filter(validGrant);
-  if (valid.length) return { state: 'signed_in', lastUsedAt: newest(valid) };
+  if (valid.length) return { state: 'authorized', lastUsedAt: newest(valid) };
   const remote = everywhere ? elsewhereGrants(everywhere, host) : [];
-  if (remote.length) return { state: 'signed_in_elsewhere', lastUsedAt: newest(remote) };
-  // A sign-in started and never used to reach Mnemonik is one not finished yet.
+  if (remote.length) return { state: 'authorized_elsewhere', lastUsedAt: newest(remote) };
+  // An authorization started and never used to reach Mnemonik is one not finished yet.
   return mine.some((grant) => grant.status !== 'incomplete' && grant.activatedAt !== null)
-    ? { state: 'signed_out', lastUsedAt: null }
-    : { state: 'not_set_up', lastUsedAt: null };
+    ? { state: 'revoked_or_expired', lastUsedAt: null }
+    : { state: 'never_authorized', lastUsedAt: null };
 }
 
-export type CodingToolSignInResult = {
-  state: CodingToolSignInState;
-  lastUsedAt: string | null;
-  /** What the coding tool itself holds here; read for Claude Code only. */
-  stored?: StoredSignIn;
-};
+/** Why the server's record could not be asked: the CLI's own sign-in (absent, or locked in the macOS Keychain), or the network. */
+export type ServerProblem = 'cli_not_signed_in' | 'cli_locked' | 'unreachable';
 
 /**
- * Claude Code's sign-in on this machine: the server's verdict, held to what
- * Claude Code itself stores (2026-10-12 outage). The server decides signed out
- * (revoked or expired grants); only the stored credential can say signed in.
- * Holding nothing it can use, Claude Code is signed out where the server knows
- * a sign-in here, otherwise not set up; holding something, it is what the server
- * says. A store that cannot be read, or a server that cannot, vouches for
- * nothing: no claim, unless the server alone already decides signed out.
+ * A coding tool's MCP authorization on this computer, from both sides:
+ *
+ * - `authorized`: the server holds a valid grant and the tool's own store holds
+ *   a usable token (or the tool keeps nothing Mnemonik reads).
+ * - `authorized_elsewhere`: valid on the computer the tool runs on (Cursor over SSH).
+ * - `not_authorized`: nothing usable here; `reason` says which side decided.
+ * - `store_unchecked`: the server holds a valid grant; the tool's store on this
+ *   computer could not be read (`stored.reason` says why).
+ * - `server_unchecked`: the tool's store holds a usable token; the server could
+ *   not be asked (`serverProblem` says why).
+ * - `unchecked`: neither side could be read.
  */
-export function withStoredSignIn(
-  server: CodingToolSignInResult | undefined,
-  stored: StoredSignIn | undefined
-): CodingToolSignInResult | undefined {
-  if (!stored) return server;
-  if (stored.state === 'missing')
-    return {
-      state:
-        server?.state === 'signed_in' || server?.state === 'signed_out'
-          ? 'signed_out'
-          : 'not_set_up',
-      lastUsedAt: null,
-      stored,
-    };
-  if (!server) return undefined;
-  if (stored.state === 'unreadable' && server.state === 'signed_in') return undefined;
-  return { ...server, stored };
+export type McpState =
+  | 'authorized'
+  | 'authorized_elsewhere'
+  | 'not_authorized'
+  | 'store_unchecked'
+  | 'server_unchecked'
+  | 'unchecked';
+
+/**
+ * Why a tool is not authorized: its grant here was revoked or expired; the
+ * server holds a valid grant the tool no longer has (2026-10-12); or it was
+ * never authorized on this computer.
+ */
+export type NotAuthorizedReason = 'revoked_or_expired' | 'not_held' | 'never_authorized';
+
+export interface McpAuthorization {
+  state: McpState;
+  reason?: NotAuthorizedReason;
+  /** The server's record; `unknown` when it could not be asked. */
+  server: ServerAuthorizationState | 'unknown';
+  serverProblem?: ServerProblem;
+  /** What the tool itself stores here; absent when it keeps nothing Mnemonik reads. */
+  stored?: StoredAuthorization;
+  /** When the tool last renewed its grant; dates use, never decides it. */
+  lastUsedAt: string | null;
+}
+
+const usable = (stored: StoredAuthorization | undefined) =>
+  stored?.state === 'authorized' || stored?.state === 'renewable';
+
+/**
+ * The server decides revoked or expired; only the tool's own store can say the
+ * tool still holds what the server lists (2026-10-12 outage). A store that
+ * cannot be read, or a server that cannot be asked, vouches for nothing, and
+ * the state says which side was not checked.
+ */
+export function mcpAuthorization(
+  server: { state: ServerAuthorizationState; lastUsedAt: string | null } | undefined,
+  stored: StoredAuthorization | undefined,
+  serverProblem: ServerProblem = 'unreachable'
+): McpAuthorization {
+  const evidence = {
+    server: server?.state ?? ('unknown' as const),
+    ...(server ? {} : { serverProblem }),
+    ...(stored ? { stored } : {}),
+    lastUsedAt: server?.lastUsedAt ?? null,
+  };
+  const not = (reason: NotAuthorizedReason): McpAuthorization => ({
+    state: 'not_authorized',
+    reason,
+    ...evidence,
+    lastUsedAt: null,
+  });
+  if (server?.state === 'revoked_or_expired') return not('revoked_or_expired');
+  if (server?.state === 'never_authorized') return not('never_authorized');
+  if (stored?.state === 'missing')
+    return not(server?.state === 'authorized' ? 'not_held' : 'never_authorized');
+  if (!server) return { state: usable(stored) ? 'server_unchecked' : 'unchecked', ...evidence };
+  if (server.state === 'authorized_elsewhere')
+    return { state: usable(stored) ? 'authorized' : 'authorized_elsewhere', ...evidence };
+  return { state: stored?.state === 'unreadable' ? 'store_unchecked' : 'authorized', ...evidence };
 }
 
 /** "just now", "5 minutes ago", "1 hour ago", "3 days ago", or "never". */
@@ -158,26 +207,36 @@ export function relativeTime(time: number | null, now: number): string {
   return `${count} ${unit}${count === 1 ? '' : 's'} ago`;
 }
 
+/** The CLI's own grants carry this client name; their rows are sign-ins, not authorizations. */
+export const CLI_CLIENT_NAME = 'Mnemonik CLI';
+
 /**
- * One line per host for plain `auth status`: editors first, then the rest,
- * each by most recent use. Grant ids, dates and scopes are for --json.
- * `onThisComputer` rewrites a host's summary with what the tool itself stores here.
+ * One row per part for plain `auth status`, across all of the account's
+ * computers: coding tools' MCP connections first ("Claude Code MCP"), then the
+ * rest, each by most recent use; the CLI's own grants are sign-ins ("CLI").
+ * Grant ids, dates and scopes are for --json. `onThisComputer` adds what the
+ * tool itself stores on this computer to its row.
  */
 export function grantSummaryLines(
   grants: readonly (AccountGrant & { host: string })[],
-  editors: Readonly<Record<string, string>>,
+  tools: Readonly<Record<string, string>>,
   now = Date.now(),
   onThisComputer: Readonly<Record<string, (summary: string) => string>> = {}
 ): string[] {
   const rows = new Map<
     string,
-    { host: string; name: string; editor: boolean; last: number | null; count: number }
+    { host: string; name: string; tool: boolean; last: number | null; count: number }
   >();
   for (const grant of grants) {
     const row = rows.get(grant.host) ?? {
       host: grant.host,
-      name: editors[grant.host] ?? grant.host,
-      editor: grant.host in editors,
+      name:
+        grant.host in tools
+          ? `${tools[grant.host]} MCP`
+          : grant.host === CLI_CLIENT_NAME
+            ? 'CLI'
+            : grant.host,
+      tool: grant.host in tools,
       last: null,
       count: 0,
     };
@@ -187,11 +246,13 @@ export function grantSummaryLines(
     rows.set(grant.host, row);
   }
   const ordered = [...rows.values()].sort(
-    (a, b) => Number(b.editor) - Number(a.editor) || (b.last ?? 0) - (a.last ?? 0)
+    (a, b) => Number(b.tool) - Number(a.tool) || (b.last ?? 0) - (a.last ?? 0)
   );
   const width = Math.max(...ordered.map((row) => row.name.length)) + 2;
   return ordered.map((row) => {
-    const summary = `signed in, last used ${relativeTime(row.last, now)} (${row.count} sign-in${row.count === 1 ? '' : 's'})`;
+    const [state, noun] =
+      row.host === CLI_CLIENT_NAME ? ['signed in', 'sign-in'] : ['authorized', 'authorization'];
+    const summary = `${state}, last used ${relativeTime(row.last, now)} (${row.count} ${noun}${row.count === 1 ? '' : 's'})`;
     return `${row.name.padEnd(width)}${onThisComputer[row.host]?.(summary) ?? summary}`;
   });
 }

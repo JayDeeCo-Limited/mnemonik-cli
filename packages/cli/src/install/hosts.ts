@@ -922,10 +922,13 @@ export async function hookStatusConditions(
       });
       continue;
     }
+    // The hooks' own authorization: stored here, and still inside its refresh window.
+    const family = record.credentialFamily
+      ? await credentials.readFamily(record.credentialFamily).catch(() => null)
+      : null;
     const missing = !inspection.declarationPresent
       ? `${host} hook declaration is missing.`
-      : !record.credentialFamily ||
-          !(await credentials.readFamily(record.credentialFamily).catch(() => null))
+      : !family || !(Date.parse(family.refreshExpiresAt) > Date.now())
         ? `${host} hook sign-in is missing or revoked.`
         : undefined;
     if (missing)

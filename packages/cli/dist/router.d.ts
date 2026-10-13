@@ -10,6 +10,8 @@ import { type InstallSessionTransport } from './installSession.js';
 import { type ProjectExecutor, type ProjectReadTransport } from './project.js';
 import { type ReadinessCondition, resolveProjectIdentity } from '@mnemonik/shared';
 import { type ClaudeCodeStoreOptions } from './auth/claudeCodeSignIn.js';
+import { type CodexStoreOptions } from './auth/codexAuthorization.js';
+import { type CursorStoreOptions } from './auth/cursorAuthorization.js';
 import { type EditorLoginOverrides } from './auth/pkce.js';
 import { type ScannerPickerResult } from './scanner/picker.js';
 import { type InstallDependencies } from './install/transaction.js';
@@ -29,16 +31,10 @@ export declare const SCANNER_REMOVED_LINE = "Background indexing removed from th
 export declare const dataDeletePrompt: (projectId: string) => string;
 export declare const stillWatchedLine: (root: string) => string;
 export declare const identityFileKeptLine = "This folder's .mnemonik.json still points at the deleted project. Connecting the folder again creates a new project.";
-export declare const CODEX_SIGNED_IN_MESSAGE = "Codex is signed in to Mnemonik.";
-/** An editor signed in on another of the person's machines (L-182). */
-export declare const signedInElsewhereMessage: (editor: string) => string;
-/** A coding tool with a valid sign-in on this machine; `mnemonik connect` has nothing to do. */
-export declare const alreadySignedInMessage: (editor: string, lastUsedAt: string | null, refreshable?: boolean) => string;
-/** The coding tool itself holds no Mnemonik sign-in it can use on this machine. */
-export declare const notSignedInHereMessage: (editor: string) => string;
+export declare const CODEX_SIGNED_IN_MESSAGE = "Codex MCP: authorized.";
 /** For the agent running `connect --json`: what to do with the link it was given. */
-export declare const SIGN_IN_LINK_REASON = "Give this link to the person to approve the Codex sign-in. This command finishes when they do.";
-export declare const CONNECT_NOT_APPROVED_MESSAGE = "Sign-in timed out. Run mnemonik connect codex to try again.";
+export declare const SIGN_IN_LINK_REASON = "Give this link to the person to authorize Codex MCP. This command finishes when they do.";
+export declare const CONNECT_NOT_APPROVED_MESSAGE = "Codex MCP was not authorized in time. Run mnemonik connect codex to try again.";
 export declare function maintenanceExitCode(results: readonly Pick<HostResult, 'status'>[]): number;
 export declare const help: string;
 export interface CliDependencies {
@@ -87,8 +83,12 @@ export interface CliDependencies {
     statusDetails?: StatusDocumentInput['details'];
     codexTrustConditions?: () => Promise<readonly ReadinessCondition[]>;
     diagnostics?: DiagnosticsDependencies;
-    /** Where Claude Code's own stored sign-in is read: this platform, environment and Keychain by default. */
+    /** Where Claude Code's own stored authorization is read: this platform, environment and Keychain by default. */
     claudeCodeStore?: Omit<ClaudeCodeStoreOptions, 'home'>;
+    /** Where Codex's own stored authorization is read: this platform and environment by default. */
+    codexStore?: Omit<CodexStoreOptions, 'home'>;
+    /** Where Cursor's own stored authorization is read: this platform, environment and node:sqlite by default. */
+    cursorStore?: Omit<CursorStoreOptions, 'home'>;
 }
 export declare function runCli(args: string[], deps?: CliDependencies): Promise<number>;
 //# sourceMappingURL=router.d.ts.map

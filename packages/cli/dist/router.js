@@ -28,9 +28,13 @@ import { postCurrentReadiness } from './installSession.js';
 import { createRealProjectRuntime, ensureProjectRoot, ensureProjectForAgent, folderRefusalMessage, projectLimitMessage, runProjectCommand, } from './project.js';
 import { evaluateRoot } from './project/eligibility.js';
 import { accountActions } from './transport/server.js';
-import { apiOrigin, CODING_TOOL_SIGN_IN, describeReadiness, serializeReadiness as baseReadiness, resolveProjectIdentity, } from '@mnemonik/shared';
-import { codingToolSignIn, grantTransport, grantHost, grantSummaryLines, relativeTime, validGrant, withStoredSignIn, } from './auth/status.js';
-import { claudeCodeStoredSignIn } from './auth/claudeCodeSignIn.js';
+import { apiOrigin, describeReadiness, serializeReadiness as baseReadiness, resolveProjectIdentity, } from '@mnemonik/shared';
+import { grantTransport, grantHost, grantSummaryLines, mcpAuthorization, serverAuthorization, validGrant, } from './auth/status.js';
+import { claudeCodeStoredAuthorization, } from './auth/claudeCodeSignIn.js';
+import { codexStoredAuthorization } from './auth/codexAuthorization.js';
+import { cursorStoredAuthorization } from './auth/cursorAuthorization.js';
+import { authorizeStep, mcpLine, storeNote } from './authorizationWords.js';
+import { installationEmail } from './installation.js';
 import { createCliAuth } from './auth/index.js';
 import { OAuthProtocolError, runEditorLogin } from './auth/pkce.js';
 import { currentInstallSession, ensureInstallSession } from './auth/installSession.js';
@@ -39,7 +43,7 @@ import { folderList, renderScannerStatus } from './scanner/picker.js';
 import { abandonInterrupted, closeUntouchedScannerRun, interrupted } from './install/journal.js';
 import { installFailureReason, runInstall, } from './install/transaction.js';
 import { chooseHostProfile, simulatedInstall, terminalInstallUI } from './install/ui.js';
-import { CODEX_TRUST_MESSAGE, codingToolLines, codingToolStatuses, collectStatusDocument, installedCodingTools, localEditorStatus, localInstallationConditions, mcpTurnOnAction, renderStatusSummaries, renderRefusals, renewsMessage, REPORT_NOT_SENT, renderScannerFailure, statusExitCode, withCodingTools, } from './status.js';
+import { CODEX_TRUST_MESSAGE, authorizationEntries, codingToolStatuses, collectStatusDocument, hookAuthorizations, installedCodingTools, localEditorStatus, localInstallationConditions, mcpTurnOnAction, renderStatusSummaries, renderRefusals, REPORT_NOT_SENT, renderScannerFailure, scannerAuthorization, statusExitCode, withCodingTools, } from './status.js';
 import { editorAuthorizationRows } from './screens/journey.js';
 import { DiagnosticsError, previewDiagnostics, sendDiagnostics, } from './diagnostics.js';
 export const connectFolderPrompt = (name) => `Connect ${name} to Mnemonik? [Y/n]`;
@@ -111,16 +115,10 @@ async function uninstallScannerOptOut(deps, output, service, json) {
 export const dataDeletePrompt = (projectId) => `This deletes everything background indexing has sent for ${projectId} from your account. Type yes to continue.`;
 export const stillWatchedLine = (root) => `The folder is still being indexed. Run mnemonik remove ${root} to stop that.`;
 export const identityFileKeptLine = "This folder's .mnemonik.json still points at the deleted project. Connecting the folder again creates a new project.";
-export const CODEX_SIGNED_IN_MESSAGE = 'Codex is signed in to Mnemonik.';
-/** An editor signed in on another of the person's machines (L-182). */
-export const signedInElsewhereMessage = (editor) => `${editor} is already signed in to Mnemonik from another of your machines.`;
-/** A coding tool with a valid sign-in on this machine; `mnemonik connect` has nothing to do. */
-export const alreadySignedInMessage = (editor, lastUsedAt, refreshable = false) => `${editor} is already signed in to Mnemonik on this computer${lastUsedAt ? `, last used ${relativeTime(Date.parse(lastUsedAt), Date.now())}` : ''}.${refreshable ? ` ${renewsMessage(editor)}` : ''}`;
-/** The coding tool itself holds no Mnemonik sign-in it can use on this machine. */
-export const notSignedInHereMessage = (editor) => `${editor} is not signed in to Mnemonik on this computer.`;
+export const CODEX_SIGNED_IN_MESSAGE = 'Codex MCP: authorized.';
 /** For the agent running `connect --json`: what to do with the link it was given. */
-export const SIGN_IN_LINK_REASON = 'Give this link to the person to approve the Codex sign-in. This command finishes when they do.';
-export const CONNECT_NOT_APPROVED_MESSAGE = 'Sign-in timed out. Run mnemonik connect codex to try again.';
+export const SIGN_IN_LINK_REASON = 'Give this link to the person to authorize Codex MCP. This command finishes when they do.';
+export const CONNECT_NOT_APPROVED_MESSAGE = 'Codex MCP was not authorized in time. Run mnemonik connect codex to try again.';
 export function maintenanceExitCode(results) {
     if (results.some((result) => result.status === 'FAILED'))
         return 1;
@@ -1162,55 +1160,87 @@ function refusalStateDir(deps) {
         deps.installStateDir ??
         stateDirectory(process.platform, process.env, deps.home));
 }
-/** What Claude Code itself stores for Mnemonik here; undefined when it has no OAuth declaration. */
-const claudeCodeStored = (deps) => claudeCodeStoredSignIn({ home: deps.home ?? homedir(), ...deps.claudeCodeStore });
 /**
- * Each coding tool's sign-in on this machine, as the server holds it by the
- * console's validity rule, and for Claude Code held to what Claude Code itself
- * stores (withStoredSignIn). A tool missing from the map is unknown: nothing is
- * claimed either way. Undefined when nothing could be read.
+ * What each coding tool itself stores for Mnemonik's MCP server here, read the
+ * way the tool reads it; undefined for a tool with no OAuth declaration here.
  */
-async function codingToolSignIns(deps, output, hosts) {
-    if (!hosts.length)
-        return new Map();
-    const [server, stored] = await Promise.all([
-        serverSignIns(deps, output, hosts),
-        hosts.includes('claude-code') ? claudeCodeStored(deps) : undefined,
-    ]);
-    if (!stored)
-        return server;
-    const result = new Map(server ?? []);
-    const claudeCode = withStoredSignIn(server?.get('claude-code'), stored);
-    if (claudeCode)
-        result.set('claude-code', claudeCode);
-    else
-        result.delete('claude-code');
-    return server || claudeCode ? result : undefined;
+async function storedAuthorizations(deps, hosts) {
+    const home = deps.home ?? homedir();
+    const readers = {
+        'claude-code': () => claudeCodeStoredAuthorization({ home, ...deps.claudeCodeStore }),
+        codex: () => codexStoredAuthorization({ home, ...deps.codexStore }),
+        cursor: () => cursorStoredAuthorization({ home, ...deps.cursorStore }),
+    };
+    return new Map(await Promise.all(hosts.map(async (host) => [host, await readers[host]().catch(() => undefined)])));
 }
 /**
- * Each coding tool's sign-in on this machine, as the server holds it. Undefined
- * when it cannot be read (this computer's own sign-in is unusable, or Mnemonik
- * cannot be reached). Bounded like the readiness upload.
+ * Everything `status`, `connect` and `auth status` say about authorization on
+ * this computer: the CLI's own sign-in, and each coding tool's MCP
+ * authorization from both sides, the server's record by the console's
+ * validity rule and what the tool itself stores (mcpAuthorization). Bounded
+ * like the readiness upload.
  */
-async function serverSignIns(deps, output, hosts) {
+async function authorizationEvidence(deps, output, hosts) {
+    const [server, stored] = await Promise.all([
+        serverAuthorizations(deps, output, hosts),
+        storedAuthorizations(deps, hosts),
+    ]);
+    const problem = server.cli.state === 'locked'
+        ? 'cli_locked'
+        : server.cli.state === 'not_signed_in' || server.cli.state === 'signed_out'
+            ? 'cli_not_signed_in'
+            : 'unreachable';
+    return {
+        cli: server.cli,
+        mcp: new Map(hosts.map((host) => [
+            host,
+            mcpAuthorization(server.tools?.get(host), stored.get(host), problem),
+        ])),
+    };
+}
+/**
+ * The CLI's own sign-in, and each coding tool's MCP authorization on this
+ * machine as the server holds it; `tools` is undefined when the server could
+ * not be asked (the CLI's sign-in is unusable, or Mnemonik cannot be reached).
+ */
+async function serverAuthorizations(deps, output, hosts) {
     const bearer = await auth(deps, output, false)
         .getCliBearer()
-        .catch(() => undefined);
+        .catch((error) => isCredentialSessionUnavailableError(error) ? 'locked' : undefined);
+    if (bearer === 'locked')
+        return { cli: { state: 'locked' } };
     if (typeof bearer !== 'string')
-        return undefined;
+        return {
+            cli: {
+                state: bearer?.reason === 'family_missing'
+                    ? 'not_signed_in'
+                    : bearer?.status === 'ACTION_REQUIRED'
+                        ? 'signed_out'
+                        : 'unconfirmed',
+            },
+        };
+    // With no coding tool to ask about, the account is the one recorded at
+    // sign-in, and status reaches the server only for its readiness upload.
+    if (!hosts.length)
+        return {
+            cli: {
+                state: 'signed_in',
+                email: await installationEmail(deps.installStateDir ?? stateDirectory(process.platform, process.env, deps.home)),
+            },
+        };
     const send = deps.grantFetch ?? globalThis.fetch;
     const grants = grantTransport(async () => bearer, (url, options) => send(url, { ...options, signal: AbortSignal.timeout(2500) }));
     const here = await grants.list({ here: true }).catch(() => undefined);
     if (!here)
-        return undefined;
-    const result = new Map(hosts.map((host) => [host, codingToolSignIn(host, here)]));
-    // Only an editor that can run on another machine is looked for there.
-    if ([...result].some(([host, signIn]) => host === 'cursor' && signIn.state !== 'signed_in')) {
+        return { cli: { state: 'unconfirmed' } };
+    const tools = new Map(hosts.map((host) => [host, serverAuthorization(host, here)]));
+    // Only a tool that can run on another machine is looked for there.
+    if ([...tools].some(([host, found]) => host === 'cursor' && found.state !== 'authorized')) {
         const everywhere = await grants.list().catch(() => undefined);
         if (everywhere)
-            result.set('cursor', codingToolSignIn('cursor', here, everywhere));
+            tools.set('cursor', serverAuthorization('cursor', here, everywhere));
     }
-    return result;
+    return { cli: { state: 'signed_in', email: here.email ?? null }, tools };
 }
 async function doctorCommand(parsed, deps, output) {
     const invalid = allowed(parsed, []);
@@ -1878,33 +1908,57 @@ export async function runCli(args, deps = {}) {
         if (invalid || subcommand)
             return invalid ? flagError(output, parsed, invalid) : usageError(['status']);
         const document = await collectCurrentInstallation(deps, output, parsed.flags.has('json') ? undefined : (line) => output.line(line));
-        // Each installed coding tool's sign-in, from the server by the console's rule.
-        const editors = await installedCodingTools(deps.home ?? homedir(), deps.hostManagement?.stateDir ??
+        // Each separately authorized part on this computer: every installed coding
+        // tool's MCP connection (the server's record and the tool's own store) and
+        // hooks, the scanner, and the CLI. One line each; none is ever dropped.
+        const stateDir = deps.hostManagement?.stateDir ??
+            deps.installStateDir ??
+            stateDirectory(process.platform, process.env, deps.home);
+        const editors = await installedCodingTools(deps.home ?? homedir(), stateDir);
+        const evidence = await authorizationEvidence(deps, output, editors
+            .map((editor) => editor.host)
+            .filter((host) => hostOrder.includes(host)));
+        const tools = codingToolStatuses(editors, document.conditions ?? [], evidence.mcp, await hookAuthorizations(stateDir, editors));
+        // The scanner's state is read where collectStatusDocument reads it.
+        const scanner = await scannerAuthorization(deps.projectStateDir ??
             deps.installStateDir ??
             stateDirectory(process.platform, process.env, deps.home));
-        const shown = withCodingTools(document, codingToolStatuses(editors, document.conditions ?? [], await codingToolSignIns(deps, output, editors
-            .map((editor) => editor.host)
-            .filter((host) => hostOrder.includes(host)))));
+        const shown = withCodingTools(document, tools, evidence.mcp, scanner);
+        const authorizations = authorizationEntries({
+            tools,
+            mcp: evidence.mcp,
+            conditions: shown.conditions ?? [],
+            scanner,
+            cli: evidence.cli,
+        });
         const version = await packageVersion();
         const store = new RuntimeStore(deps.installStateDir ?? stateDirectory(process.platform, process.env, deps.home));
         if (!parsed.flags.has('json')) {
             renderStatusSummaries(shown, output, { agent: !personPresent(parsed, deps) });
-            for (const line of codingToolLines(shown.codingTools))
-                output.line(line);
+            for (const entry of authorizations)
+                if (entry.component === 'cli' && entry.state === 'signed_in')
+                    output.cliSignedIn(entry.email);
+                else
+                    output.line(entry.line);
             await renderRefusals(refusalStateDir(deps), output);
         }
         const hint = await cliUpdateHint(store, version);
         if (parsed.flags.has('json'))
-            output.json({ ...shown, cli: { version, ...(hint ? { updateAvailable: hint } : {}) } });
+            output.json({
+                ...shown,
+                // The account is shown to the person only; JSON stays free of it.
+                authorizations: authorizations.map((entry) => entry.component === 'cli' && entry.state === 'signed_in'
+                    ? { component: 'cli', state: 'signed_in', line: 'CLI: signed in.' }
+                    : entry),
+                cli: { version, ...(hint ? { updateAvailable: hint } : {}) },
+            });
         else if (hint)
             output.line(hint);
-        // The console reads sign-ins live, so the machine report keeps only what
-        // this machine itself showed: a sign-in line stored there would go stale.
+        // The console reads authorizations live, so the machine report keeps only
+        // what this machine itself showed: a line stored there would go stale.
         const reported = await reportCurrentInstallation(deps, output, document);
-        if (reported === 'signed_out' && !parsed.flags.has('json')) {
+        if (reported === 'signed_out' && !parsed.flags.has('json'))
             output.line(REPORT_NOT_SENT.sentence);
-            output.line(REPORT_NOT_SENT.nextStep);
-        }
         else if (typeof reported === 'object' && !parsed.flags.has('json'))
             output.line(humanReason(reported.refused));
         return statusExitCode(shown);
@@ -1919,36 +1973,29 @@ export async function runCli(args, deps = {}) {
                 : argumentError(['connect'], ['connect'], [subcommand ?? '', ...rest].filter(Boolean), 1);
         const host = subcommand;
         const editor = (await localEditorStatus(deps.home ?? homedir())).find((candidate) => candidate.host === host);
-        // A coding tool already holding a valid sign-in on this machine (or, for an
-        // editor that opens this machine from another one, there) needs nothing.
-        // Idle time is not signed out: the tool renews its sign-in when next used.
-        // Claude Code is signed in only if Claude Code itself still stores the
-        // sign-in. An unreachable server says nothing, and sign-in goes ahead.
-        const signIn = editor?.mcp === 'ready' ? await codingToolSignIns(deps, output, [host]) : undefined;
-        const current = signIn?.get(host);
-        if (current?.state === 'signed_in' || current?.state === 'signed_in_elsewhere') {
-            const message = current.state === 'signed_in_elsewhere'
-                ? signedInElsewhereMessage(launchHostLabels[host])
-                : alreadySignedInMessage(launchHostLabels[host], current.lastUsedAt, current.stored?.state === 'refreshable');
-            if (parsed.flags.has('json'))
-                output.json(current.state === 'signed_in'
-                    ? {
-                        status: 'READY',
-                        signIn: current.state,
-                        lastUsedAt: current.lastUsedAt,
-                        ...(current.stored ? { stored: current.stored } : {}),
-                        reason: message,
-                    }
-                    : { status: 'READY', reason: message });
+        // A tool already authorized here (or, for one that opens this machine from
+        // another computer, there) needs nothing. Idle time is not an ended
+        // authorization: the tool renews it when next used. The tool's own store
+        // decides whether it still holds what the server lists (2026-10-12), and a
+        // side that could not be checked is said, never assumed.
+        const tool = launchHostLabels[host];
+        const mcp = editor?.mcp === 'ready'
+            ? (await authorizationEvidence(deps, output, [host])).mcp.get(host)
+            : undefined;
+        const json = parsed.flags.has('json');
+        if (mcp &&
+            ['authorized', 'authorized_elsewhere', 'store_unchecked', 'server_unchecked'].includes(mcp.state)) {
+            const line = mcpLine(tool, host, mcp);
+            if (json)
+                output.json({ status: 'READY', reason: line, mcp });
             else
-                output.line(message);
+                output.line(line);
             return 0;
         }
-        // Only Codex has a headless login command, so only Codex can be signed in
+        // Only Codex has a headless login command, so only Codex can be authorized
         // from here; the others print their own instructions as before. An agent
         // runs this for the person, with --json and without a terminal, so under
         // --json the link comes first as its own line for the agent to hand over.
-        const json = parsed.flags.has('json');
         if (host === 'codex' && editor?.mcp === 'ready') {
             const bearer = await auth(deps, output, false)
                 .getCliBearer()
@@ -1987,15 +2034,13 @@ export async function runCli(args, deps = {}) {
                     return 1;
                 }
             }
-            // An editor that could not be started at all still has its own instructions.
+            // A tool that could not be started at all still has its own instructions.
         }
         const reason = editor?.mcp === 'disabled'
-            ? `${editor.name} connection is turned off.`
-            : editor?.mcp === 'ready'
-                ? current?.stored?.state === 'missing'
-                    ? notSignedInHereMessage(launchHostLabels[host])
-                    : 'Finish signing in to Mnemonik in the coding tool.'
-                : `${launchHostLabels[host]} connection is missing.`;
+            ? `${tool} MCP: turned off.`
+            : editor?.mcp === 'ready' && mcp
+                ? mcpLine(tool, host, mcp, false)
+                : `${tool} MCP: not set up on this computer.`;
         const actions = editor?.mcp === 'ready'
             ? editorAuthorizationRows([host])
             : [
@@ -2003,13 +2048,8 @@ export async function runCli(args, deps = {}) {
                     ? mcpTurnOnAction[host]
                     : 'Run mnemonik install to set it up again.',
             ];
-        if (parsed.flags.has('json'))
-            output.json({
-                status: 'ACTION_REQUIRED',
-                reason,
-                actions,
-                ...(current?.stored ? { stored: current.stored } : {}),
-            });
+        if (json)
+            output.json({ status: 'ACTION_REQUIRED', reason, actions, ...(mcp ? { mcp } : {}) });
         else {
             output.line(reason);
             for (const action of actions)
@@ -2440,34 +2480,35 @@ export async function runCli(args, deps = {}) {
                     (!host || grantHostName === host));
             })
                 .map((g) => ({ ...g, host: grantHost(g) ?? g.clientName ?? g.clientId }));
-            // Revoked, expired and unfinished sign-ins stay in --json with their status.
+            // Revoked, expired and unfinished grants stay in --json with their status.
             const signedIn = grants.filter(validGrant);
-            // The account's sign-ins say a Claude Code sign-in exists; what Claude
-            // Code stores on this computer says whether it can use one here.
-            const stored = !host || host === 'claude-code' ? await claudeCodeStored(deps) : undefined;
+            // The account's grants say an authorization exists; what each coding tool
+            // stores on this computer says whether it can use one here.
+            const tools = hostOrder.filter((tool) => !host || tool === host);
+            const stored = await storedAuthorizations(deps, tools);
+            const storedJson = Object.fromEntries([...stored].filter((entry) => !!entry[1]));
             if (parsed.flags.has('json'))
                 output.json({
                     account: status.account,
                     grants,
-                    ...(stored ? { stored: { 'claude-code': stored } } : {}),
+                    ...(Object.keys(storedJson).length ? { stored: storedJson } : {}),
                 });
             else if (!signedIn.length)
                 output.line(host
-                    ? `${launchHostLabels[host]} is not signed in.`
+                    ? `${launchHostLabels[host]} MCP: not authorized on any of your computers.`
                     : humanReason('not_signed_in'));
             else {
-                output.signedInAs(status.email);
-                const signInStep = CODING_TOOL_SIGN_IN['claude-code'];
-                const claudeCode = (summary) => stored?.state === 'missing'
-                    ? `not signed in on this computer.${'step' in signInStep ? ` ${signInStep.step}` : ''}`
-                    : stored?.state === 'refreshable'
-                        ? `${summary}. ${renewsMessage('Claude Code')}`
-                        : summary;
-                for (const line of grantSummaryLines(signedIn, launchHostLabels, Date.now(), {
-                    'claude-code': claudeCode,
-                }))
+                output.cliSignedIn(status.email);
+                const onThisComputer = (tool) => (summary) => {
+                    const here = stored.get(tool);
+                    const note = storeNote(launchHostLabels[tool], here);
+                    if (!note)
+                        return summary;
+                    return `${summary}. ${note}${here?.state === 'missing' ? ` ${authorizeStep(tool)}` : ''}`;
+                };
+                for (const line of grantSummaryLines(signedIn, launchHostLabels, Date.now(), Object.fromEntries(tools.map((tool) => [tool, onThisComputer(tool)]))))
                     output.line(line);
-                output.line('Older sign-ins stay valid until `mnemonik auth logout`. `mnemonik auth status --json` lists every one.');
+                output.line("These are your account's authorizations on all your computers. Older ones stay valid until `mnemonik auth logout`, and `mnemonik auth status --json` lists every one.");
             }
             return 0;
         }

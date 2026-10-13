@@ -28,8 +28,11 @@ export declare class Output {
     write(value: string): void;
     /** Deliberate local-only identity display; never use for logs, JSON, or errors. */
     signedIn(email: string): void;
-    /** The account line of plain `auth status`: the same deliberate display, or nothing. */
-    signedInAs(email: string | undefined): void;
+    /**
+     * The CLI line of `status` and `auth status`: the same deliberate display of
+     * the account, or the line without it.
+     */
+    cliSignedIn(email: string | null | undefined): void;
     error(value: unknown, human?: boolean): number;
     json(value: unknown): void;
     progressLine(text: string, animated: boolean): {

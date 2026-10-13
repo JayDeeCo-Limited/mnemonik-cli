@@ -1,7 +1,7 @@
 export { CODEX_TRUST_MESSAGE } from './humanReason.js';
 import { cliCredentialStatus } from './auth/credentials.js';
-import type { CodingToolSignInResult, CodingToolSignInState } from './auth/status.js';
-import type { StoredSignIn } from './auth/claudeCodeSignIn.js';
+import { type McpAuthorization, type McpState } from './auth/status.js';
+import { type CliSignIn, type HooksState, type ScannerAuthorizationState } from './authorizationWords.js';
 import { type ScannerReceipt } from './scanner/control.js';
 import { type ScannerServiceOptions } from './scanner/service.js';
 import type { Readable } from 'node:stream';
@@ -17,6 +17,7 @@ export declare function localEditorStatus(home: string): Promise<{
     name: "Claude Code" | "Codex" | "Cursor";
     marked: boolean;
     hooks: boolean;
+    credentialFamily?: string | undefined;
     mcp: string;
 }[]>;
 /** What a person can really do to switch a declared connection back on. */
@@ -78,13 +79,12 @@ export declare function buildStatusDocument(input: StatusDocumentInput): Readine
     conditions: ReadinessCondition[];
 };
 /**
- * `status` could not tell the console about this machine because this
- * computer's sign-in is unusable (L-166). Wording decided 2026-09-25; the fix
- * is the approved renew step.
+ * `status` could not tell the console about this machine because the CLI's own
+ * sign-in could not be used (L-166): expired, revoked, or locked in the macOS
+ * Keychain over SSH. The CLI line of the authorization block gives the step.
  */
 export declare const REPORT_NOT_SENT: {
     sentence: string;
-    nextStep: string;
 };
 export declare function renderStatusSummaries(document: ReadinessDocument & {
     cliCredential?: Awaited<ReturnType<typeof cliCredentialStatus>>;
@@ -125,60 +125,92 @@ export declare function collectStatusDocument(input: CollectStatusInput): Promis
 export interface CodingToolStatus {
     host: string;
     name: string;
-    /** From this machine's own files and the tool's own trust records. */
-    hooks: 'installed' | 'missing' | 'approval_pending';
-    /**
-     * From the server, by the console's rule. `unknown` when it could not be
-     * read (Mnemonik unreachable, or this computer's own sign-in unusable).
-     */
-    signIn: CodingToolSignInState | 'unknown';
-    /** When the tool last renewed its sign-in; dates use, never decides it. */
-    lastUsedAt: string | null;
-    /**
-     * What the coding tool itself stores for Mnemonik on this machine, when it
-     * was read (Claude Code only). Token values are never read out.
-     */
-    stored?: StoredSignIn;
+    /** Its MCP connection's authorization; the evidence is in `authorizations`. */
+    mcp: McpState;
+    /** Its hooks' own authorization, from this machine's files and the tool's own trust records. */
+    hooks: HooksState;
     /** Commands the agent runs to fix what is wrong with this tool, in order; empty when none. */
     actions: string[];
     /**
      * Steps only the person can take, inside the coding tool, in plain words
-     * (Claude Code and Cursor sign in only there); empty when none.
+     * (Claude Code and Cursor authorize MCP only there); empty when none.
      */
     personSteps: string[];
 }
+/** One line of the authorization block, with the evidence behind it. */
+export type AuthorizationEntry = ({
+    component: 'mcp';
+    host: string;
+    line: string;
+} & McpAuthorization) | {
+    component: 'hooks';
+    host: string;
+    state: HooksState;
+    line: string;
+} | {
+    component: 'scanner';
+    state: ScannerAuthorizationState;
+    line: string;
+} | ({
+    component: 'cli';
+    line: string;
+} & CliSignIn);
 /** The coding tools installed on this machine: chosen at install or marked in their own settings. */
 export declare function installedCodingTools(home: string, stateDir: string): Promise<{
     host: "claude-code" | "codex" | "cursor";
     name: "Claude Code" | "Codex" | "Cursor";
     marked: boolean;
     hooks: boolean;
+    credentialFamily?: string | undefined;
     mcp: string;
 }[]>;
+/** The hooks' own authorization, as hookAuthorizations reads it. */
+export type HookCredentialState = 'authorized' | 'not_authorized' | 'unchecked';
+/**
+ * Each tool's hooks' own authorization: the credential the installer recorded
+ * for them (or their command names), stored here and inside its refresh
+ * window. Hooks that name none sign in some other way, which is not read here.
+ */
+export declare function hookAuthorizations(stateDir: string, editors: ReadonlyArray<{
+    host: string;
+    credentialFamily?: string;
+}>, now?: number): Promise<Map<string, HookCredentialState>>;
 export declare function codingToolStatuses(editors: ReadonlyArray<{
     host: string;
     name: string;
     hooks: boolean;
-}>, conditions: readonly ReadinessCondition[], signIns: ReadonlyMap<string, CodingToolSignInResult> | undefined): CodingToolStatus[];
+}>, conditions: readonly ReadinessCondition[], mcp: ReadonlyMap<string, McpAuthorization>, hookCredentials?: ReadonlyMap<string, HookCredentialState>): CodingToolStatus[];
 /**
- * The status document with each tool's sign-in added. A tool signed out on
- * this machine is a condition of the installation: status never says the
- * machine is working while one is. A tool never signed in here is not (it may
- * simply be unused); its line says how to sign in.
+ * The status document with each tool's state added. A tool whose MCP
+ * authorization here was revoked, expired, or is no longer held by the tool,
+ * hooks or a scanner whose own authorization is missing, expired or refused,
+ * is a condition of the installation: status never says the machine is
+ * working while one is. A tool never authorized here is not (it may simply be
+ * unused); its line says how to authorize it.
  */
 export declare function withCodingTools<T extends ReadinessDocument & {
     conditions?: readonly ReadinessCondition[];
-}>(document: T, tools: readonly CodingToolStatus[]): T & {
+}>(document: T, tools: readonly CodingToolStatus[], mcp: ReadonlyMap<string, McpAuthorization>, 
+/** The scanner's own authorization; one that is gone is a condition too, said once. */
+scanner?: ScannerAuthorizationState): T & {
     codingTools: CodingToolStatus[];
 };
-/** A stored sign-in whose access has expired and that the tool renews by itself. */
-export declare const renewsMessage: (tool: string) => string;
 /**
- * One line per tool, for a person, at a glance: signed in or not, and the one
- * short command when there is something to do. Hooks, last use and the rest
- * are in `--json`. A signed-out tool is already the installation's attention
- * line, with its command, so it is not said twice; a tool whose sign-in could
- * not be read gets no line.
+ * Background indexing's own authorization on this computer: set up, its
+ * credential stored here and inside its refresh window, and no refusal
+ * reported by the running scanner. The server's record of it is not asked.
  */
-export declare function codingToolLines(tools: readonly CodingToolStatus[]): string[];
+export declare function scannerAuthorization(stateDir: string, now?: number): Promise<ScannerAuthorizationState>;
+/**
+ * The authorization block of `status`: each tool's MCP connection and hooks,
+ * then the scanner and the CLI, one line each, never dropped. A state the
+ * installation's attention lines already give a step for says only what is wrong.
+ */
+export declare function authorizationEntries(input: {
+    tools: readonly CodingToolStatus[];
+    mcp: ReadonlyMap<string, McpAuthorization>;
+    conditions: readonly ReadinessCondition[];
+    scanner: ScannerAuthorizationState;
+    cli: CliSignIn;
+}): AuthorizationEntry[];
 //# sourceMappingURL=status.d.ts.map

@@ -1,5 +1,5 @@
 import type { HostName } from '@mnemonik/shared';
-import type { StoredSignIn } from './claudeCodeSignIn.js';
+import type { StoredAuthorization } from './storedAuthorization.js';
 export interface AccountGrant {
     deviceInstallationId?: string | null;
     id: string;
@@ -43,44 +43,80 @@ export declare const validGrant: (grant: AccountGrant) => boolean;
  * rule). How long ago it was used says nothing about whether it is valid.
  */
 export declare function signedInElsewhere(status: GrantStatus, host: HostName): boolean;
-export type CodingToolSignInState = 'signed_in' | 'signed_in_elsewhere' | 'signed_out' | 'not_set_up';
 /**
- * One coding tool's sign-in on this machine, from the server's listing of this
- * installation's sign-ins (`?installation=current`, revoked ones included).
- * Signed out only when it had sign-ins here and none of them is valid; never
- * because of idle time. `everywhere`, the account-wide listing, is read only
- * for editors that can sign in on another machine.
+ * A coding tool's MCP authorization on this machine as the server records it.
+ * `authorized_elsewhere`: valid on another of the account's computers, for the
+ * tools that can run there while their hooks run here (Cursor over SSH).
  */
-export declare function codingToolSignIn(host: HostName, here: GrantStatus, everywhere?: GrantStatus): {
-    state: CodingToolSignInState;
+export type ServerAuthorizationState = 'authorized' | 'authorized_elsewhere' | 'revoked_or_expired' | 'never_authorized';
+/**
+ * One coding tool's MCP authorization on this machine, from the server's
+ * listing of this installation's grants (`?installation=current`, revoked ones
+ * included). Revoked or expired only when it had grants here and none of them
+ * is valid; never because of idle time. `everywhere`, the account-wide
+ * listing, is read only for tools that can run on another machine.
+ */
+export declare function serverAuthorization(host: HostName, here: GrantStatus, everywhere?: GrantStatus): {
+    state: ServerAuthorizationState;
     lastUsedAt: string | null;
 };
-export type CodingToolSignInResult = {
-    state: CodingToolSignInState;
-    lastUsedAt: string | null;
-    /** What the coding tool itself holds here; read for Claude Code only. */
-    stored?: StoredSignIn;
-};
+/** Why the server's record could not be asked: the CLI's own sign-in (absent, or locked in the macOS Keychain), or the network. */
+export type ServerProblem = 'cli_not_signed_in' | 'cli_locked' | 'unreachable';
 /**
- * Claude Code's sign-in on this machine: the server's verdict, held to what
- * Claude Code itself stores (2026-10-12 outage). The server decides signed out
- * (revoked or expired grants); only the stored credential can say signed in.
- * Holding nothing it can use, Claude Code is signed out where the server knows
- * a sign-in here, otherwise not set up; holding something, it is what the server
- * says. A store that cannot be read, or a server that cannot, vouches for
- * nothing: no claim, unless the server alone already decides signed out.
+ * A coding tool's MCP authorization on this computer, from both sides:
+ *
+ * - `authorized`: the server holds a valid grant and the tool's own store holds
+ *   a usable token (or the tool keeps nothing Mnemonik reads).
+ * - `authorized_elsewhere`: valid on the computer the tool runs on (Cursor over SSH).
+ * - `not_authorized`: nothing usable here; `reason` says which side decided.
+ * - `store_unchecked`: the server holds a valid grant; the tool's store on this
+ *   computer could not be read (`stored.reason` says why).
+ * - `server_unchecked`: the tool's store holds a usable token; the server could
+ *   not be asked (`serverProblem` says why).
+ * - `unchecked`: neither side could be read.
  */
-export declare function withStoredSignIn(server: CodingToolSignInResult | undefined, stored: StoredSignIn | undefined): CodingToolSignInResult | undefined;
+export type McpState = 'authorized' | 'authorized_elsewhere' | 'not_authorized' | 'store_unchecked' | 'server_unchecked' | 'unchecked';
+/**
+ * Why a tool is not authorized: its grant here was revoked or expired; the
+ * server holds a valid grant the tool no longer has (2026-10-12); or it was
+ * never authorized on this computer.
+ */
+export type NotAuthorizedReason = 'revoked_or_expired' | 'not_held' | 'never_authorized';
+export interface McpAuthorization {
+    state: McpState;
+    reason?: NotAuthorizedReason;
+    /** The server's record; `unknown` when it could not be asked. */
+    server: ServerAuthorizationState | 'unknown';
+    serverProblem?: ServerProblem;
+    /** What the tool itself stores here; absent when it keeps nothing Mnemonik reads. */
+    stored?: StoredAuthorization;
+    /** When the tool last renewed its grant; dates use, never decides it. */
+    lastUsedAt: string | null;
+}
+/**
+ * The server decides revoked or expired; only the tool's own store can say the
+ * tool still holds what the server lists (2026-10-12 outage). A store that
+ * cannot be read, or a server that cannot be asked, vouches for nothing, and
+ * the state says which side was not checked.
+ */
+export declare function mcpAuthorization(server: {
+    state: ServerAuthorizationState;
+    lastUsedAt: string | null;
+} | undefined, stored: StoredAuthorization | undefined, serverProblem?: ServerProblem): McpAuthorization;
 /** "just now", "5 minutes ago", "1 hour ago", "3 days ago", or "never". */
 export declare function relativeTime(time: number | null, now: number): string;
+/** The CLI's own grants carry this client name; their rows are sign-ins, not authorizations. */
+export declare const CLI_CLIENT_NAME = "Mnemonik CLI";
 /**
- * One line per host for plain `auth status`: editors first, then the rest,
- * each by most recent use. Grant ids, dates and scopes are for --json.
- * `onThisComputer` rewrites a host's summary with what the tool itself stores here.
+ * One row per part for plain `auth status`, across all of the account's
+ * computers: coding tools' MCP connections first ("Claude Code MCP"), then the
+ * rest, each by most recent use; the CLI's own grants are sign-ins ("CLI").
+ * Grant ids, dates and scopes are for --json. `onThisComputer` adds what the
+ * tool itself stores on this computer to its row.
  */
 export declare function grantSummaryLines(grants: readonly (AccountGrant & {
     host: string;
-})[], editors: Readonly<Record<string, string>>, now?: number, onThisComputer?: Readonly<Record<string, (summary: string) => string>>): string[];
+})[], tools: Readonly<Record<string, string>>, now?: number, onThisComputer?: Readonly<Record<string, (summary: string) => string>>): string[];
 export declare function grantTransport(getBearer: () => Promise<string>, fetcher?: typeof fetch): {
     /** Every machine's unrevoked sign-ins, or with `here` every sign-in on this one. */
     list(options?: {

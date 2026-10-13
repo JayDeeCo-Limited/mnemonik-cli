@@ -41,8 +41,14 @@
  */
 export const SECRET_REDACTION_PLACEHOLDER = '[REDACTED]';
 // Shared by the scanner daemon and server-side scrub paths.
+//
+// A value must hold a letter or a digit, in every pattern whose value is free
+// text after a label (key=value, URL userinfo, Bearer): a run of punctuation is
+// never a credential. Before this rule the key=value pattern ate prose about a
+// flag: "--password=; repeated copies" in a stored checkpoint became
+// "--[REDACTED] repeated copies" (2026-10-13), and so did "password: ***".
 export const SECRET_PATTERNS = [
-    /(?:api[_-]?key|secret|token|password|credential|auth)\s*[:=]\s*\S+/gi,
+    /(?:api[_-]?key|secret|token|password|credential|auth)\s*[:=]\s*(?=\S*[A-Za-z0-9])\S+/gi,
     // Stripe-shape: (sk|pk)_(live|test)_<24+ alphanumerics>. Catches modern
     // Stripe keys whose body is split by an environment separator that
     // breaks the contiguous-alphanum pattern below. Required `live|test`
@@ -78,12 +84,12 @@ export const SECRET_PATTERNS = [
     // host and path survive for anyone reading the code. Userinfo may contain
     // empty fields or additional `:` / `@` characters; greediness selects its
     // final `@`, while `/`, `?`, and `#` keep paths and queries out of the match.
-    /\b[a-z][a-z0-9+.-]*:\/\/[^/\s?#]*@/gi,
+    /\b[a-z][a-z0-9+.-]*:\/\/(?=[^/\s?#]*[A-Za-z0-9][^/\s?#]*@)[^/\s?#]*@/gi,
     // Authorization: Bearer <token>. The token class deliberately excludes
     // `<` and `$`, so documentation placeholders (`Bearer <your-api-key>`,
     // `Bearer $MNEMONIK_PROXY_TOKEN`) are left intact - redacting those would
     // destroy the instruction without hiding a secret.
-    /Authorization\s*:\s*Bearer\s+[A-Za-z0-9._~+/-]+=*/gi,
+    /Authorization\s*:\s*Bearer\s+(?=[._~+/-]*[A-Za-z0-9])[A-Za-z0-9._~+/-]+=*/gi,
     // sshpass -p <password> (also -p'<password>' and -p"<password>"): only the
     // password word is consumed, so the command stays readable. A shell
     // expansion (`$PASS`, `"$PASS"`), a `<placeholder>`, an earlier redaction

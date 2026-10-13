@@ -3,46 +3,44 @@ import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { userInfo } from 'node:os';
 import { join } from 'node:path';
+import {
+  object,
+  parseObject as parse,
+  unreadable,
+  type StoredAuthorization,
+} from './storedAuthorization.js';
 
 /**
  * What Claude Code itself holds for Mnemonik's MCP server on this computer.
  *
- * On 2026-10-12 a network outage emptied Claude Code's stored Mnemonik sign-in
- * while the server still held a valid grant, and status said signed in. The
- * server's grant says a sign-in exists; only Claude Code's own store says
- * whether Claude Code can use it. Read the way Claude Code 2.1.296 reads it:
+ * On 2026-10-12 a network outage emptied Claude Code's stored Mnemonik
+ * authorization while the server still held a valid grant, and status said
+ * signed in. The server's grant says an authorization exists; only Claude
+ * Code's own store says whether Claude Code can use it. Read the way Claude
+ * Code 2.1.296 reads it:
  *
  * - The entry is `mcpOAuth["mnemonik|" + sha256(JSON.stringify({type, url,
- *   headers}))[0..16]]`, keyed by the declaration in ~/.claude.json, so a sign-in
- *   stored for an older declaration (other headers) is not this one's.
+ *   headers}))[0..16]]`, keyed by the declaration in ~/.claude.json, so an
+ *   authorization stored for an older declaration (other headers) is not this one's.
  * - Linux and Windows keep the document in ~/.claude/.credentials.json; a
  *   missing file means Claude Code holds nothing.
  * - macOS keeps it in the login Keychain, generic password service
  *   `Claude Code-credentials`, account $USER, written and read with
  *   /usr/bin/security; the file is read only when that item does not exist.
+ *   Over SSH the Keychain is locked and `security` exits 36
+ *   (errSecInteractionNotAllowed); that is said as such, never as "missing".
  * - Windows uses Credential Manager instead when CLAUDE_CODE_FORCE_WINDOWS_CREDMAN
  *   is 1 or ~/.claude.json caches `tengu_windows_credman: true`; that store is
  *   not read here.
  *
- * Only key names, presence and `expiresAt` are looked at. Token values are never
- * returned, printed or logged, and a parse error (whose message can quote the
- * input) is never passed on.
+ * Only key names, presence and `expiresAt` are looked at (storedAuthorization.ts).
  */
-export type StoredSignInState = 'signed_in' | 'refreshable' | 'missing' | 'unreadable';
-export interface StoredSignIn {
-  /**
-   * `signed_in`: an access token that has not expired. `refreshable`: the access
-   * token has expired or is gone, and a refresh token renews it the next time
-   * Claude Code connects. `missing`: nothing Claude Code can use; it shows
-   * mnemonik as needing authentication. `unreadable`: it could not be read.
-   */
-  state: StoredSignInState;
-  /** When the stored access token expires or expired; null when unknown. */
-  expiresAt: string | null;
-}
+export type { StoredAuthorization } from './storedAuthorization.js';
 
-/** `security find-generic-password` exit code for an item that does not exist. */
+/** `security find-generic-password` exit code for an item that does not exist (errSecItemNotFound). */
 const KEYCHAIN_ITEM_NOT_FOUND = 44;
+/** The exit code for a locked Keychain that cannot ask to be unlocked (errSecInteractionNotAllowed). */
+const KEYCHAIN_LOCKED = 36;
 export const CLAUDE_CODE_KEYCHAIN_SERVICE = 'Claude Code-credentials';
 
 export type KeychainRead = (
@@ -58,10 +56,6 @@ export interface ClaudeCodeStoreOptions {
   /** The macOS Keychain read; /usr/bin/security by default. */
   keychain?: KeychainRead;
 }
-
-const object = (value: unknown): value is Record<string, unknown> =>
-  !!value && typeof value === 'object' && !Array.isArray(value);
-const present = (value: unknown) => typeof value === 'string' && value.length > 0;
 
 const readKeychain: KeychainRead = (service, account) =>
   new Promise((resolve) => {
@@ -89,29 +83,28 @@ function keychainAccount(env: NodeJS.ProcessEnv) {
   return name && /^[a-zA-Z0-9._-]+$/u.test(name) ? name : 'claude-code-user';
 }
 
-function parse(text: string): Record<string, unknown> | undefined {
-  try {
-    const value: unknown = JSON.parse(text);
-    return object(value) ? value : undefined;
-  } catch {
-    return undefined;
-  }
-}
+type CredentialDocument =
+  { document: Record<string, unknown> | null } | { unreadable: StoredAuthorization };
 
-/** The credential document, null when Claude Code holds none, undefined when unreadable. */
+/** The credential document (null when Claude Code holds none), or why it could not be read. */
 async function credentialDocument(
   options: Required<Omit<ClaudeCodeStoreOptions, 'now'>>,
   config: Record<string, unknown>
-): Promise<Record<string, unknown> | null | undefined> {
+): Promise<CredentialDocument> {
   const { env, home, platform } = options;
+  const parsed = (text: string, failure: StoredAuthorization): CredentialDocument => {
+    const document = parse(text);
+    return document ? { document } : { unreadable: failure };
+  };
   if (platform === 'darwin') {
     const item = await options
       .keychain(CLAUDE_CODE_KEYCHAIN_SERVICE, keychainAccount(env))
       .catch(() => undefined);
-    if (!item) return undefined;
-    if (item.code === 0) return parse(item.stdout.trim());
+    if (item?.code === 0) return parsed(item.stdout.trim(), unreadable('keychain_unreadable'));
     // A locked or unavailable Keychain says nothing about what it holds.
-    if (item.code !== KEYCHAIN_ITEM_NOT_FOUND) return undefined;
+    if (item?.code === KEYCHAIN_LOCKED) return { unreadable: unreadable('keychain_locked') };
+    if (item?.code !== KEYCHAIN_ITEM_NOT_FOUND)
+      return { unreadable: unreadable('keychain_unreadable') };
   }
   if (
     platform === 'win32' &&
@@ -119,14 +112,16 @@ async function credentialDocument(
       (object(config.cachedGrowthBookFeatures) &&
         config.cachedGrowthBookFeatures.tengu_windows_credman === true))
   )
-    return undefined;
+    return { unreadable: unreadable('credential_manager') };
   let text: string;
   try {
     text = await readFile(join(home, '.claude', '.credentials.json'), 'utf8');
   } catch (error) {
-    return (error as NodeJS.ErrnoException).code === 'ENOENT' ? null : undefined;
+    return (error as NodeJS.ErrnoException).code === 'ENOENT'
+      ? { document: null }
+      : { unreadable: unreadable('file_unreadable') };
   }
-  return parse(text);
+  return parsed(text, unreadable('file_unreadable'));
 }
 
 /** Claude Code's key for a server's stored sign-in (its `zl(name, config)`). */
@@ -141,28 +136,31 @@ export function claudeCodeCredentialKey(
   return `${name}|${digest.slice(0, 16)}`;
 }
 
+/** Claude Code tests a token field for being a non-empty string. */
+const token = (value: unknown) => typeof value === 'string' && value.length > 0;
+
 /** One stored entry, judged as Claude Code judges it when it connects. */
-export function storedSignInState(entry: unknown, now: number): StoredSignIn {
-  if (!object(entry) || (!present(entry.accessToken) && !present(entry.refreshToken)))
+export function claudeCodeEntryState(entry: unknown, now: number): StoredAuthorization {
+  if (!object(entry) || (!token(entry.accessToken) && !token(entry.refreshToken)))
     return { state: 'missing', expiresAt: null };
   const expires =
     typeof entry.expiresAt === 'number' && Number.isFinite(entry.expiresAt)
       ? entry.expiresAt
       : undefined;
   const expiresAt = expires === undefined ? null : new Date(expires).toISOString();
-  if (present(entry.accessToken) && (expires === undefined || expires > now))
-    return { state: 'signed_in', expiresAt };
+  if (token(entry.accessToken) && (expires === undefined || expires > now))
+    return { state: 'authorized', expiresAt };
   // An expired access token with nothing to renew it is one Claude Code asks to replace.
-  return { state: present(entry.refreshToken) ? 'refreshable' : 'missing', expiresAt };
+  return { state: token(entry.refreshToken) ? 'renewable' : 'missing', expiresAt };
 }
 
 /**
- * Claude Code's stored Mnemonik sign-in on this computer, or undefined when
- * Claude Code has no Mnemonik HTTP declaration that signs in with OAuth here.
+ * Claude Code's stored Mnemonik authorization on this computer, or undefined
+ * when Claude Code has no Mnemonik HTTP declaration that authorizes with OAuth here.
  */
-export async function claudeCodeStoredSignIn(
+export async function claudeCodeStoredAuthorization(
   options: ClaudeCodeStoreOptions
-): Promise<StoredSignIn | undefined> {
+): Promise<StoredAuthorization | undefined> {
   const env = options.env ?? process.env;
   const raw = await readFile(join(options.home, '.claude.json'), 'utf8').catch(() => undefined);
   const config = raw === undefined ? undefined : parse(raw);
@@ -175,16 +173,16 @@ export async function claudeCodeStoredSignIn(
     !['http', 'streamable-http', 'sse'].includes(declaration.type)
   )
     return undefined;
-  // A declaration that carries its own credentials does not use Claude Code's sign-in.
+  // A declaration that carries its own credentials does not use Claude Code's OAuth store.
   if (
     declaration.headersHelper !== undefined ||
     (object(declaration.headers) &&
       Object.keys(declaration.headers).some((name) => name.toLowerCase() === 'authorization'))
   )
     return undefined;
-  const unreadable: StoredSignIn = { state: 'unreadable', expiresAt: null };
   // Claude Code would keep its credentials somewhere other than the defaults.
-  if (env.CLAUDE_CONFIG_DIR || env.CLAUDE_SECURESTORAGE_CONFIG_DIR !== undefined) return unreadable;
+  if (env.CLAUDE_CONFIG_DIR || env.CLAUDE_SECURESTORAGE_CONFIG_DIR !== undefined)
+    return unreadable('custom_folder');
   const document = await credentialDocument(
     {
       home: options.home,
@@ -194,12 +192,12 @@ export async function claudeCodeStoredSignIn(
     },
     config
   );
-  if (document === undefined) return unreadable;
-  const entries = object(document?.mcpOAuth) ? document.mcpOAuth : {};
+  if ('unreadable' in document) return document.unreadable;
+  const entries = object(document.document?.mcpOAuth) ? document.document.mcpOAuth : {};
   const key = claudeCodeCredentialKey('mnemonik', {
     type: declaration.type,
     url: declaration.url,
     headers: declaration.headers,
   });
-  return storedSignInState(entries[key], (options.now ?? Date.now)());
+  return claudeCodeEntryState(entries[key], (options.now ?? Date.now)());
 }

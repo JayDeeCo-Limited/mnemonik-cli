@@ -136,14 +136,18 @@ it('hides launcher paths, credential diagnostics and readiness reason codes', ()
     { line: (line = '') => lines.push(line) }
   );
 
-  expect(lines).toContain('A coding tool is signed out of Mnemonik on this machine.');
-  expect(lines).toContain('Sign in to Mnemonik from that coding tool to restore context.');
+  expect(lines).toContain(
+    "A coding tool's MCP connection is no longer authorized on this computer."
+  );
+  expect(lines).toContain(
+    "Authorize Mnemonik again in that coding tool's MCP settings to restore context."
+  );
   // A code with no words says a failure plainly; the old catch-all sentence is gone.
   expect(lines).not.toContain('This machine needs attention before Mnemonik can work fully.');
   expect(lines).toEqual([
     'Installation: Needs attention.',
-    'A coding tool is signed out of Mnemonik on this machine.',
-    'Sign in to Mnemonik from that coding tool to restore context.',
+    "A coding tool's MCP connection is no longer authorized on this computer.",
+    "Authorize Mnemonik again in that coding tool's MCP settings to restore context.",
     'Mnemonik stopped before it finished.',
     'Run mnemonik repair.',
   ]);
@@ -464,6 +468,8 @@ afterEach(async () => {
  * A machine as status finds it: a real home, a real project folder and real
  * files, so the editor judgement is made from evidence rather than fixtures.
  */
+const HOOK_FAMILY = '6f1a2c3d-4e5f-4a6b-8c9d-0e1f2a3b4c5d';
+
 async function localMachine() {
   const { enableHostDiscovery } = await import('./setup/hostDiscovery.js');
   // Preflight must really see ~/.codex and the project's .cursor folder; the
@@ -483,9 +489,25 @@ async function localMachine() {
     await writeFile(path, typeof value === 'string' ? value : JSON.stringify(value));
   };
   const hookEntry = join(home, 'hook.js');
+  // The hooks' own authorization, as the installer stores it and names it on their command.
+  const { createCredentialAdapter } = await import('@mnemonik/credentials');
+  await createCredentialAdapter({ stateDir }).putFamily('hook', {
+    id: HOOK_FAMILY,
+    access_token: 'mnc_never-shown',
+    refresh_token: 'mncr_never-shown',
+    token_type: 'Bearer',
+    expires_in: 86400,
+    refresh_expires_in: 7_776_000,
+    scope: 'hooks:use',
+    display_prefix: 'mnc_never-sh',
+  });
   const hooksFile = (host: string, target = hookEntry) => ({
     hooks: {
-      start: [{ command: `node ${JSON.stringify(target)} --mnemonik-owner=${host}-hooks` }],
+      start: [
+        {
+          command: `node ${JSON.stringify(target)} --credential-family ${HOOK_FAMILY} --mnemonik-owner=${host}-hooks`,
+        },
+      ],
     },
   });
   const invoke = async (
@@ -586,7 +608,9 @@ it('keeps the same verdict and words when the network cannot be reached', async 
 
 // 2026-09-28: after 45 hours away, status could not say whether Claude Code was
 // signed in. It asks the server, by the console's rule, and says it per tool.
-describe('status says each coding tool sign-in on this machine', () => {
+// 2026-10-13: each line names which authorization it is about (the tool's MCP
+// connection, its hooks, the scanner, the CLI), and none is ever dropped.
+describe('status says each authorization on this machine, by name', () => {
   const HERE = 'c8553445-83f4-47f6-a84d-4eb7804eb6e6';
   const hoursAgo = (hours: number) => new Date(Date.now() - hours * 3_600_000).toISOString();
   const claudeSignIn = (
@@ -627,14 +651,17 @@ describe('status says each coding tool sign-in on this machine', () => {
     return { deps, uploads, asked };
   };
 
-  it('a valid sign-in last renewed 45 hours ago: working, signed in, and when', async () => {
+  it('a valid grant last renewed 45 hours ago: working, and every part named', async () => {
     vi.stubGlobal('fetch', async () => Response.json({}));
     const machine = await claudeCodeOnly();
     const { deps, asked } = server([claudeSignIn('connected', hoursAgo(45))]);
     const human = await machine.invoke('status', deps);
     expect(human.code).toBe(0);
     expect(human.text).toContain('Mnemonik is installed and working.');
-    expect(human.text).toBe('Mnemonik is installed and working.\nClaude Code: signed in.\n');
+    expect(human.text).toBe(
+      'Mnemonik is installed and working.\nClaude Code MCP: authorized.\n' +
+        'Claude Code hooks: authorized.\nScanner: not set up on this computer.\nCLI: signed in.\n'
+    );
     expect(asked).toContain('/api/v1/auth/grants?installation=current');
     const json = await machine.invoke(
       'status',
@@ -642,20 +669,39 @@ describe('status says each coding tool sign-in on this machine', () => {
       ['--json']
     );
     expect(json.code).toBe(0);
-    expect(JSON.parse(json.text).codingTools).toEqual([
+    const parsed = JSON.parse(json.text);
+    expect(parsed.codingTools).toEqual([
       {
         host: 'claude-code',
         name: 'Claude Code',
-        hooks: 'installed',
-        signIn: 'signed_in',
-        lastUsedAt: expect.any(String),
+        mcp: 'authorized',
+        hooks: 'authorized',
         actions: [],
         personSteps: [],
       },
     ]);
+    // The same lines, with the evidence behind each; the account is never in JSON.
+    expect(parsed.authorizations).toEqual([
+      {
+        component: 'mcp',
+        host: 'claude-code',
+        state: 'authorized',
+        server: 'authorized',
+        lastUsedAt: expect.any(String),
+        line: 'Claude Code MCP: authorized.',
+      },
+      {
+        component: 'hooks',
+        host: 'claude-code',
+        state: 'authorized',
+        line: 'Claude Code hooks: authorized.',
+      },
+      { component: 'scanner', state: 'not_set_up', line: 'Scanner: not set up on this computer.' },
+      { component: 'cli', state: 'signed_in', line: 'CLI: signed in.' },
+    ]);
   }, 20_000);
 
-  it('signed out: never says working, names the tool and the command', async () => {
+  it('MCP authorization revoked or expired: never says working, names the part and the step', async () => {
     vi.stubGlobal('fetch', async () => Response.json({}));
     const machine = await claudeCodeOnly();
     const { deps, uploads } = server([
@@ -667,12 +713,14 @@ describe('status says each coding tool sign-in on this machine', () => {
     // Claude Code signs in only inside Claude Code: the person gets that step,
     // never a terminal command.
     expect(human.text).toBe(
-      'Installation: Needs attention.\nClaude Code is signed out of Mnemonik.\nIn Claude Code, type /mcp, choose mnemonik, then Authenticate.\n'
+      'Installation: Needs attention.\nClaude Code MCP is not authorized on this computer.\nIn Claude Code, type /mcp, choose mnemonik, then Authenticate.\n' +
+        'Claude Code MCP: not authorized. Its authorization on this computer was revoked or has expired.\n' +
+        'Claude Code hooks: authorized.\nScanner: not set up on this computer.\nCLI: signed in.\n'
     );
-    // The console reads sign-ins live; the machine report carries only local evidence.
+    // The console reads authorizations live; the machine report carries only local evidence.
     expect(uploads).toHaveLength(1);
     expect(uploads[0]!.readiness.installation.reasons).not.toContain(
-      'Claude Code is signed out of Mnemonik.'
+      'Claude Code MCP is not authorized on this computer.'
     );
     const json = JSON.parse(
       (await machine.invoke('status', server([claudeSignIn('expired', null)]).deps, ['--json']))
@@ -682,28 +730,35 @@ describe('status says each coding tool sign-in on this machine', () => {
     expect(json.codingTools).toEqual([
       expect.objectContaining({
         host: 'claude-code',
-        signIn: 'signed_out',
-        lastUsedAt: null,
+        mcp: 'not_authorized',
         actions: [],
         personSteps: ['In Claude Code, type /mcp, choose mnemonik, then Authenticate.'],
       }),
     ]);
+    expect(json.authorizations[0]).toMatchObject({
+      component: 'mcp',
+      state: 'not_authorized',
+      reason: 'revoked_or_expired',
+      server: 'revoked_or_expired',
+      lastUsedAt: null,
+    });
   }, 20_000);
 
-  it('never signed in here: still working, and says how to sign in', async () => {
+  it('never authorized here: still working, and says how to authorize', async () => {
     vi.stubGlobal('fetch', async () => Response.json({}));
     const machine = await claudeCodeOnly();
     const human = await machine.invoke('status', server([]).deps);
     expect(human.code).toBe(0);
     expect(human.text).toContain('Mnemonik is installed and working.');
     expect(human.text).toBe(
-      'Mnemonik is installed and working.\nClaude Code: not signed in. In Claude Code, type /mcp, choose mnemonik, then Authenticate.\n'
+      'Mnemonik is installed and working.\nClaude Code MCP: not authorized. In Claude Code, type /mcp, choose mnemonik, then Authenticate.\n' +
+        'Claude Code hooks: authorized.\nScanner: not set up on this computer.\nCLI: signed in.\n'
     );
   }, 20_000);
 
-  // 2026-10-12: an outage emptied Claude Code's stored sign-in;
-  // the server's grant stayed valid and status said signed in. Claude Code's own
-  // store now decides whether it is signed in on this machine.
+  // 2026-10-12: an outage emptied Claude Code's stored authorization; the
+  // server's grant stayed valid and status said signed in. Claude Code's own
+  // store now decides whether it holds the authorization on this machine.
   describe('held to what Claude Code itself stores', () => {
     const KEY = 'mnemonik|7aea917cc798c31f';
     async function storedMachine(entry: Record<string, unknown> | null) {
@@ -727,7 +782,7 @@ describe('status says each coding tool sign-in on this machine', () => {
     }
     const linux = { claudeCodeStore: { platform: 'linux' as const, env: {} } };
 
-    it('signed in: Claude Code holds an access token that has not expired', async () => {
+    it('authorized: Claude Code holds an access token that has not expired', async () => {
       vi.stubGlobal('fetch', async () => Response.json({}));
       const machine = await storedMachine({
         accessToken: 'a-never-shown',
@@ -738,11 +793,13 @@ describe('status says each coding tool sign-in on this machine', () => {
       const human = await machine.invoke('status', { ...deps, ...linux });
       expect(human).toEqual({
         code: 0,
-        text: 'Mnemonik is installed and working.\nClaude Code: signed in.\n',
+        text:
+          'Mnemonik is installed and working.\nClaude Code MCP: authorized.\n' +
+          'Claude Code hooks: authorized.\nScanner: not set up on this computer.\nCLI: signed in.\n',
       });
     }, 20_000);
 
-    it('expired but refreshable: signed in, and says Claude Code renews it', async () => {
+    it('access expired but renewable: authorized, as Claude Code renews it itself', async () => {
       vi.stubGlobal('fetch', async () => Response.json({}));
       const machine = await storedMachine({
         accessToken: 'a-never-shown',
@@ -753,24 +810,24 @@ describe('status says each coding tool sign-in on this machine', () => {
       const human = await machine.invoke('status', { ...server(signedIn).deps, ...linux });
       expect(human).toEqual({
         code: 0,
-        text: 'Mnemonik is installed and working.\nClaude Code: signed in. The sign-in renews automatically the next time Claude Code connects.\n',
+        text:
+          'Mnemonik is installed and working.\nClaude Code MCP: authorized.\n' +
+          'Claude Code hooks: authorized.\nScanner: not set up on this computer.\nCLI: signed in.\n',
       });
       const json = await machine.invoke('status', { ...server(signedIn).deps, ...linux }, [
         '--json',
       ]);
       expect(JSON.parse(json.text).codingTools).toEqual([
-        expect.objectContaining({
-          host: 'claude-code',
-          signIn: 'signed_in',
-          stored: { state: 'refreshable', expiresAt: expect.any(String) },
-          actions: [],
-          personSteps: [],
-        }),
+        expect.objectContaining({ host: 'claude-code', mcp: 'authorized', actions: [] }),
       ]);
+      expect(JSON.parse(json.text).authorizations[0]).toMatchObject({
+        state: 'authorized',
+        stored: { state: 'renewable', expiresAt: expect.any(String) },
+      });
       expect(json.text).not.toContain('never-shown');
     }, 20_000);
 
-    it('nothing stored while the server grant is valid: signed out, never working', async () => {
+    it('nothing stored while the server grant is valid: not authorized, never working', async () => {
       vi.stubGlobal('fetch', async () => Response.json({}));
       // The entry the 2026-10-12 outage left: no access or refresh token.
       const machine = await storedMachine({ accessToken: '', clientId: 'client' });
@@ -778,7 +835,10 @@ describe('status says each coding tool sign-in on this machine', () => {
       const human = await machine.invoke('status', { ...server(signedIn).deps, ...linux });
       expect(human).toEqual({
         code: 3,
-        text: 'Installation: Needs attention.\nClaude Code is signed out of Mnemonik.\nIn Claude Code, type /mcp, choose mnemonik, then Authenticate.\n',
+        text:
+          'Installation: Needs attention.\nClaude Code MCP is not authorized on this computer.\nIn Claude Code, type /mcp, choose mnemonik, then Authenticate.\n' +
+          'Claude Code MCP: not authorized. Claude Code no longer holds the authorization Mnemonik lists for this computer.\n' +
+          'Claude Code hooks: authorized.\nScanner: not set up on this computer.\nCLI: signed in.\n',
       });
       const json = JSON.parse(
         (await machine.invoke('status', { ...server(signedIn).deps, ...linux }, ['--json'])).text
@@ -786,14 +846,18 @@ describe('status says each coding tool sign-in on this machine', () => {
       expect(json.installation.state).toBe('ACTION_REQUIRED');
       expect(json.codingTools).toEqual([
         expect.objectContaining({
-          signIn: 'signed_out',
-          stored: { state: 'missing', expiresAt: null },
+          mcp: 'not_authorized',
           personSteps: ['In Claude Code, type /mcp, choose mnemonik, then Authenticate.'],
         }),
       ]);
+      expect(json.authorizations[0]).toMatchObject({
+        reason: 'not_held',
+        server: 'authorized',
+        stored: { state: 'missing', expiresAt: null },
+      });
     }, 20_000);
 
-    it('nothing stored and Mnemonik unreachable: still says not signed in, from this machine', async () => {
+    it('nothing stored and Mnemonik unreachable: still not authorized, from this machine alone', async () => {
       vi.stubGlobal('fetch', async () => Response.json({}));
       const machine = await storedMachine(null);
       const human = await machine.invoke('status', {
@@ -808,22 +872,30 @@ describe('status says each coding tool sign-in on this machine', () => {
         ...linux,
       });
       expect(human.text).toContain(
-        'Claude Code: not signed in. In Claude Code, type /mcp, choose mnemonik, then Authenticate.\n'
+        'Claude Code MCP: not authorized. In Claude Code, type /mcp, choose mnemonik, then Authenticate.\n'
+      );
+      expect(human.text).toContain(
+        'CLI: signed in on this computer, but Mnemonik could not be reached to confirm it.\n'
       );
     }, 20_000);
 
-    it('a store that cannot be read claims nothing, even with a valid grant', async () => {
+    it('a store that cannot be read is never dropped: what was checked, what was not, and why', async () => {
       vi.stubGlobal('fetch', async () => Response.json({}));
       const machine = await storedMachine({ accessToken: 'a-never-shown' });
       const human = await machine.invoke('status', {
         ...server([claudeSignIn('connected', hoursAgo(1))]).deps,
         claudeCodeStore: { platform: 'linux', env: { CLAUDE_CONFIG_DIR: '/elsewhere' } },
       });
-      expect(human).toEqual({ code: 0, text: 'Mnemonik is installed and working.\n' });
+      expect(human).toEqual({
+        code: 0,
+        text:
+          "Mnemonik is installed and working.\nClaude Code MCP: Mnemonik lists it as authorized. Claude Code's copy on this computer could not be checked because CLAUDE_CONFIG_DIR keeps Claude Code's files in a folder Mnemonik does not read.\n" +
+          'Claude Code hooks: authorized.\nScanner: not set up on this computer.\nCLI: signed in.\n',
+      });
     }, 20_000);
   });
 
-  it('Codex signed out: the short connect command, which the agent can run for the person', async () => {
+  it('Codex MCP authorization ended: the short connect command, which the agent can run for the person', async () => {
     vi.stubGlobal('fetch', async () => Response.json({}));
     const { join } = await import('node:path');
     const { ensureLauncher } = await import('../src/launcher.js');
@@ -846,7 +918,9 @@ describe('status says each coding tool sign-in on this machine', () => {
     });
     expect(human.code).toBe(3);
     expect(human.text).toBe(
-      'Installation: Needs attention.\nCodex is signed out of Mnemonik.\nRun mnemonik connect codex.\n'
+      'Installation: Needs attention.\nCodex MCP is not authorized on this computer.\nRun mnemonik connect codex.\n' +
+        'Codex MCP: not authorized. Its authorization on this computer was revoked or has expired.\n' +
+        'Codex hooks: authorized.\nScanner: not set up on this computer.\nCLI: signed in.\n'
     );
     const json = JSON.parse(
       (
@@ -860,7 +934,7 @@ describe('status says each coding tool sign-in on this machine', () => {
     expect(json.codingTools).toEqual([
       expect.objectContaining({
         host: 'codex',
-        signIn: 'signed_out',
+        mcp: 'not_authorized',
         actions: ['mnemonik connect codex'],
         personSteps: [],
       }),

@@ -73,6 +73,22 @@ export async function readInstallation(stateDir, account) {
         await saveInstallation(stateDir, installation, account ? { account } : undefined);
     return installation;
 }
+/** The email of the account this computer last signed in as, as recorded at sign-in. */
+export async function installationEmail(stateDir) {
+    const bytes = await readBytes(join(stateDir, 'installation.json')).catch(() => undefined);
+    if (!bytes)
+        return null;
+    try {
+        const record = JSON.parse(bytes.toString());
+        const email = record.account && record.accounts && Object.hasOwn(record.accounts, record.account)
+            ? record.accounts[record.account]?.email
+            : undefined;
+        return typeof email === 'string' ? email : null;
+    }
+    catch {
+        return null;
+    }
+}
 /** Ordered hints only; the server selects ownership using the browser account. */
 export async function readInstallations(stateDir) {
     const current = await readInstallation(stateDir);

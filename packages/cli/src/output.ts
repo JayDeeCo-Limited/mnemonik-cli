@@ -148,10 +148,14 @@ export class Output {
     this.stdout.write(`Signed in as ${email}\nRun mnemonik logout to switch account.\n`);
   }
 
-  /** The account line of plain `auth status`: the same deliberate display, or nothing. */
-  signedInAs(email: string | undefined): void {
+  /**
+   * The CLI line of `status` and `auth status`: the same deliberate display of
+   * the account, or the line without it.
+   */
+  cliSignedIn(email: string | null | undefined): void {
     if (email && /^[^\s@]+@[^\s@]+\.[^\s@]+$/u.test(email))
-      this.stdout.write(`Signed in as ${email}.\n`);
+      this.stdout.write(`CLI: signed in as ${email}.\n`);
+    else this.line('CLI: signed in.');
   }
 
   error(value: unknown, human = true): number {

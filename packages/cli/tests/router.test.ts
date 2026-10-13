@@ -421,6 +421,7 @@ describe('command router', () => {
       return Response.json({ status: 'recorded' });
     });
     expect(await runCli(['status', '--json'], signedIn.deps)).not.toBe(2);
+    // With no coding tool installed, the readiness upload is the only request.
     expect(signedIn.deps.grantFetch).toHaveBeenCalledOnce();
 
     const signedOut = fixture();
@@ -433,7 +434,7 @@ describe('command router', () => {
     expect(signedOut.deps.grantFetch).not.toHaveBeenCalled();
   });
 
-  it('status says when the console has not heard from this machine because its sign-in no longer works (L-166)', async () => {
+  it('status says when the console has not heard from this computer because the CLI sign-in could not be used (L-166)', async () => {
     const prepare = () => {
       const f = fixture();
       f.deps.statusGeneratedAt = '2026-09-24T00:00:00.000Z';
@@ -443,9 +444,10 @@ describe('command router', () => {
       f.deps.grantFetch = vi.fn(async () => Response.json({ status: 'recorded' }));
       return f;
     };
+    // The CLI line above it gives the step; this says what the person missed.
     const notTold =
-      'The console has not heard from this machine because its sign-in no longer works.\n' +
-      'Run mnemonik auth renew, then try again.\n';
+      'CLI: signed out. Mnemonik no longer accepts its sign-in. Run mnemonik auth renew.\n' +
+      'The console has not heard from this computer because the CLI sign-in could not be used.\n';
 
     const refused = prepare();
     refused.deps.cliAuth!.getCliBearer = async () => ({
@@ -837,9 +839,7 @@ it('connect signs codex in on a machine the browser cannot reach', async () => {
     };
     expect(await runCli(['connect', 'codex'], deps)).toBe(0);
     expect(stdout.text).toBe(
-      'Open this link to sign in:\n' +
-        `${editor.authorizeUrl}\n` +
-        'Codex is signed in to Mnemonik.\n'
+      'Open this link to sign in:\n' + `${editor.authorizeUrl}\n` + 'Codex MCP: authorized.\n'
     );
     expect(editor.received).toEqual([`/callback?code=editor-code&state=${state}`]);
   } finally {
@@ -874,9 +874,9 @@ it('connect --json signs codex in too: the link first, as its own line, then the
         status: 'SIGN_IN_LINK',
         url: editor.authorizeUrl,
         reason:
-          'Give this link to the person to approve the Codex sign-in. This command finishes when they do.',
+          'Give this link to the person to authorize Codex MCP. This command finishes when they do.',
       },
-      { status: 'READY', reason: 'Codex is signed in to Mnemonik.' },
+      { status: 'READY', reason: 'Codex MCP: authorized.' },
     ]);
   } finally {
     await editor.close();
@@ -899,7 +899,7 @@ it('connect reports an unapproved sign-in and how to try again', async () => {
     expect(stdout.text).toBe(
       'Open this link to sign in:\n' +
         `${editor.authorizeUrl}\n` +
-        'Sign-in timed out. Run mnemonik connect codex to try again.\n'
+        'Codex MCP was not authorized in time. Run mnemonik connect codex to try again.\n'
     );
     expect(editor.received).toEqual([]);
   } finally {
@@ -908,7 +908,7 @@ it('connect reports an unapproved sign-in and how to try again', async () => {
 });
 
 const CODEX_INSTRUCTIONS =
-  'Finish signing in to Mnemonik in the coding tool.\n' +
+  'Codex MCP: not authorized.\n' +
   'Codex CLI        run codex mcp login mnemonik\n' +
   'Codex Desktop    open Settings, Plugins, MCPs, then Authenticate\n';
 
@@ -1010,7 +1010,7 @@ it('connect reports local editor setup consistently in plain text and JSON', asy
     };
     expect(await runCli(['connect', 'codex'], deps)).toBe(3);
     expect(stdout.text).toBe(
-      'Codex connection is missing.\nRun mnemonik install to set it up again.\n'
+      'Codex MCP: not set up on this computer.\nRun mnemonik install to set it up again.\n'
     );
     await expect(readFile(config)).rejects.toMatchObject({ code: 'ENOENT' });
 
@@ -1019,7 +1019,7 @@ it('connect reports local editor setup consistently in plain text and JSON', asy
     stdout.text = '';
     expect(await runCli(['connect', 'codex'], deps)).toBe(3);
     expect(stdout.text).toBe(
-      'Finish signing in to Mnemonik in the coding tool.\n' +
+      'Codex MCP: not authorized.\n' +
         'Codex CLI        run codex mcp login mnemonik\n' +
         'Codex Desktop    open Settings, Plugins, MCPs, then Authenticate\n'
     );
@@ -1028,11 +1028,17 @@ it('connect reports local editor setup consistently in plain text and JSON', asy
     expect(await runCli(['connect', 'codex', '--json'], deps)).toBe(3);
     expect(JSON.parse(stdout.text)).toEqual({
       status: 'ACTION_REQUIRED',
-      reason: 'Finish signing in to Mnemonik in the coding tool.',
+      reason: 'Codex MCP: not authorized.',
       actions: [
         'Codex CLI        run codex mcp login mnemonik',
         'Codex Desktop    open Settings, Plugins, MCPs, then Authenticate',
       ],
+      mcp: {
+        state: 'not_authorized',
+        reason: 'never_authorized',
+        server: 'never_authorized',
+        lastUsedAt: null,
+      },
     });
   } finally {
     await rm(home, { recursive: true, force: true });
@@ -1083,40 +1089,47 @@ describe('connect with the editor signed in on another machine', () => {
   }
   const connectCursor = (grants: unknown[], args: string[] = []) => connect('cursor', grants, args);
 
-  it('says Cursor is already signed in from another machine, and exits 0', async () => {
+  it('says Cursor MCP is authorized on another of your computers, and exits 0', async () => {
     const grants = [
       cursorGrant(HERE, hoursAgo(50), 'Cursor', 'expired'),
       cursorGrant(MAC, hoursAgo(3)),
     ];
     expect(await connectCursor(grants)).toEqual({
       code: 0,
-      stdout: 'Cursor is already signed in to Mnemonik from another of your machines.\n',
+      stdout: 'Cursor MCP: authorized in Cursor on another of your computers.\n',
     });
     const json = await connectCursor(grants, ['--json']);
     expect(json.code).toBe(0);
     expect(JSON.parse(json.stdout)).toEqual({
       status: 'READY',
-      reason: 'Cursor is already signed in to Mnemonik from another of your machines.',
+      reason: 'Cursor MCP: authorized in Cursor on another of your computers.',
+      mcp: {
+        state: 'authorized_elsewhere',
+        server: 'authorized_elsewhere',
+        // Cursor's settings are on the computer it runs on.
+        stored: { state: 'unreadable', expiresAt: null, reason: 'not_on_this_computer' },
+        lastUsedAt: expect.any(String),
+      },
     });
   });
 
-  it('a valid sign-in there, idle for two days, is still signed in: nothing to do', async () => {
+  it('a valid authorization there, idle for two days, is still authorized: nothing to do', async () => {
     expect(await connectCursor([cursorGrant(MAC, hoursAgo(48))])).toEqual({
       code: 0,
-      stdout: 'Cursor is already signed in to Mnemonik from another of your machines.\n',
+      stdout: 'Cursor MCP: authorized in Cursor on another of your computers.\n',
     });
   });
 
-  it('still asks for Authenticate when the sign-in there no longer works', async () => {
+  it('still asks for Authenticate when the authorization there no longer works', async () => {
     expect(await connectCursor([cursorGrant(MAC, hoursAgo(3), 'Cursor', 'expired')])).toEqual({
       code: 3,
       stdout:
-        'Finish signing in to Mnemonik in the coding tool.\n' +
+        'Cursor MCP: not authorized.\n' +
         'Cursor Desktop   open Cursor Settings, Customize, MCPs, then Authenticate\n',
     });
   });
 
-  it('Claude Code signs in where its hooks run: connect still asks it to sign in', async () => {
+  it('Claude Code is authorized where its hooks run: connect still asks for it here', async () => {
     const grants = [
       cursorGrant(HERE, hoursAgo(50), 'Claude Code', 'disconnected'),
       cursorGrant(MAC, hoursAgo(3), 'Claude Code'),
@@ -1124,7 +1137,7 @@ describe('connect with the editor signed in on another machine', () => {
     const result = await connect('claude-code', grants);
     expect(result.code).toBe(3);
     expect(result.stdout).toBe(
-      'Finish signing in to Mnemonik in the coding tool.\n' +
+      'Claude Code MCP: not authorized. Its authorization on this computer was revoked or has expired.\n' +
         'Claude Code      type /mcp, choose mnemonik, then Authenticate\n'
     );
   });
@@ -1180,14 +1193,10 @@ describe('connect with the coding tool already signed in on this machine', () =>
     return { code, stdout: stdout.text, asked };
   }
 
-  it('Claude Code signed in, last renewed 45 hours ago: says so and exits 0', async () => {
+  it('Claude Code authorized, last renewed 45 hours ago: says so and exits 0', async () => {
     const lastUsed = new Date(Date.now() - 45 * 3_600_000).toISOString();
     const result = await connect('claude-code', [signIn('Claude Code', 'connected', lastUsed)]);
-    expect(result).toMatchObject({
-      code: 0,
-      stdout:
-        'Claude Code is already signed in to Mnemonik on this computer, last used 1 day ago.\n',
-    });
+    expect(result).toMatchObject({ code: 0, stdout: 'Claude Code MCP: authorized.\n' });
     expect(result.asked).toContain('/api/v1/auth/grants?installation=current');
     const json = await connect(
       'claude-code',
@@ -1197,22 +1206,18 @@ describe('connect with the coding tool already signed in on this machine', () =>
     expect(json.code).toBe(0);
     expect(JSON.parse(json.stdout)).toEqual({
       status: 'READY',
-      signIn: 'signed_in',
-      lastUsedAt: lastUsed,
-      reason: 'Claude Code is already signed in to Mnemonik on this computer, last used 1 day ago.',
+      reason: 'Claude Code MCP: authorized.',
+      mcp: { state: 'authorized', server: 'authorized', lastUsedAt: lastUsed },
     });
   });
 
-  it('Codex signed in here: no second sign-in', async () => {
+  it('Codex authorized here: no second authorization', async () => {
     const result = await connect('codex', [signIn('Codex', 'connected', null)]);
-    expect(result).toMatchObject({
-      code: 0,
-      stdout: 'Codex is already signed in to Mnemonik on this computer.\n',
-    });
+    expect(result).toMatchObject({ code: 0, stdout: 'Codex MCP: authorized.\n' });
   });
 
-  // 2026-10-12: an outage emptied Claude Code's stored sign-in
-  // while the server's grant stayed valid, and connect said it was signed in.
+  // 2026-10-12: an outage emptied Claude Code's stored authorization while the
+  // server's grant stayed valid, and connect said it was signed in.
   describe('held to what Claude Code itself stores', () => {
     const declaration = {
       type: 'http',
@@ -1250,51 +1255,78 @@ describe('connect with the coding tool already signed in on this machine', () =>
       return { code, stdout: stdout.text };
     }
 
-    it('signed in: a stored access token that has not expired', async () => {
+    it('authorized: a stored access token that has not expired', async () => {
       expect(
         await connectStored({ accessToken: 'a', refreshToken: 'r', expiresAt: Date.now() + 3e6 })
-      ).toEqual({
-        code: 0,
-        stdout:
-          'Claude Code is already signed in to Mnemonik on this computer, last used 1 day ago.\n',
-      });
+      ).toEqual({ code: 0, stdout: 'Claude Code MCP: authorized.\n' });
     });
 
-    it('expired but refreshable: signed in, and it says Claude Code renews it', async () => {
+    it('access expired but renewable: authorized, as Claude Code renews it itself', async () => {
       const entry = { accessToken: 'a', refreshToken: 'r', expiresAt: Date.now() - 3e6 };
       expect(await connectStored(entry)).toEqual({
         code: 0,
-        stdout:
-          'Claude Code is already signed in to Mnemonik on this computer, last used 1 day ago. The sign-in renews automatically the next time Claude Code connects.\n',
+        stdout: 'Claude Code MCP: authorized.\n',
       });
       const json = await connectStored(entry, ['--json']);
       expect(JSON.parse(json.stdout)).toMatchObject({
         status: 'READY',
-        signIn: 'signed_in',
-        stored: { state: 'refreshable', expiresAt: expect.any(String) },
+        mcp: { state: 'authorized', stored: { state: 'renewable', expiresAt: expect.any(String) } },
       });
     });
 
-    it('nothing stored: not signed in, whatever the server holds; the step is /mcp', async () => {
+    it('nothing stored: not authorized, whatever the server holds; the step is /mcp', async () => {
       const result = await connectStored({ accessToken: '', clientId: 'client' });
       expect(result).toEqual({
         code: 3,
         stdout:
-          'Claude Code is not signed in to Mnemonik on this computer.\n' +
+          'Claude Code MCP: not authorized. Claude Code no longer holds the authorization Mnemonik lists for this computer.\n' +
           'Claude Code      type /mcp, choose mnemonik, then Authenticate\n',
       });
       const json = await connectStored({ accessToken: '' }, ['--json']);
       expect(JSON.parse(json.stdout)).toEqual({
         status: 'ACTION_REQUIRED',
-        reason: 'Claude Code is not signed in to Mnemonik on this computer.',
+        reason:
+          'Claude Code MCP: not authorized. Claude Code no longer holds the authorization Mnemonik lists for this computer.',
         actions: ['Claude Code      type /mcp, choose mnemonik, then Authenticate'],
-        stored: { state: 'missing', expiresAt: null },
+        mcp: {
+          state: 'not_authorized',
+          reason: 'not_held',
+          server: 'authorized',
+          stored: { state: 'missing', expiresAt: null },
+          lastUsedAt: null,
+        },
       });
       expect(json.stdout).not.toMatch(/accessToken|refreshToken/u);
     });
+
+    it('a Keychain locked over SSH: Mnemonik lists it, the copy here could not be checked, and why', async () => {
+      const { deps, stdout } = fixture();
+      await (
+        await import('node:fs/promises')
+      ).writeFile(
+        join(deps.home!, '.claude.json'),
+        JSON.stringify({ mcpServers: { mnemonik: declaration } })
+      );
+      deps.claudeCodeStore = {
+        platform: 'darwin',
+        env: { USER: 'owner' },
+        keychain: async () => ({ code: 36, stdout: '' }),
+      };
+      deps.grantFetch = vi.fn(async () =>
+        Response.json({
+          deviceInstallationId: HERE,
+          account: 'owner',
+          grants: [signIn('Claude Code', 'connected', null)],
+        })
+      ) as typeof fetch;
+      expect(await runCli(['connect', 'claude-code'], deps)).toBe(0);
+      expect(stdout.text).toBe(
+        "Claude Code MCP: Mnemonik lists it as authorized. Claude Code's copy on this computer could not be checked because the macOS Keychain is locked in this session, as it is over SSH. Run mnemonik status in Terminal on the Mac to check it.\n"
+      );
+    });
   });
 
-  it('only a revoked or expired sign-in here: Claude Code is asked to sign in inside Claude Code', async () => {
+  it('only a revoked or expired authorization here: Claude Code is asked to authorize inside Claude Code', async () => {
     const result = await connect('claude-code', [
       signIn('Claude Code', 'disconnected', null),
       signIn('Claude Code', 'expired', null),
@@ -1302,7 +1334,7 @@ describe('connect with the coding tool already signed in on this machine', () =>
     expect(result).toMatchObject({
       code: 3,
       stdout:
-        'Finish signing in to Mnemonik in the coding tool.\n' +
+        'Claude Code MCP: not authorized. Its authorization on this computer was revoked or has expired.\n' +
         'Claude Code      type /mcp, choose mnemonik, then Authenticate\n',
     });
   });
@@ -1702,7 +1734,7 @@ describe('a running scanner that reports its own failure', () => {
     await withReceipt(status, refusedSignIn, paused);
     await runCli(['status'], status.deps);
     expect(status.stdout.text).toContain(
-      'Background indexing has lost its sign-in on this computer.\nRun mnemonik repair.\n'
+      'The scanner is no longer authorized on this computer.\nRun mnemonik repair.\n'
     );
     expect(status.stdout.text).not.toContain('failing');
     expect(status.stdout.text).not.toContain('A coding tool is signed out');
@@ -1710,7 +1742,7 @@ describe('a running scanner that reports its own failure', () => {
     await withReceipt(doctor, refusedSignIn, paused);
     await runCli(['doctor'], doctor.deps);
     expect(doctor.stdout.text).toContain(
-      "The server refused this computer's indexing sign-in. Run mnemonik repair.\n" +
+      'Mnemonik no longer accepts the scanner authorization on this computer. Run mnemonik repair.\n' +
         '  The server refused the scanner credential (credential_revoked).\n'
     );
   });

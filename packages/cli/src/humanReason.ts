@@ -135,10 +135,10 @@ const readinessMessages: Array<[RegExp, ReadinessMessage]> = [
     },
   ],
   [
-    // The server refused the scanner's own sign-in (revoked or replaced).
+    // The server refused the scanner's own authorization (revoked or replaced).
     /scanner_signed_out/u,
     {
-      sentence: 'Background indexing has lost its sign-in on this computer.',
+      sentence: 'The scanner is no longer authorized on this computer.',
       nextStep: 'Run mnemonik repair.',
     },
   ],
@@ -174,14 +174,14 @@ const readinessMessages: Array<[RegExp, ReadinessMessage]> = [
   [
     /host_grant_unbound|credential_revoked/iu,
     {
-      sentence: 'A coding tool is signed out of Mnemonik on this machine.',
-      nextStep: 'Sign in to Mnemonik from that coding tool to restore context.',
+      sentence: "A coding tool's MCP connection is no longer authorized on this computer.",
+      nextStep: "Authorize Mnemonik again in that coding tool's MCP settings to restore context.",
     },
   ],
   [
     /host_not_connected|signed in, not connected yet/iu,
     {
-      sentence: 'A coding tool is signed in but has not used Mnemonik yet.',
+      sentence: "A coding tool's MCP connection is authorized but has not been used yet.",
       nextStep: 'Open the coding tool and start a session in a connected project.',
     },
   ],
@@ -203,7 +203,7 @@ const readinessMessages: Array<[RegExp, ReadinessMessage]> = [
     /host_skipped/iu,
     {
       sentence: 'A coding tool on this machine is not connected to Mnemonik.',
-      nextStep: 'Open that coding tool and sign in to Mnemonik.',
+      nextStep: 'Open that coding tool and authorize its Mnemonik MCP connection.',
     },
   ],
   [
