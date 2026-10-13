@@ -21,6 +21,16 @@ export declare class LauncherError extends Error {
     readonly status = "ACTION_REQUIRED";
     constructor(launcher: LauncherStatus, reason?: string);
 }
+/**
+ * The Node executable the launcher pins. Homebrew keeps each version in its own
+ * folder (<prefix>/Cellar/<formula>/<version>/bin/node) behind a stable link
+ * (<prefix>/opt/<formula>/bin/node), and deletes the versioned folder on every
+ * upgrade, even a rebuild of the same version: on 2026-10-13 node@24 24.21.0
+ * became 24.21.0_2 and every launcher pinned to the old folder stopped working.
+ * So pin the stable link when it leads to the same executable, and the real
+ * path otherwise.
+ */
+export declare function stableNodePath(execPath?: string, resolveReal?: (path: string) => Promise<string>): Promise<string>;
 /** A write-ahead record keeps PATH recovery independent of host/scanner journals. */
 export declare function ensureLauncher(options?: LauncherOptions): Promise<LauncherStatus>;
 export declare function removeLauncher(options?: LauncherOptions): Promise<boolean>;

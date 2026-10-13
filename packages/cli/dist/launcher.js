@@ -130,10 +130,34 @@ export class LauncherError extends Error {
         this.launcher = launcher;
     }
 }
+/**
+ * The Node executable the launcher pins. Homebrew keeps each version in its own
+ * folder (<prefix>/Cellar/<formula>/<version>/bin/node) behind a stable link
+ * (<prefix>/opt/<formula>/bin/node), and deletes the versioned folder on every
+ * upgrade, even a rebuild of the same version: on 2026-10-13 node@24 24.21.0
+ * became 24.21.0_2 and every launcher pinned to the old folder stopped working.
+ * So pin the stable link when it leads to the same executable, and the real
+ * path otherwise.
+ */
+export async function stableNodePath(execPath = process.execPath, resolveReal = realpath) {
+    const real = await resolveReal(execPath);
+    const cellar = /^(.*)\/Cellar\/([^/]+)\/[^/]+\/bin\/node$/.exec(real);
+    if (!cellar)
+        return real;
+    const stable = `${cellar[1]}/opt/${cellar[2]}/bin/node`;
+    try {
+        if ((await resolveReal(stable)) === real)
+            return stable;
+    }
+    catch {
+        // No stable link (an unlinked keg): the real path is all there is.
+    }
+    return real;
+}
 /** A write-ahead record keeps PATH recovery independent of host/scanner journals. */
 export async function ensureLauncher(options = {}) {
     const loc = locations(options);
-    const node = await realpath(process.execPath);
+    const node = await stableNodePath();
     const desired = Buffer.from(contents(loc.entry, node, loc.platform));
     return withLock(loc.record, 1000, async (assertOwned) => {
         const status = await launcherStatus(options);

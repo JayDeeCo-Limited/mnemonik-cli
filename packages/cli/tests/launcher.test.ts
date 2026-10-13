@@ -21,6 +21,7 @@ import {
   launcherPathAction,
   launcherStatus,
   removeLauncher,
+  stableNodePath,
   type LauncherOptions,
 } from '../src/launcher.js';
 import { runCli, type CliDependencies } from '../src/router.js';
@@ -582,4 +583,63 @@ it.each([
   expect(action).toContain('export PATH="$HOME/.local/bin:$PATH"');
   expect(action).toContain('start-up file of the shell you use');
   expect(action).toContain('shell could not be detected');
+});
+
+// Homebrew deletes a versioned keg folder on every upgrade (2026-10-13: node@24
+// 24.21.0 became 24.21.0_2 and broke the Mac's launcher), so a Homebrew Node is
+// pinned through its stable opt link when that link leads to the same file.
+const links = (map: Record<string, string>) => async (path: string) => {
+  const target = map[path];
+  if (target === undefined) throw Object.assign(new Error(`ENOENT: ${path}`), { code: 'ENOENT' });
+  return target;
+};
+
+it('pins Homebrew Node through its stable opt link', async () => {
+  const real = '/opt/homebrew/Cellar/node@24/24.21.0_2/bin/node';
+  const resolve = links({
+    '/opt/homebrew/bin/node': real,
+    [real]: real,
+    '/opt/homebrew/opt/node@24/bin/node': real,
+  });
+  expect(await stableNodePath('/opt/homebrew/bin/node', resolve)).toBe(
+    '/opt/homebrew/opt/node@24/bin/node'
+  );
+  expect(await stableNodePath(real, resolve)).toBe('/opt/homebrew/opt/node@24/bin/node');
+});
+
+it('pins the opt link for the plain node formula, /usr/local and Linuxbrew too', async () => {
+  for (const [real, stable] of [
+    ['/opt/homebrew/Cellar/node/25.1.0/bin/node', '/opt/homebrew/opt/node/bin/node'],
+    ['/usr/local/Cellar/node@24/24.21.0/bin/node', '/usr/local/opt/node@24/bin/node'],
+    [
+      '/home/linuxbrew/.linuxbrew/Cellar/node@24/24.21.0/bin/node',
+      '/home/linuxbrew/.linuxbrew/opt/node@24/bin/node',
+    ],
+  ] as const) {
+    expect(await stableNodePath(real, links({ [real]: real, [stable]: real }))).toBe(stable);
+  }
+});
+
+it('keeps the real path when the opt link is missing or leads elsewhere', async () => {
+  const real = '/opt/homebrew/Cellar/node@24/24.21.0/bin/node';
+  expect(await stableNodePath(real, links({ [real]: real }))).toBe(real);
+  expect(
+    await stableNodePath(
+      real,
+      links({
+        [real]: real,
+        '/opt/homebrew/opt/node@24/bin/node': '/opt/homebrew/Cellar/node@24/24.22.0/bin/node',
+      })
+    )
+  ).toBe(real);
+});
+
+it('keeps the real path of a Node that does not come from Homebrew', async () => {
+  for (const real of [
+    '/usr/bin/node',
+    '/home/dev/.nvm/versions/node/v24.21.0/bin/node',
+    '/Users/sam/.volta/tools/image/node/24.21.0/bin/node',
+  ]) {
+    expect(await stableNodePath(real, links({ [real]: real }))).toBe(real);
+  }
 });
