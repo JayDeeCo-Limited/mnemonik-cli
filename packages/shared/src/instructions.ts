@@ -4,8 +4,15 @@
  * This is the SINGLE SOURCE OF TRUTH for MCP instructions.
  * Shared instruction content imported by the server.
  *
- * Version: 2.112
- * Updated: 2026-09-29
+ * Version: 2.113
+ * Updated: 2026-10-14
+ *
+ * v2.113 - Added the Studio boundary sentence (owner-approved wording): what the
+ *          agent learns about the person belongs in Companion, what it learns
+ *          about the project belongs here. Made room within the 2,048-character
+ *          limit by dropping the tasks paragraph's restatement of the four page
+ *          fields (the retrieval paragraph names them) and tightening the
+ *          retrieval and memory_discover sentences.
  *
  * v2.112 - memory_add names a user's preference: agents were keeping stated
  *          preferences in the host's own memory files instead of Mnemonik.
@@ -151,11 +158,13 @@
 // self-scoping when project context was already loaded through another channel.
 const INSTRUCTIONS_CONTENT = `Mnemonik provides persistent project memory: decisions, rationale, tasks, and policies across sessions. If no block begins "PROJECT_CONTEXT schemaVersion=", session_bootstrap({ cwd }) loads project context when cwd is the real absolute path of the project root; a placeholder or relative path fails. With that block, context is loaded and no session_bootstrap call is needed. Code and docs show current artifacts, git shows changes, and memory carries the why; memory_search recalls rationale or intent, then Grep or Read verifies current source.
 
-memory_discover supplies exact schemas and examples for unfamiliar or action-based methods; memory_tools runs their async JavaScript.
+What I learn about you belongs in Companion; what I learn about this project belongs here.
 
-Retrieval pages use hydrated for complete records, index for pointer rows, extent for totals, and cursor for continuation. Relevant IDs can be selected before exact originals are hydrated; a refined query or cursor reveals more without paging full bodies merely to discover what exists.
+memory_discover supplies exact schemas and examples for unfamiliar methods; memory_tools runs their async JavaScript.
 
-Project work items live in tasks. A pending list requires action:"list" and status:"pending". Each page is { hydrated, index, extent, cursor }; a complete listing combines hydrated and index and follows cursor until null.
+Retrieval pages use hydrated for complete records, index for pointer rows, extent for totals, and cursor for continuation. Select relevant IDs before hydrating originals; a refined query or cursor reveals more without paging full bodies to discover what exists.
+
+Project work items live in tasks. A pending list requires action:"list" and status:"pending". A complete listing combines hydrated and index and follows cursor until null.
 
 Which tool for what:
 - memory_get: hydrates exact originals by id.
