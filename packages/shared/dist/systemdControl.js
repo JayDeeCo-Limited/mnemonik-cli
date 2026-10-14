@@ -1,9 +1,52 @@
-import { existsSync } from 'node:fs';
+import { existsSync, lstatSync } from 'node:fs';
 import { rm } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { processesAlive } from './launchdControl.js';
 import { SCANNER_STOP_BUDGET_MS } from './scannerSupervisor.js';
+export const runtimeOwner = (path) => {
+    try {
+        const entry = lstatSync(path);
+        return {
+            uid: entry.uid,
+            type: entry.isDirectory() ? 'directory' : entry.isSocket() ? 'socket' : 'other',
+        };
+    }
+    catch {
+        return undefined;
+    }
+};
+/**
+ * The environment a `systemctl --user` child needs to reach this user's
+ * manager, or undefined to leave the child's environment exactly as it is.
+ * systemctl finds the manager through XDG_RUNTIME_DIR or the session bus. An
+ * agent shell, cron, or an SSH session without pam_systemd has neither, even
+ * though the manager is running and /run/user/<uid> exists. Each missing
+ * variable is named from that directory only when it is a real directory (and,
+ * for the bus, a socket) owned by this uid, so another user's runtime
+ * directory is never used. A variable already set is never replaced.
+ */
+export function userManagerEnvironment(uid, environment, owner) {
+    const missingRuntime = !environment.XDG_RUNTIME_DIR;
+    const missingBus = !environment.DBUS_SESSION_BUS_ADDRESS;
+    if (!missingRuntime && !missingBus)
+        return undefined;
+    if (!owner || uid === undefined || !Number.isInteger(uid) || uid < 0)
+        return undefined;
+    const directory = `/run/user/${uid}`;
+    const owned = (path, type) => {
+        const entry = owner(path);
+        return entry?.type === type && entry.uid === uid;
+    };
+    if (!owned(directory, 'directory'))
+        return undefined;
+    const added = {};
+    if (missingRuntime)
+        added.XDG_RUNTIME_DIR = directory;
+    if (missingBus && owned(`${directory}/bus`, 'socket'))
+        added.DBUS_SESSION_BUS_ADDRESS = `unix:path=${directory}/bus`;
+    return Object.keys(added).length ? { ...environment, ...added } : undefined;
+}
 /** Native removal also works when the installed scanner or its unit file is damaged. */
 export async function uninstallSystemdUnit(unitPath, run, options = {}) {
     try {

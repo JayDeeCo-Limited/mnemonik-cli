@@ -1,4 +1,4 @@
-import { pidIsScanner, removeMacScanner, macScannerLauncher, scannerAttemptHealthy, uninstallSystemdUnit, SCANNER_HANDOFF_BUDGET_MS, SCANNER_MAC_COMMAND_BUDGET_MS, SCANNER_RECEIPT_STALE_MS, SCANNER_REMOVAL_BUDGET_MS, SCANNER_STARTUP_BUDGET_MS, SCANNER_STOP_BUDGET_MS, SCANNER_SERVICE_RUNNING_BUDGET_MS, WINDOWS_SERVICE_BUDGET_MS, } from '@mnemonik/shared';
+import { pidIsScanner, removeMacScanner, macScannerLauncher, scannerAttemptHealthy, uninstallSystemdUnit, userManagerEnvironment, runtimeOwner, SCANNER_HANDOFF_BUDGET_MS, SCANNER_MAC_COMMAND_BUDGET_MS, SCANNER_RECEIPT_STALE_MS, SCANNER_REMOVAL_BUDGET_MS, SCANNER_STARTUP_BUDGET_MS, SCANNER_STOP_BUDGET_MS, SCANNER_SERVICE_RUNNING_BUDGET_MS, WINDOWS_SERVICE_BUDGET_MS, } from '@mnemonik/shared';
 import { withLock } from '@mnemonik/local-setup';
 import { execFile } from 'node:child_process';
 import { readFile, rm, lstat } from 'node:fs/promises';
@@ -382,8 +382,20 @@ export function scannerService(options) {
             await invoke('stop');
         },
         async uninstall() {
-            const native = (timeout) => options.supervisorRun ??
-                (async (file, args) => (await promisify(execFile)(file, args, { encoding: 'utf8', timeout })).stdout);
+            // systemctl --user reaches this user's manager even from a shell that does
+            // not name it, as the scanner's own supervisor does. A substituted runner
+            // is not a child of this process, so the real runtime directory is
+            // consulted only when the caller also describes it.
+            const userEnvironment = (options.platform ?? process.platform) === 'linux'
+                ? userManagerEnvironment(options.uid ?? process.getuid?.(), process.env, options.runtimeOwner ?? (options.supervisorRun ? undefined : runtimeOwner))
+                : undefined;
+            const native = (timeout) => {
+                const run = options.supervisorRun ??
+                    (async (file, args, env) => (await promisify(execFile)(file, args, { encoding: 'utf8', timeout, env })).stdout);
+                return userEnvironment
+                    ? (file, args) => run(file, args, userEnvironment)
+                    : run;
+            };
             try {
                 if ((options.platform ?? process.platform) === 'darwin') {
                     // Removal must also work offline with a legacy, missing or damaged runtime.

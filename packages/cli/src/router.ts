@@ -23,7 +23,12 @@ import {
 } from './scanner/control.js';
 import { ScannerConsentRequired, updateScanner } from './scanner/update.js';
 import { deleteScannerIndex } from './scanner/data.js';
-import { devReadiness } from './runtime/releaseSource.js';
+import {
+  bundledScannerRelease,
+  devReadiness,
+  releaseSource,
+  scannerReleaseSource,
+} from './runtime/releaseSource.js';
 import {
   scannerService,
   SCANNER_LIMITED_SENTENCE,
@@ -48,7 +53,12 @@ import { readInstallVersions } from './install/ownership.js';
 import { ensureLauncher, removeLauncher, LauncherError, type LauncherOptions } from './launcher.js';
 import { readFile, realpath } from 'node:fs/promises';
 import { createInterface } from 'node:readline';
-import { RuntimeStore, updateRuntime, type RuntimeUpdate } from './runtime/store.js';
+import {
+  RuntimeStore,
+  updateRuntime,
+  type RuntimeSource,
+  type RuntimeUpdate,
+} from './runtime/store.js';
 import { recordUpdateCheck } from './runtime/updateCheck.js';
 import { updateCli, cliUpdateHint } from './runtime/selfUpdate.js';
 import { homedir } from 'node:os';
@@ -325,7 +335,9 @@ async function approveScannerUpdate(
   deps: CliDependencies,
   output: Output,
   stateDir: string,
-  held = 'scanner_update_consent_required'
+  held = 'scanner_update_consent_required',
+  /** The release the approved scanner is installed from; the enable default when omitted. */
+  source?: () => Promise<RuntimeSource>
 ): Promise<ApprovalOutcome> {
   if (parsed.flags.has('automatic')) return { status: 'pending', reason: held };
   const present = personPresent(parsed, deps);
@@ -348,6 +360,7 @@ async function approveScannerUpdate(
         : { onApprovalLink: relayApprovalLink(output, parsed.flags.has('json'), held) }),
       ...deps.scannerService,
       ...deps.scannerEnable,
+      ...(source ? { source } : {}),
       projectExecutor: deps.projectExecutor,
       projectStateDir: deps.projectStateDir,
     });
@@ -941,6 +954,22 @@ async function runHostCommand(
     ) {
       // A scanner paused for an updated notice needs the approval, not a new copy.
       const pausedForApproval = pausedForConsent(await scannerReceipt(state));
+      // The scanner comes from the release the CLI now runs, as the hooks do: the
+      // release file inside the CLI runtime this run verified. Without one (the CLI
+      // did not update, or its runtime cannot be read), the release this process
+      // was built with, as before.
+      const cliRuntime =
+        cli?.status === 'UPDATED' || cli?.status === 'UP_TO_DATE'
+          ? (updatedCli ?? (await store.verifyRuntime('cli').catch(() => undefined)))
+          : undefined;
+      const scannerSource: (() => Promise<RuntimeSource>) | undefined =
+        deps.scannerEnable?.source ??
+        (cliRuntime
+          ? async () => {
+              const release = await bundledScannerRelease(store, cliRuntime);
+              return release ? scannerReleaseSource(release) : releaseSource('scanner');
+            }
+          : undefined);
       try {
         if (pausedForApproval) throw new ScannerConsentRequired();
         const before = await store.verifyRuntime('scanner').catch(() => undefined);
@@ -956,7 +985,7 @@ async function runHostCommand(
                 if (!json) output.line(ABANDONED_PAUSE_RESUMED);
               },
             },
-            deps.scannerEnable?.source
+            scannerSource
           )
         );
         scanner = {
@@ -971,7 +1000,8 @@ async function runHostCommand(
             deps,
             output,
             state,
-            pausedForApproval ? 'scanner_consent_required' : 'scanner_update_consent_required'
+            pausedForApproval ? 'scanner_consent_required' : 'scanner_update_consent_required',
+            scannerSource
           );
           scanner =
             approval.status === 'approved'

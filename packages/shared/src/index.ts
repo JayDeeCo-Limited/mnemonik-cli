@@ -157,6 +157,11 @@ export {
   macScannerLauncher,
 } from './launchdControl.js';
 
-export { uninstallSystemdUnit } from './systemdControl.js';
+export {
+  uninstallSystemdUnit,
+  userManagerEnvironment,
+  runtimeOwner,
+  type RuntimeOwner,
+} from './systemdControl.js';
 
 export { pidIsScanner } from './scannerPid.js';

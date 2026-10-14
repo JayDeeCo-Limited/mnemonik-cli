@@ -12,7 +12,8 @@ import { runCli } from '../src/router.js';
 import { installBootstrap } from '../src/runtime/bootstrap.js';
 import { cliUpdateHint, updateCli } from '../src/runtime/selfUpdate.js';
 import { npmReleaseSource } from '../src/runtime/releaseSource.js';
-import { RuntimeStore, type RuntimeSource } from '../src/runtime/store.js';
+import * as releaseSources from '../src/runtime/releaseSource.js';
+import { RuntimeStore, hash, type RuntimeSource } from '../src/runtime/store.js';
 import * as runtimes from '../src/runtime/store.js';
 import * as hosts from '../src/install/hosts.js';
 import * as scanner from '../src/scanner/update.js';
@@ -43,6 +44,24 @@ vi.mock('@mnemonik/shared/hook-runtime', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@mnemonik/shared/hook-runtime')>()),
   RELEASE_MINISIGN_PUBLIC_KEY: releaseKeyFixture.identity,
 }));
+// The scanner release bundled with the CLI that is running, which only a built
+// CLI has. Off unless a test names a version, so every other test reaches the
+// real one exactly as before.
+const runningScanner = vi.hoisted(() => ({
+  version: undefined as string | undefined,
+  release: undefined as
+    ((version: string) => import('../src/runtime/releaseSource.js').ReleaseManifest) | undefined,
+}));
+vi.mock('../src/runtime/releaseSource.js', async (importOriginal) => {
+  const original = await importOriginal<typeof import('../src/runtime/releaseSource.js')>();
+  return {
+    ...original,
+    releaseSource: async (artifact: Parameters<typeof original.releaseSource>[0]) =>
+      artifact === 'scanner' && runningScanner.version && runningScanner.release
+        ? original.scannerReleaseSource(runningScanner.release(runningScanner.version))
+        : original.releaseSource(artifact),
+  };
+});
 
 let fixture: string, state: string, store: RuntimeStore, installedSource: RuntimeSource;
 const bootstrapBin = (version: string) => `// bootstrap bin ${version}\n`;
@@ -141,6 +160,52 @@ const manifestFetcher =
       return signature ? new Response(signature) : new Response(null, { status: 404 });
     return registry(url, options);
   };
+// Each fixture CLI release bundles the scanner release of the same version, as
+// a built CLI does in dist/scanner-release.json.
+const scannerPlatform = `${process.platform === 'win32' ? 'win' : process.platform}-${process.arch}`;
+const scannerEntry = `scanner-${scannerPlatform}`;
+const scannerBinary = (version: string) => Buffer.from(`#!/bin/sh\n# scanner ${version}\n`);
+const scannerDigests = (version: string) =>
+  Buffer.from(
+    JSON.stringify({
+      files: {
+        [scannerEntry]: {
+          sha256: hash(scannerBinary(version)),
+          size: scannerBinary(version).length,
+        },
+      },
+    })
+  );
+const scannerRelease = (version: string): releaseSources.ReleaseManifest => {
+  const binary = scannerBinary(version);
+  return {
+    version,
+    digestsSha256: hash(scannerDigests(version)),
+    platforms: {
+      [scannerPlatform]: {
+        schemaVersion: 1,
+        artifact: 'scanner',
+        version,
+        entry: scannerEntry,
+        files: { [scannerEntry]: { sha256: hash(binary), size: binary.length, executable: true } },
+        totalSize: binary.length,
+        disclosureVersion: 'v1',
+        source: {
+          kind: 'release',
+          url: `https://github.com/JayDeeCo-Limited/mnemonik-cli/releases/download/scanner-v${version}/`,
+        },
+      },
+    },
+  };
+};
+runningScanner.release = scannerRelease;
+const scannerDownloads: typeof fetch = async (url, options) => {
+  const [, version, name] = /\/scanner-v([^/]+)\/([^/]+)$/.exec(String(url)) ?? [];
+  if (version && name === 'digests.json')
+    return new Response(new Uint8Array(scannerDigests(version)));
+  if (version && name === scannerEntry) return new Response(new Uint8Array(scannerBinary(version)));
+  return registry(url, options);
+};
 let latest: string, corrupt: boolean;
 const registry = vi.fn<typeof fetch>(async (url) => {
   if (String(url).endsWith('/release-manifest.json'))
@@ -169,6 +234,10 @@ beforeAll(async () => {
     );
     await writeFile(join(dir, 'dist/router.js'), `export const runCli = () => '${version}';`);
     await writeFile(join(dir, 'dist/bin.js'), bootstrapBin(version));
+    await writeFile(
+      join(dir, 'dist/scanner-release.json'),
+      JSON.stringify(scannerRelease(version))
+    );
     for (const name of bootstrapFiles) {
       await mkdir(join(dir, name, '..'), { recursive: true });
       await writeFile(join(dir, name), `// ${name}\n`);
@@ -989,6 +1058,237 @@ it('names what updated and what did not when only the scanner step fails', async
   expect(text).toBe('The mnemonik command updated.\n');
   expect(errors).toBe(`${failure.summary}\n${failure.action}\n`);
   expect(`${text}${errors}`).not.toContain('Mnemonik could not update.');
+});
+
+// The real scanner step, not a stubbed one: a newer scanner is installed, the
+// supervisor cannot reach the user's systemd manager, the runtime goes back.
+it.each([false, true])(
+  'a scanner the supervisor could not restart is never reported as updated (json: %s)',
+  async (json) => {
+    await mkdir(join(state, 'scanner'));
+    await writeFile(
+      join(state, 'scanner/state.json'),
+      JSON.stringify({ paused: false, consent: { disclosureVersion: 'v1' } })
+    );
+    let current = '1.0.0';
+    const runtime = (version: string) =>
+      ({
+        directory: `/verified/${version}`,
+        entry: `/verified/${version}/scanner`,
+        reference: { version, manifestSha256: version },
+        manifest: { artifact: 'scanner', version, disclosureVersion: 'v1' },
+      }) as Awaited<ReturnType<RuntimeStore['verifyRuntime']>>;
+    const verify = RuntimeStore.prototype.verifyRuntime;
+    vi.spyOn(RuntimeStore.prototype, 'verifyRuntime').mockImplementation(async function (
+      this: RuntimeStore,
+      artifact
+    ) {
+      return artifact === 'scanner' ? runtime(current) : verify.call(this, artifact);
+    });
+    const install = RuntimeStore.prototype.installRuntime;
+    vi.spyOn(RuntimeStore.prototype, 'installRuntime').mockImplementation(async function (
+      this: RuntimeStore,
+      artifact,
+      version,
+      source
+    ) {
+      if (artifact !== 'scanner') return install.call(this, artifact, version, source);
+      current = version;
+      return runtime(version);
+    });
+    const rollback = vi
+      .spyOn(RuntimeStore.prototype, 'rollbackRuntime')
+      .mockImplementation(async () => {
+        current = '1.0.0';
+        return runtime(current);
+      });
+    const failure = new ScannerServiceLimited('systemd_session_unavailable');
+    const operations: string[] = [];
+    const command = vi.fn(async (operation: string) => {
+      operations.push(operation);
+      if (operation === 'status')
+        return {
+          status: 'ok' as const,
+          // Unreachable manager: the scanner cannot be seen running.
+          supervisor: { kind: 'systemd' as const, installed: true, running: false, pid: null },
+        };
+      return {
+        status: 'LIMITED' as const,
+        reason: failure.reason,
+        detail: failure.reason,
+        action: 'mnemonik scanner enable',
+      };
+    });
+    let text = '';
+    let errors = '';
+    const code = await runCli(['update', ...(json ? ['--json'] : [])], {
+      installStateDir: state,
+      home: state,
+      stdout: { write: (value) => (text += value) },
+      stderr: { write: (value) => (errors += value) },
+      scannerService: {
+        stateDir: state,
+        platform: 'linux',
+        command,
+        describe: async () => ({
+          binaryPath: `/verified/${current}/scanner`,
+          arguments: ['start'],
+          workingDirectory: `/verified/${current}`,
+          environment: { MNEMONIK_STATE_DIR: state },
+          runAtLogin: true,
+          restart: { policy: 'on-failure', delayMs: 3000 },
+          logDestination: join(state, 'scanner/scanner.log'),
+        }),
+      },
+      scannerEnable: {
+        source: async () => ({
+          manifest: {
+            artifact: 'scanner',
+            version: '2.0.0',
+            disclosureVersion: 'v1',
+          } as RuntimeSource['manifest'],
+          files: {},
+        }),
+      },
+    });
+    expect(operations).toContain('install');
+    expect(rollback).toHaveBeenCalled();
+    expect(current).toBe('1.0.0');
+    expect(code).toBe(1);
+    expect(JSON.parse(await readFile(join(state, 'update-check.json'), 'utf8')).result).toBe(
+      'failed'
+    );
+    if (json) {
+      const report = JSON.parse(text);
+      expect(report.status).toBe('FAILED');
+      expect(report.scanner).toMatchObject({ status: 'FAILED', reason: failure.reason });
+      expect(report.cli).toMatchObject({ status: 'UPDATED' });
+    } else {
+      // What updated is said; the scanner is not among it, and the step that fixes it follows.
+      expect(text).toBe('The mnemonik command updated.\n');
+      expect(errors).toBe(`${failure.summary}\n${failure.action}\n`);
+    }
+    expect(`${text}${errors}`).not.toContain('Mnemonik updated.');
+    expect(`${text}${errors}`).not.toContain('The scanner updated.');
+  }
+);
+
+// 14 October 2026: one update moved the CLI and the hooks from 7.132.0 to 7.134.0
+// and the scanner only to 7.132.0, the release bundled with the CLI doing the
+// update. The scanner takes the release the CLI now runs, as the hooks do.
+describe.skipIf(scannerPlatform === 'darwin-x64')('the scanner release an update installs', () => {
+  let installed: { version: string; binary: string }[];
+  // A fault on the new CLI's release file, armed only once the scanner step
+  // starts: after the CLI runtime was installed and verified.
+  let fault: 'cannot be read' | 'changed after it was verified' | undefined;
+  let armed: boolean;
+  beforeEach(async () => {
+    installed = [];
+    fault = undefined;
+    armed = false;
+    // This process is the CLI being replaced: release 1.0.0.
+    runningScanner.version = '1.0.0';
+    vi.stubGlobal('fetch', scannerDownloads);
+    await mkdir(join(state, 'scanner'));
+    await writeFile(join(state, 'scanner/state.json'), '{}');
+    // The step installs whatever release it is given; the same default as updateScanner.
+    vi.spyOn(scanner, 'updateScanner').mockImplementation(
+      async (_options, source = () => releaseSources.releaseSource('scanner')) => {
+        armed = fault !== undefined;
+        const candidate = await source();
+        installed.push({
+          version: candidate.manifest.version,
+          binary: candidate.files[scannerEntry]?.toString() ?? '',
+        });
+        return {
+          directory: `/verified/${candidate.manifest.version}`,
+          entry: `/verified/${candidate.manifest.version}/${scannerEntry}`,
+          reference: { version: candidate.manifest.version, manifestSha256: 'fixture' },
+          manifest: candidate.manifest,
+        };
+      }
+    );
+  });
+  afterEach(() => {
+    runningScanner.version = undefined;
+  });
+  const run = async (json: boolean) => {
+    let text = '';
+    let errors = '';
+    const code = await runCli(['update', ...(json ? ['--json'] : [])], {
+      installStateDir: state,
+      home: state,
+      stdout: { write: (value) => (text += value) },
+      stderr: { write: (value) => (errors += value) },
+    });
+    const check = JSON.parse(await readFile(join(state, 'update-check.json'), 'utf8'));
+    return { code, text, errors, result: check.result as string };
+  };
+
+  it.each([false, true])(
+    'one update moves the CLI and the scanner to the new release (json: %s)',
+    async (json) => {
+      const f = await run(json);
+      expect(installed).toEqual([{ version: '1.1.0', binary: scannerBinary('1.1.0').toString() }]);
+      expect((await store.verifyRuntime('cli')).reference.version).toBe('1.1.0');
+      expect(f.code).toBe(0);
+      expect(f.result).toBe('updated');
+      if (json) {
+        const report = JSON.parse(f.text);
+        expect(report.cli).toMatchObject({ status: 'UPDATED', newVersion: '1.1.0' });
+        expect(report.scanner).toEqual({ status: 'UPDATED', version: '1.1.0' });
+      } else {
+        expect(f.text).toBe('Mnemonik updated.\n');
+        expect(f.errors).toBe('');
+      }
+    }
+  );
+
+  it.each([false, true])(
+    'a failed CLI update leaves the scanner on the release this CLI was built with (json: %s)',
+    async (json) => {
+      corrupt = true;
+      const f = await run(json);
+      expect(installed).toEqual([{ version: '1.0.0', binary: scannerBinary('1.0.0').toString() }]);
+      expect((await store.verifyRuntime('cli')).reference.version).toBe('1.0.0');
+      expect(f.code).toBe(1);
+      expect(f.result).toBe('failed');
+      if (json) {
+        const report = JSON.parse(f.text);
+        expect(report.status).toBe('FAILED');
+        expect(report.cli).toMatchObject({ status: 'FAILED' });
+        expect(report.scanner).toEqual({ status: 'UPDATED', version: '1.0.0' });
+      } else {
+        expect(f.text).toBe('The scanner updated.\n');
+        expect(f.errors).toBe(
+          'The mnemonik command could not update.\nRun npx -y @mnemonik/cli@latest install to update it.\n'
+        );
+      }
+    }
+  );
+
+  it.each(['cannot be read', 'changed after it was verified'])(
+    'a new CLI whose scanner release %s leaves the scanner on the release of this CLI',
+    async (kind) => {
+      fault = kind as typeof fault;
+      const bytes = RuntimeStore.prototype.bytes;
+      vi.spyOn(RuntimeStore.prototype, 'bytes').mockImplementation(async function (
+        this: RuntimeStore,
+        path: string
+      ) {
+        if (!armed || !path.endsWith(join('dist', 'scanner-release.json')))
+          return bytes.call(this, path);
+        if (fault === 'cannot be read')
+          throw Object.assign(new Error('fixture: unreadable'), { code: 'EACCES' });
+        return Buffer.from(JSON.stringify(scannerRelease('9.9.9')));
+      });
+      const f = await run(true);
+      expect(installed).toEqual([{ version: '1.0.0', binary: scannerBinary('1.0.0').toString() }]);
+      const report = JSON.parse(f.text);
+      expect(report.cli).toMatchObject({ status: 'UPDATED', newVersion: '1.1.0' });
+      expect(report.scanner).toEqual({ status: 'UPDATED', version: '1.0.0' });
+    }
+  );
 });
 
 describe('a scanner release that names an updated notice', () => {

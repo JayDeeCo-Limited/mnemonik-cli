@@ -1,4 +1,4 @@
-import { pidIsScanner } from '@mnemonik/shared';
+import { pidIsScanner, type RuntimeOwner } from '@mnemonik/shared';
 import type { ServiceDefinition, ServiceOperation, ServiceResult, SupervisorStatus } from '@mnemonik/shared';
 import { RuntimeStore, type Verified } from '../runtime/store.js';
 export declare const SCANNER_RESTART_MESSAGE = "Background indexing stopped responding. Mnemonik restarted it.";
@@ -14,7 +14,10 @@ export interface ScannerServiceOptions {
     home?: string;
     uid?: number;
     systemPlist?: string;
-    supervisorRun?: (file: string, args: string[]) => Promise<string>;
+    /** Native removal commands; env is passed only when systemctl needs the user manager named. */
+    supervisorRun?: (file: string, args: string[], env?: NodeJS.ProcessEnv) => Promise<string>;
+    /** How the user's runtime directory looks (tests only; defaults to the real filesystem). */
+    runtimeOwner?: RuntimeOwner;
     captureDefinition?: boolean;
     /** Keep the new supervisor's platform fixes available while restoring an older runtime. */
     supervisorRuntime?: Verified;

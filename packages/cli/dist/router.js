@@ -5,7 +5,7 @@ import { enableScanner, updateScannerRoots } from './scanner/enable.js';
 import { ABANDONED_PAUSE_RESUMED, controlScanner, pausedForConsent, scannerReceipt, } from './scanner/control.js';
 import { ScannerConsentRequired, updateScanner } from './scanner/update.js';
 import { deleteScannerIndex } from './scanner/data.js';
-import { devReadiness } from './runtime/releaseSource.js';
+import { bundledScannerRelease, devReadiness, releaseSource, scannerReleaseSource, } from './runtime/releaseSource.js';
 import { scannerService, SCANNER_LIMITED_SENTENCE, ScannerServiceLimited, } from './scanner/service.js';
 import { stateDirectory } from '@mnemonik/local-setup';
 import { isCredentialSessionUnavailableError } from '@mnemonik/credentials';
@@ -15,7 +15,7 @@ import { readInstallVersions } from './install/ownership.js';
 import { ensureLauncher, removeLauncher, LauncherError } from './launcher.js';
 import { readFile, realpath } from 'node:fs/promises';
 import { createInterface } from 'node:readline';
-import { RuntimeStore, updateRuntime } from './runtime/store.js';
+import { RuntimeStore, updateRuntime, } from './runtime/store.js';
 import { recordUpdateCheck } from './runtime/updateCheck.js';
 import { updateCli, cliUpdateHint } from './runtime/selfUpdate.js';
 import { homedir } from 'node:os';
@@ -195,7 +195,9 @@ const APPROVAL_LINK_LINE = 'Give the person this link to approve the updated not
  * --non-interactive) the same approval starts and its link is handed over; only
  * the automatic daily update leaves it waiting, quietly.
  */
-async function approveScannerUpdate(parsed, deps, output, stateDir, held = 'scanner_update_consent_required') {
+async function approveScannerUpdate(parsed, deps, output, stateDir, held = 'scanner_update_consent_required', 
+/** The release the approved scanner is installed from; the enable default when omitted. */
+source) {
     if (parsed.flags.has('automatic'))
         return { status: 'pending', reason: held };
     const present = personPresent(parsed, deps);
@@ -216,6 +218,7 @@ async function approveScannerUpdate(parsed, deps, output, stateDir, held = 'scan
                 : { onApprovalLink: relayApprovalLink(output, parsed.flags.has('json'), held) }),
             ...deps.scannerService,
             ...deps.scannerEnable,
+            ...(source ? { source } : {}),
             projectExecutor: deps.projectExecutor,
             projectStateDir: deps.projectStateDir,
         });
@@ -652,6 +655,20 @@ async function runHostCommand(command, parsed, deps, output, scannerSelected = f
             (await readFile(`${state}/scanner/state.json`).then(() => true, () => false))) {
             // A scanner paused for an updated notice needs the approval, not a new copy.
             const pausedForApproval = pausedForConsent(await scannerReceipt(state));
+            // The scanner comes from the release the CLI now runs, as the hooks do: the
+            // release file inside the CLI runtime this run verified. Without one (the CLI
+            // did not update, or its runtime cannot be read), the release this process
+            // was built with, as before.
+            const cliRuntime = cli?.status === 'UPDATED' || cli?.status === 'UP_TO_DATE'
+                ? (updatedCli ?? (await store.verifyRuntime('cli').catch(() => undefined)))
+                : undefined;
+            const scannerSource = deps.scannerEnable?.source ??
+                (cliRuntime
+                    ? async () => {
+                        const release = await bundledScannerRelease(store, cliRuntime);
+                        return release ? scannerReleaseSource(release) : releaseSource('scanner');
+                    }
+                    : undefined);
             try {
                 if (pausedForApproval)
                     throw new ScannerConsentRequired();
@@ -667,7 +684,7 @@ async function runHostCommand(command, parsed, deps, output, scannerSelected = f
                         if (!json)
                             output.line(ABANDONED_PAUSE_RESUMED);
                     },
-                }, deps.scannerEnable?.source));
+                }, scannerSource));
                 scanner = {
                     status: before?.reference.version === runtime.reference.version ? 'UP_TO_DATE' : 'UPDATED',
                     version: runtime.manifest.version,
@@ -675,7 +692,7 @@ async function runHostCommand(command, parsed, deps, output, scannerSelected = f
             }
             catch (error) {
                 if (error instanceof ScannerConsentRequired) {
-                    const approval = await approveScannerUpdate(parsed, deps, output, state, pausedForApproval ? 'scanner_consent_required' : 'scanner_update_consent_required');
+                    const approval = await approveScannerUpdate(parsed, deps, output, state, pausedForApproval ? 'scanner_consent_required' : 'scanner_update_consent_required', scannerSource);
                     scanner =
                         approval.status === 'approved'
                             ? { status: 'UPDATED' }

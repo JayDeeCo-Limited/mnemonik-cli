@@ -683,3 +683,58 @@ it('Linux uninstall retains software when the recorded scanner PID is still aliv
   expect(await readFile(files.runtimePath, 'utf8')).toBe('retained executable');
   expect(await readFile(files.unitPath, 'utf8')).toBe('working scanner unit');
 });
+
+// An agent shell or an SSH session without pam_systemd names neither variable,
+// although the user's manager runs at /run/user/<uid>. Removal reaches it the
+// same way the scanner's own supervisor does.
+const userRuntime = (owners: Record<string, { uid: number; type: 'directory' | 'socket' }>) =>
+  vi.fn((path: string) => owners[path]);
+const ownRuntime = {
+  '/run/user/1000': { uid: 1000, type: 'directory' as const },
+  '/run/user/1000/bus': { uid: 1000, type: 'socket' as const },
+};
+it('Linux uninstall reaches the systemd user manager when the shell does not name it', async () => {
+  vi.stubEnv('XDG_RUNTIME_DIR', '');
+  vi.stubEnv('DBUS_SESSION_BUS_ADDRESS', '');
+  const f = fixture(true);
+  const files = await linuxRemovalFiles(true, true);
+  const runtimeOwner = userRuntime(ownRuntime);
+  await scannerService({ ...f.options, uid: 1000, runtimeOwner }).uninstall();
+  const calls = f.supervisorRun.mock.calls.filter(([file]) => file === 'systemctl');
+  expect(calls.map(([, args]) => args[1])).toEqual(
+    expect.arrayContaining(['show', 'stop', 'disable', 'daemon-reload'])
+  );
+  for (const call of calls)
+    expect((call as unknown[])[2]).toMatchObject({
+      XDG_RUNTIME_DIR: '/run/user/1000',
+      DBUS_SESSION_BUS_ADDRESS: 'unix:path=/run/user/1000/bus',
+    });
+  expect(process.env.XDG_RUNTIME_DIR).toBe('');
+  expect(process.env.DBUS_SESSION_BUS_ADDRESS).toBe('');
+  await expect(readFile(files.runtimePath)).rejects.toThrow('ENOENT');
+});
+it.each([
+  [
+    'the shell already names both',
+    { XDG_RUNTIME_DIR: '/custom/runtime', DBUS_SESSION_BUS_ADDRESS: 'unix:path=/custom/bus' },
+    ownRuntime,
+  ],
+  [
+    'the runtime directory belongs to another user',
+    { XDG_RUNTIME_DIR: '', DBUS_SESSION_BUS_ADDRESS: '' },
+    {
+      '/run/user/1000': { uid: 1001, type: 'directory' as const },
+      '/run/user/1000/bus': { uid: 1001, type: 'socket' as const },
+    },
+  ],
+])('Linux uninstall leaves systemctl exactly as before when %s', async (_name, env, owners) => {
+  for (const [key, value] of Object.entries(env)) vi.stubEnv(key, value);
+  const f = fixture(true);
+  await linuxRemovalFiles(true, true);
+  const runtimeOwner = userRuntime(owners);
+  await scannerService({ ...f.options, uid: 1000, runtimeOwner }).uninstall();
+  const calls = f.supervisorRun.mock.calls.filter(([file]) => file === 'systemctl');
+  expect(calls.length).toBeGreaterThan(0);
+  for (const call of calls) expect(call).toHaveLength(2);
+  for (const [path] of runtimeOwner.mock.calls) expect(path).toMatch(/^\/run\/user\/1000(?:\/|$)/);
+});

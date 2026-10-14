@@ -4,6 +4,9 @@ import {
   macScannerLauncher,
   scannerAttemptHealthy,
   uninstallSystemdUnit,
+  userManagerEnvironment,
+  runtimeOwner,
+  type RuntimeOwner,
   SCANNER_HANDOFF_BUDGET_MS,
   SCANNER_MAC_COMMAND_BUDGET_MS,
   SCANNER_RECEIPT_STALE_MS,
@@ -45,7 +48,10 @@ export interface ScannerServiceOptions {
   home?: string;
   uid?: number;
   systemPlist?: string;
-  supervisorRun?: (file: string, args: string[]) => Promise<string>;
+  /** Native removal commands; env is passed only when systemctl needs the user manager named. */
+  supervisorRun?: (file: string, args: string[], env?: NodeJS.ProcessEnv) => Promise<string>;
+  /** How the user's runtime directory looks (tests only; defaults to the real filesystem). */
+  runtimeOwner?: RuntimeOwner;
   captureDefinition?: boolean;
   /** Keep the new supervisor's platform fixes available while restoring an older runtime. */
   supervisorRuntime?: Verified;
@@ -493,10 +499,27 @@ export function scannerService(options: ScannerServiceOptions) {
       await invoke('stop');
     },
     async uninstall() {
-      const native = (timeout: number) =>
-        options.supervisorRun ??
-        (async (file: string, args: string[]) =>
-          (await promisify(execFile)(file, args, { encoding: 'utf8', timeout })).stdout);
+      // systemctl --user reaches this user's manager even from a shell that does
+      // not name it, as the scanner's own supervisor does. A substituted runner
+      // is not a child of this process, so the real runtime directory is
+      // consulted only when the caller also describes it.
+      const userEnvironment =
+        (options.platform ?? process.platform) === 'linux'
+          ? userManagerEnvironment(
+              options.uid ?? process.getuid?.(),
+              process.env,
+              options.runtimeOwner ?? (options.supervisorRun ? undefined : runtimeOwner)
+            )
+          : undefined;
+      const native = (timeout: number) => {
+        const run =
+          options.supervisorRun ??
+          (async (file: string, args: string[], env?: NodeJS.ProcessEnv) =>
+            (await promisify(execFile)(file, args, { encoding: 'utf8', timeout, env })).stdout);
+        return userEnvironment
+          ? (file: string, args: string[]) => run(file, args, userEnvironment)
+          : run;
+      };
       try {
         if ((options.platform ?? process.platform) === 'darwin') {
           // Removal must also work offline with a legacy, missing or damaged runtime.

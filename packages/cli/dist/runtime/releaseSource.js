@@ -328,6 +328,33 @@ const tarballFilesSize = (files) => Object.values(files).reduce((sum, b) => sum 
 const trustedScannerRelease = async () => JSON.parse(await readFile(process.env.MNEMONIK_DEV_RELEASE_DIR
     ? join(process.env.MNEMONIK_DEV_RELEASE_DIR, 'scanner-release.json')
     : new URL('../scanner-release.json', import.meta.url), 'utf8'));
+/** Where a CLI runtime keeps the scanner release it was built with. */
+const bundledScannerReleasePath = 'node_modules/@mnemonik/cli/dist/scanner-release.json';
+/**
+ * The scanner release bundled with a CLI runtime that was verified on install,
+ * so an update that also replaces the CLI installs the scanner of the release
+ * the CLI now runs, as the hooks already do. The file is read through the store
+ * and must still match the digest the runtime's manifest records for it; that
+ * manifest is the file's trust. Undefined when the runtime does not carry one
+ * that matches, or a development release source is active (it names its own),
+ * and the caller then uses the release this process was built with.
+ */
+export async function bundledScannerRelease(store, cli) {
+    if (!cli || process.env.MNEMONIK_DEV_RELEASE_DIR)
+        return undefined;
+    try {
+        const expected = cli.manifest.files[bundledScannerReleasePath];
+        if (!expected)
+            return undefined;
+        const bytes = await store.bytes(join(cli.directory, bundledScannerReleasePath));
+        if (bytes.length !== expected.size || hash(bytes) !== expected.sha256)
+            return undefined;
+        return JSON.parse(bytes.toString());
+    }
+    catch {
+        return undefined;
+    }
+}
 /** Supply this as runtimeUpdate.source; the update path restarts managed services. */
 export async function releaseSource(artifact) {
     if (artifact === 'cli')

@@ -1,5 +1,5 @@
 import type { ReadinessDocument } from '@mnemonik/shared';
-import { type Artifact, type Manifest, type RuntimeSource } from './store.js';
+import { type Artifact, type Manifest, type RuntimeSource, type RuntimeStore, type Verified } from './store.js';
 export interface ReleaseManifest {
     version: string;
     digestsSha256: string;
@@ -30,6 +30,16 @@ interface NpmDist {
     'dist.tarball': string;
 }
 export declare function npmReleaseSource(fetcher?: Fetch, view?: () => Promise<NpmDist>): Promise<RuntimeSource>;
+/**
+ * The scanner release bundled with a CLI runtime that was verified on install,
+ * so an update that also replaces the CLI installs the scanner of the release
+ * the CLI now runs, as the hooks already do. The file is read through the store
+ * and must still match the digest the runtime's manifest records for it; that
+ * manifest is the file's trust. Undefined when the runtime does not carry one
+ * that matches, or a development release source is active (it names its own),
+ * and the caller then uses the release this process was built with.
+ */
+export declare function bundledScannerRelease(store: Pick<RuntimeStore, 'bytes'>, cli: Verified | undefined): Promise<ReleaseManifest | undefined>;
 /** Supply this as runtimeUpdate.source; the update path restarts managed services. */
 export declare function releaseSource(artifact: Artifact): Promise<RuntimeSource>;
 /**
