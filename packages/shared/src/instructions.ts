@@ -101,8 +101,8 @@
  *         is therefore universal and SELF-SCOPING: it conditions on whether a
  *         "Mnemonik project context" block is already present (config-B/C with
  *         working delivery -> skip; config-A and any host where hook/proxy
- *         delivery missed -> call). Re-enabled in production
- *         (MNEMONIK_INSTRUCTIONS_ENABLED=true in both ECS task defs). This is the
+ *         delivery missed -> call). On in production: only the value 'false'
+ *         turns it off, and neither ECS task def sets MNEMONIK_INSTRUCTIONS_ENABLED. This is the
  *         reliable trigger that makes the agent self-bootstrap - tool results
  *         always reach the model, which hook injection cannot guarantee on a
  *         no-tool-call turn (e.g. Cursor "hello").
