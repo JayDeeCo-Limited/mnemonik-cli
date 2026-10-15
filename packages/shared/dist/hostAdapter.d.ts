@@ -16,6 +16,11 @@ export interface Target {
     createdFiles?: string[];
     /** Verified first-install config backups supplied by the ownership journal. */
     originalFiles?: Record<string, Buffer | null>;
+    /**
+     * Set when uninstall only moves the declaration to the other scope; the
+     * installation stays, so project files it still uses are kept.
+     */
+    scopeMigration?: true;
 }
 export interface FileChange {
     path: string;

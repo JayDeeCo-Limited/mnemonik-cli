@@ -841,6 +841,54 @@ describe('host rulings', () => {
     ).toBeTruthy();
   }, 120_000);
 
+  it('keeps the generated Cursor rule when install moves project hooks to user scope', async () => {
+    const f = await fixture();
+    const cursor = f.selections.find((selection) => selection.host === 'cursor')!;
+    const projectHooks = join(f.projectRoot, '.cursor', 'hooks.json');
+    const legacyHook = 'node "/old/node_modules/@mnemonik/cursor-hooks/dist/hook.js"';
+    await mkdir(dirname(projectHooks), { recursive: true });
+    await writeFile(
+      projectHooks,
+      JSON.stringify(
+        { version: 1, hooks: { preToolUse: [{ type: 'command', command: legacyHook }] } },
+        null,
+        2
+      ) + '\n'
+    );
+    // The body the server's buildCursorRuleFile renders today (src/agent/hooks/cursorRuleFile.ts).
+    const dash = String.fromCharCode(0x2014);
+    const rulePath = join(f.projectRoot, '.cursor', 'rules', 'memory_tools.mdc');
+    const ruleBody = [
+      '---',
+      'alwaysApply: true',
+      '---',
+      '# Memory Tools',
+      'project: repo',
+      'projectId: 11111111-1111-4111-8111-111111111111',
+      `cwd: ${f.projectRoot}`,
+      '',
+      'Pass cwd verbatim in every call; never search for it.',
+      'Available top-level capabilities are memory_tools, memory_discover, and session_bootstrap.',
+      `memory_search, file_context, checkpoint run INSIDE memory_tools using an async arrow function ${dash} never as top-level tools (a direct call fails).`,
+      "To use memory_tools, or any mnemonik.* method you don't already know: call memory_discover first for the exact method, schema, and runnable example.",
+      '',
+      `- Start: session_bootstrap({cwd}) once ${dash} skip if context already has a "PROJECT_CONTEXT schemaVersion=" block.`,
+      '- Before non-trivially editing a file: async () => { return mnemonik.file_context({cwd, filePaths:[...]}); }.',
+      "- After meaningful changes / before saying you're done: async () => { return mnemonik.checkpoint({cwd, summary}); }.",
+      '- Unsure of a project fact or past decision: async () => { return mnemonik.memory_search({cwd, query}); }.',
+      `- For where-is-X code queries, async () => { return mnemonik.code_search({cwd, query}); } adds what Cursor's built-in search cannot: disputed-pattern warnings, drift flags, and cross-session project memory ${dash} use it when correctness or project history matters, not just location.`,
+      '',
+    ].join('\n');
+    await mkdir(dirname(rulePath), { recursive: true });
+    await writeFile(rulePath, ruleBody);
+
+    const result = await runHosts('install', [{ ...cursor, component: 'hooks' }], f.deps, true);
+
+    expect(result.results.every((row) => row.status === 'READY')).toBe(true);
+    expect(await readFile(projectHooks, 'utf8')).not.toContain(legacyHook);
+    expect(await readFile(rulePath, 'utf8')).toBe(ruleBody);
+  }, 120_000);
+
   it('keeps the exact Codex command array through pending trust, update, repair and rollback', async () => {
     const f = await fixture();
     const user = {

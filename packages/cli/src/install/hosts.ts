@@ -631,6 +631,7 @@ export async function runHosts(
               {
                 ...target,
                 scope: other.scope,
+                scopeMigration: true,
                 createdFiles: otherOwned?.files
                   .filter((file) => file.created)
                   .map((file) => file.path),

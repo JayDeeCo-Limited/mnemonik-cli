@@ -504,6 +504,7 @@ export async function runHosts(command, selections, deps, allowMigration = false
                     }, {
                         ...target,
                         scope: other.scope,
+                        scopeMigration: true,
                         createdFiles: otherOwned?.files
                             .filter((file) => file.created)
                             .map((file) => file.path),
