@@ -247,6 +247,13 @@ export const MINIFIED_LONG_LINE_BYTES = 4096;
 export const DATA_DUMP_INSERT_THRESHOLD = 50;
 
 const MINIFIABLE_EXTENSION = /\.(js|mjs|cjs|css)$/i;
+/**
+ * Markdown is prose: a paragraph or list item is one line, so long lines are
+ * normal and never a sign of minification. R5 skips it; the other content
+ * rules still apply. Without this, a doc with two long bullets was announced
+ * as minified and its stored doc-truth copy stopped updating.
+ */
+const PROSE_EXTENSION = /\.(md|mdc|mdx|markdown)$/i;
 
 /**
  * Comment-line openers across the languages the scanner reads. A header rule
@@ -292,11 +299,13 @@ function utf8Length(line: string): number {
 
 /**
  * R5. More than one line over 4,096 bytes means minified, whatever the
- * language. A single long line does not: one embedded data URI or a long
- * literal table in hand-written source is common, and a 1,024-character
- * single-line rule would exclude this repository's own src/server/tools.ts.
+ * language, Markdown excepted (PROSE_EXTENSION). A single long line does not:
+ * one embedded data URI or a long literal table in hand-written source is
+ * common, and a 1,024-character single-line rule would exclude this
+ * repository's own src/server/tools.ts.
  */
 function minified(relPath: string, content: string): string | null {
+  if (PROSE_EXTENSION.test(relPath)) return null;
   const lines = content.split('\n');
   let longLines = 0;
   let total = 0;
