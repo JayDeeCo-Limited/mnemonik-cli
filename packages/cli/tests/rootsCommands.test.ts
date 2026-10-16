@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { serializeReadiness } from '@mnemonik/shared';
+import { resolveProjectIdentity, serializeReadiness } from '@mnemonik/shared';
 
 const scanner = vi.hoisted(() => ({ enable: vi.fn(), update: vi.fn() }));
 vi.mock('../src/scanner/enable.js', async (original) => ({
@@ -108,6 +108,28 @@ it('adds a root without opening consent when the disclosure is current', async (
   );
   expect(scanner.enable).not.toHaveBeenCalled();
   expect(f.signIn).not.toHaveBeenCalled();
+});
+
+it('adding a folder inside a project connects the project folder, not a new project', async () => {
+  const f = await fixture();
+  const projectId = '33333333-3333-4333-8333-333333333333';
+  await writeFile(join(f.root, '.mnemonik.json'), JSON.stringify({ schemaVersion: 1, projectId }));
+  const sub = join(f.root, 'services', 'api');
+  await mkdir(sub, { recursive: true });
+  f.deps.projectExecutor!.resolveProjectIdentity = (cwd, options) =>
+    resolveProjectIdentity(cwd, options);
+  scanner.update.mockResolvedValue({ status: 'updated', state: { config: { roots: [f.root] } } });
+
+  expect(await runCli(['add', sub], f.deps)).toBe(0);
+
+  expect(f.stdout.text).toContain(
+    'api is part of the project in ~/Projects/app, so Mnemonik connects that folder.'
+  );
+  expect(f.stdout.text).toContain('Connect app to Mnemonik? [Y/n]');
+  expect(f.ensureProject).toHaveBeenCalledWith(
+    expect.objectContaining({ cwd: f.root, allowCreate: true, namedRoot: true })
+  );
+  expect(scanner.update).toHaveBeenCalledWith(expect.objectContaining({ add: [f.root] }));
 });
 
 it('falls back to browser consent only when the disclosure changed', async () => {

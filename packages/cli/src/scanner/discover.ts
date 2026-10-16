@@ -104,12 +104,10 @@ export async function classifyRepository(
   const resolution = await (options.resolveIdentity ?? resolveProjectIdentity)(canonical, {
     selectedRoot: true,
   });
-  const resolvedPath =
-    resolution.kind === 'git_unavailable'
-      ? canonical
-      : await (options.canonicalizePath ?? realpath)(
-          resolution.repository.kind === 'git' ? resolution.repository.root : resolution.root
-        );
+  // The folder is listed as itself (a project folder inside a repository is
+  // its own project), except a linked worktree, which is listed as the main
+  // checkout whose project it belongs to.
+  const resolvedPath = resolution.kind === 'git_unavailable' ? canonical : resolution.root;
   const kind =
     resolution.kind !== 'git_unavailable' && resolution.repository.kind === 'git'
       ? ('git' as const)
@@ -140,6 +138,15 @@ export async function classifyRepository(
     }
   }
   return { path: resolvedPath, state: 'not_set_up', kind };
+}
+
+/** True when the nearest identity file above `folder` names a project. */
+async function insideProject(
+  folder: string,
+  resolveIdentity: typeof resolveProjectIdentity = resolveProjectIdentity
+): Promise<boolean> {
+  const resolution = await resolveIdentity(folder);
+  return resolution.kind === 'ok' && resolution.root !== folder;
 }
 
 export async function discoverRepositories(
@@ -200,7 +207,14 @@ export async function discoverRepositories(
         resolveIdentity: options.resolveIdentity,
         readRemotes: repositories.length < REPOSITORY_LIMIT ? options.readRemotes : async () => [],
       });
-      if (!repositoryPaths.has(repository.path)) {
+      // A nested clone without its own identity file belongs to the project
+      // around it, if there is one: it is not a folder to set up.
+      const partOfProject =
+        !identityBoundary &&
+        repository.path === canonical &&
+        (repository.state === 'not_set_up' || repository.state === 'remote_setup') &&
+        (await insideProject(canonical, options.resolveIdentity));
+      if (!partOfProject && !repositoryPaths.has(repository.path)) {
         repositoryPaths.add(repository.path);
         if (repositories.length < REPOSITORY_LIMIT) repositories.push(repository);
         else omitted++;

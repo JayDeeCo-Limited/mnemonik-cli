@@ -438,7 +438,6 @@ export async function reviewScannerProjects(
     const result = await executor.stage({
       cwd: repository.path,
       allowCreate: true,
-      allowNestedInherit: false,
     });
     if (result.status === 'staged') handoff.staged.push({ path: repository.path, result });
     else handoff.actionRequired.push({ path: repository.path, result });

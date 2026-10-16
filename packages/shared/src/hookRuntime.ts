@@ -1,7 +1,20 @@
 import { protectWindowsDirectory, type Execute } from './runtimeSigners.js';
 import { stderr, stdin } from 'node:process';
 import { HOOK_STDIN_TIMEOUT_MS } from './hookTimeouts.js';
-import { resolveProjectIdentity, type ProjectIdentityResolution } from './repositoryRoot.js';
+import { resolveNearestProjectIdentity, type ProjectIdentityResolution } from './repositoryRoot.js';
+import { noteHookTraceProject } from './hookTrace.js';
+import { homedir } from 'node:os';
+import { join, resolve } from 'node:path';
+
+/**
+ * A cwd the model typed, as an absolute folder: a leading `~` is the home
+ * folder, and a relative path is taken from the host's cwd.
+ */
+export function modelTypedCwd(hostCwd: string, typed: string): string {
+  const expanded =
+    typed === '~' ? homedir() : /^~[\\/]/.test(typed) ? join(homedir(), typed.slice(2)) : typed;
+  return resolve(hostCwd, expanded);
+}
 
 export interface ProjectIdentity {
   projectId: string;
@@ -24,19 +37,12 @@ export function clearProjectIdentityCache(): void {
   identityCache.clear();
 }
 
-export async function findProjectIdentity(
-  startCwd: string,
-  options: { allowNestedInherit?: boolean; maxDepth?: number } = {}
-): Promise<ProjectIdentity | null> {
+export async function findProjectIdentity(startCwd: string): Promise<ProjectIdentity | null> {
   if (!startCwd) return null;
-  const key = JSON.stringify([
-    startCwd,
-    options.allowNestedInherit ?? null,
-    options.maxDepth ?? null,
-  ]);
+  const key = startCwd;
   let pending = identityCache.get(key);
   if (!pending) {
-    pending = findProjectIdentityDetailed(startCwd, options).then((result) =>
+    pending = findProjectIdentityDetailed(startCwd).then((result) =>
       result.kind === 'ok'
         ? {
             projectId: result.identity.projectId,
@@ -48,15 +54,20 @@ export async function findProjectIdentity(
     identityCache.set(key, pending);
     // A failure is not an answer: the next caller resolves afresh.
     pending.catch(() => identityCache.delete(key));
+    // The hook flight recorder notes the project this invocation resolved.
+    pending.then(
+      (found) => noteHookTraceProject(found?.projectId),
+      () => undefined
+    );
   }
   return pending;
 }
 
+/** The project a hook's working folder belongs to: the nearest `.mnemonik.json` above it. */
 export async function findProjectIdentityDetailed(
-  startCwd: string,
-  options: { allowNestedInherit?: boolean; maxDepth?: number } = {}
+  startCwd: string
 ): Promise<ProjectIdentityResolution> {
-  return resolveProjectIdentity(startCwd, options);
+  return resolveNearestProjectIdentity(startCwd);
 }
 
 /** Largest hook payload read from stdin; a bigger one fails open. */
@@ -283,3 +294,4 @@ export * from './runtimeSigners.js';
 export * from './projectSetupHandoff.js';
 
 export * from './hookConversation.js';
+export * from './hookTrace.js';

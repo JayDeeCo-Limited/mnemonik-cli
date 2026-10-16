@@ -11,9 +11,9 @@ const cases: Array<[string[], string]> = [
   [['connect'], '6c9d4881c201d019fc325987b3ff6d09c0910245f4726332e1750702f7e73ce9'],
   [['project'], '550e4cb12dbbcad4224471d7cab14b5b3c44c93243ef2fa7d674420617395507'],
   [['project', 'status'], 'ac91f509f89f40979bdf153762bf6469a757977824513e71c33541f39c204888'],
-  [['project', 'init'], '0faf3860f8fb3774377d9d3652720285a3b8c53bd122c221cb3610128f8991cf'],
-  [['project', 'link'], 'f301e7f0048618dcdefa9c1b95ab78f179abaaf16766e6741b6b0c978398d30d'],
-  [['project', 'setup'], '2b989f13d7656484016664b10947a58f15d1f697796da2195d0e197c02a97843'],
+  [['project', 'init'], '38dae228301e478958491fdfd4ac02c144fb34ed5a5dcef3f91f6f458143b871'],
+  [['project', 'link'], '206e436bab7eb0c86dad81d1c3aedf8a5cab65524932dff3f61576442262519e'],
+  [['project', 'setup'], 'b20dd9c745ae55424eb33bddd2f259b9bda5a66f31083c97b792f4447a3fdd6d'],
   [['project', 'delete'], '52ada4c76ea7c4ec6f5f7cb5ccf62b65712be2c2a0296128db656cccd6ad29e9'],
   [['project', 'ensure'], '0f118185fa1d51658f384e5d4ae4994b4ee2ea93c7ceda2e03c2373b1eec0da7'],
   [['update'], '778abaed8285607381687bf58d6be26d48dab358dcad7c6665603b14281d26c3'],
@@ -41,6 +41,8 @@ const cases: Array<[string[], string]> = [
   [['roots'], 'af842c6f07b45bb67a277c5741bd4ad91a4f07bd22b54258bf9c58b5e95b3d32'],
   [['data', 'delete'], '34b127120cd7d9f5e4271cd8f23c336d8b0d825d56160e1a3ad6c08d8580c8c3'],
   [['diagnostics'], '44dd4ee1a8a5b83fb97b181f6bf91a3598d158b1541e3c4a8ea39e2c4d8889cd'],
+  [['hooks'], '62f6aea284222498d9e2eb6a73cc48dabeaad4bfa81b99accaa2f688e64ab9ac'],
+  [['hooks', 'log'], '2effa4f35feeafd88f36845951cd5c458b1a5ff0aae70697cb464ffe111fc5fe'],
   [['identity', 'migrate'], '71b47337a51b58da49dc5b866bb3fa3299b04934b4f4b1db5f8f1449a9730ac2'],
 ];
 

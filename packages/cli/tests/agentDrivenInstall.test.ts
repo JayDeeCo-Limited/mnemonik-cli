@@ -197,7 +197,6 @@ it('connects every folder with its own project id and says why each other one wa
       await earlier.ensureProject({
         cwd: join(f.home, 'Projects', name),
         allowCreate: true,
-        allowNestedInherit: false,
       })
     ).toMatchObject({ status: 'done' });
 

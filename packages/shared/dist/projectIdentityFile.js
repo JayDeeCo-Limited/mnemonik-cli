@@ -68,6 +68,30 @@ export function parseIdentityFile(text) {
         },
     };
 }
+/**
+ * A `.mnemonik.json` that holds configuration but no identity: a JSON object
+ * with no `projectId` that names schema 1 or no schema. Invalid identities,
+ * and any file naming another schema (which may carry its identity under other
+ * keys), are not.
+ */
+export function isConfigurationOnly(text) {
+    try {
+        const value = JSON.parse(text);
+        return (!!value &&
+            typeof value === 'object' &&
+            !Array.isArray(value) &&
+            !('projectId' in value) &&
+            (!('schemaVersion' in value) || value.schemaVersion === 1));
+    }
+    catch {
+        return false;
+    }
+}
+/**
+ * Read a folder's identity file. With `configurationOnlyAbsent` (and with
+ * `selectedRoot`, folders ticked during install), a configuration-only file is
+ * no identity: the folder is not a project of its own.
+ */
 export async function readIdentityFile(dir, options = {}) {
     const path = join(dir, '.mnemonik.json');
     try {
@@ -77,24 +101,13 @@ export async function readIdentityFile(dir, options = {}) {
         if (!stat.isFile())
             return { kind: 'malformed', detail: 'identity path is not a regular file' };
         const text = await readFile(path, 'utf8');
-        if (options.selectedRoot) {
-            // A ticked folder with configuration but no identity is a new project.
-            // Keep invalid identities, non-regular files and any file that names a
-            // schema other than 1 on the strict refusal path: a later schema may carry
-            // its identity under other keys, and setup must not replace it.
-            try {
-                const value = JSON.parse(text);
-                if (value &&
-                    typeof value === 'object' &&
-                    !Array.isArray(value) &&
-                    !('projectId' in value) &&
-                    (!('schemaVersion' in value) || value.schemaVersion === 1))
-                    return { kind: 'absent' };
-            }
-            catch {
-                /* The strict parser supplies the diagnostic. */
-            }
-        }
+        // A ticked folder with configuration but no identity is a new project, and
+        // a configuration-only file met walking up is not a project boundary. Keep
+        // invalid identities, non-regular files and any file that names a schema
+        // other than 1 on the strict refusal path: a later schema may carry its
+        // identity under other keys, and setup must not replace it.
+        if ((options.selectedRoot || options.configurationOnlyAbsent) && isConfigurationOnly(text))
+            return { kind: 'absent' };
         return parseIdentityFile(text);
     }
     catch (error) {

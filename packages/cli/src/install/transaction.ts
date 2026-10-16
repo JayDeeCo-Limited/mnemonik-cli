@@ -119,7 +119,6 @@ export const consentMatches = (a: Consent | undefined, b: Consent): boolean =>
 const projectOptions = (project: { root: string }) => ({
   cwd: project.root,
   allowCreate: true,
-  allowNestedInherit: false,
 });
 const report = (journal: Journal, text: string) => {
   if (!journal.data.reports.includes(text)) journal.data.reports.push(text);

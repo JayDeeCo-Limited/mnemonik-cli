@@ -64,7 +64,6 @@ export const consentMatches = (a, b) => a !== undefined &&
 const projectOptions = (project) => ({
     cwd: project.root,
     allowCreate: true,
-    allowNestedInherit: false,
 });
 const report = (journal, text) => {
     if (!journal.data.reports.includes(text))

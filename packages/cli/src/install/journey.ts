@@ -758,7 +758,6 @@ export async function joinedInstall(
             const options = {
               cwd: repo.path,
               allowCreate: true,
-              allowNestedInherit: false,
               ...(linkProjectId
                 ? { intent: { action: 'link' as const, projectId: linkProjectId } }
                 : {}),
@@ -811,7 +810,6 @@ export async function joinedInstall(
           const result = await executor?.apply({
             cwd: project.root,
             allowCreate: true,
-            allowNestedInherit: false,
             ...(linkProjectId
               ? { intent: { action: 'link' as const, projectId: linkProjectId } }
               : {}),
@@ -1028,7 +1026,6 @@ export async function joinedInstall(
               await executor?.rollback({
                 cwd: projectRoot,
                 allowCreate: true,
-                allowNestedInherit: false,
                 ...(linkProjectId
                   ? { intent: { action: 'link' as const, projectId: linkProjectId } }
                   : {}),

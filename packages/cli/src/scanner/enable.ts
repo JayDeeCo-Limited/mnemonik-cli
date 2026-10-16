@@ -36,6 +36,7 @@ import {
   connectedProjectsMessage,
   createRealProjectRuntime,
   ensureProjectRoot,
+  projectFolderFor,
   projectLimitMessage,
   type ProjectExecutor,
 } from '../project.js';
@@ -184,7 +185,11 @@ export async function enableScanner(
     const executor = await prepared.projectExecutor();
     const connected: string[] = [];
     let limit: string | undefined;
-    for (const root of [...prepared.roots]) {
+    // A folder inside a project connects that project's folder.
+    const projectFolders = new Set<string>();
+    for (const folder of prepared.roots)
+      projectFolders.add(await projectFolderFor(folder, executor));
+    for (const root of projectFolders) {
       const result = await ensureProjectRoot(root, executor);
       if (result.status === 'done') connected.push(root);
       else {

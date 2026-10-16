@@ -2,7 +2,7 @@
  * Code Scanner - Parse and chunk source files for embedding
  */
 
-import { readdir, open, lstat, realpath } from 'fs/promises';
+import { readdir, readFile, open, lstat, realpath } from 'fs/promises';
 import { constants, type Stats } from 'fs';
 import { join, relative, extname, sep, resolve, dirname } from 'path';
 import { createHash } from 'crypto';
@@ -11,6 +11,7 @@ import { debug as logDebug, info as logInfo, warn as logWarn } from './logger.js
 import { withTimeout } from './asyncUtils.js';
 import { scrubSecrets } from './secretPatterns.js';
 import { isProtectedLocalPath, protectedLocalPaths } from './protectedPaths.js';
+import { readIdentityFile } from './projectIdentityFile.js';
 import {
   MAX_AST_PARSE_BYTES,
   MAX_SIGNATURE_CHARS,
@@ -219,8 +220,8 @@ export const BUILT_IN_IGNORE_DIRS: readonly string[] = [
  * at the path root or immediately after a '/', so nested packages/x/tests/
  * fixtures/ are excluded but integration-tests/fixtures/ is NOT. Fixture
  * snapshot dirs were being indexed as real source and outranking the genuine
- * file in code_search. (Nested clones/worktrees/submodules are excluded
- * generically by the isGitBoundary rule below, not a path convention.)
+ * file in code_search. (Subprojects and linked worktrees are excluded
+ * generically by the isProjectBoundary rule below, not a path convention.)
  */
 const BUILT_IN_IGNORE_FILE_PATTERNS: readonly string[] = [
   // NOTE: the `.env` family and every other secret-bearing FILE KIND lives in
@@ -700,6 +701,85 @@ export async function isGitBoundary(dirPath: string): Promise<boolean> {
 }
 
 /**
+ * How many folders deep a project's scan walks. Discovery searches a project
+ * for subprojects to the same depth, so a subproject the scan leaves out is
+ * always found and scanned as its own project.
+ */
+export const SCANNER_MAX_DEPTH = 10;
+
+/**
+ * True when `dirPath` starts a subtree that is not this project's to index.
+ * A file belongs to the project of the nearest `.mnemonik.json` above it, so:
+ *  - a folder with its own identity file is a subproject, indexed as its own
+ *    project, never also into this one. A file naming the enclosing project
+ *    (`enclosingProjectId`, a copy) is the same project, and a
+ *    configuration-only file (no `projectId`) names none: neither is a
+ *    boundary. A file that cannot be read as an identity still is;
+ *  - a linked worktree (a `.git` FILE whose git directory has a `commondir`)
+ *    is another checkout of a project, indexed from its main checkout.
+ * A nested clone or a submodule without its own `.mnemonik.json` belongs to
+ * this project and is indexed with it (its `.git` directory is ignored by the
+ * built-in rules). The scan ROOT is exempt by construction (callers only test
+ * child directories).
+ */
+export async function isProjectBoundary(
+  dirPath: string,
+  enclosingProjectId?: string
+): Promise<boolean> {
+  if (await lstatWithin(join(dirPath, '.mnemonik.json'))) {
+    const identity = await withTimeout(
+      readIdentityFile(dirPath, { configurationOnlyAbsent: true }),
+      FILE_OP_TIMEOUT_MS,
+      `identity read timed out: ${dirPath}`
+    ).catch(() => undefined);
+    if (!identity) return true;
+    if (identity.kind === 'ok') {
+      if (identity.identity.projectId !== enclosingProjectId) return true;
+    } else if (identity.kind !== 'absent') return true;
+  }
+  return isLinkedWorktreeCheckout(dirPath);
+}
+
+/**
+ * The project a scan root's own identity file names, or undefined: the
+ * enclosing project for isProjectBoundary.
+ */
+export async function rootProjectId(rootPath: string): Promise<string | undefined> {
+  const identity = await withTimeout(
+    readIdentityFile(rootPath),
+    FILE_OP_TIMEOUT_MS,
+    `identity read timed out: ${rootPath}`
+  ).catch(() => undefined);
+  return identity?.kind === 'ok' ? identity.identity.projectId : undefined;
+}
+
+const lstatWithin = (path: string) =>
+  withTimeout(lstat(path), FILE_OP_TIMEOUT_MS, `lstat timed out: ${path}`).catch(() => undefined);
+
+/**
+ * True when `dirPath` is the top of a linked git worktree: its `.git` is a
+ * FILE pointing at a git directory that has a `commondir`. A submodule's
+ * `.git` file points at `.git/modules/<name>`, which has none.
+ */
+export async function isLinkedWorktreeCheckout(dirPath: string): Promise<boolean> {
+  const marker = await lstatWithin(join(dirPath, '.git'));
+  if (!marker?.isFile()) return false;
+  try {
+    const pointer = /^gitdir:\s*(.+?)\s*$/im.exec(
+      await withTimeout(
+        readFile(join(dirPath, '.git'), 'utf8'),
+        FILE_OP_TIMEOUT_MS,
+        `read timed out: ${join(dirPath, '.git')}`
+      )
+    )?.[1];
+    if (!pointer) return false;
+    return !!(await lstatWithin(join(resolve(dirPath, pointer), 'commondir')));
+  } catch {
+    return false;
+  }
+}
+
+/**
  * One directory's compiled ignore-file rules, keyed by its path relative to
  * the scan root (`''` = root). A stack of these, root->leaf, is threaded
  * through the walkers; `ignoredByStack` tests deepest-first so a nested
@@ -1027,7 +1107,7 @@ export class CodeScanner {
 
   /**
    * True when any directory strictly between `rootPath` and `filePath`
-   * carries its own `.git` entry (see isGitBoundary). Paths that don't
+   * starts a subtree this project does not index (see isProjectBoundary). Paths that don't
    * resolve under `rootPath` are not judged here (return false) - the
    * server's path validation handles escapes.
    */
@@ -1041,7 +1121,7 @@ export class CodeScanner {
       const segment = segments[i];
       if (segment === undefined) continue;
       current = join(current, segment);
-      if (await isGitBoundary(current)) return true;
+      if (await this.isBoundary(current, rootPath)) return true;
     }
     return false;
   }
@@ -1050,7 +1130,25 @@ export class CodeScanner {
    * Maximum directory depth for recursive scanning
    * Prevents runaway recursion on deep/symlinked structures
    */
-  private static readonly MAX_DEPTH = 10;
+  private static readonly MAX_DEPTH = SCANNER_MAX_DEPTH;
+
+  private rootProjectIds = new Map<
+    string,
+    { at: number; projectId: Promise<string | undefined> }
+  >();
+  /**
+   * isProjectBoundary, with the scan root's own project as the enclosing one.
+   * The root's file is read at most once a minute: a walk tests many folders,
+   * and a project relinked since is seen on the next scan.
+   */
+  private async isBoundary(dirPath: string, rootPath: string): Promise<boolean> {
+    let cached = this.rootProjectIds.get(rootPath);
+    if (!cached || Date.now() - cached.at > 60_000) {
+      cached = { at: Date.now(), projectId: rootProjectId(rootPath) };
+      this.rootProjectIds.set(rootPath, cached);
+    }
+    return isProjectBoundary(dirPath, await cached.projectId);
+  }
 
   private canonicalRoots = new Map<string, string>();
   private async canonicalRoot(root: string): Promise<string> {
@@ -1285,7 +1383,7 @@ export class CodeScanner {
         if (stats.isDirectory()) {
           // .gitignore/.mnemonikignore, then soft-default directories
           if (this.skipDirectory(relativePath, localStack)) continue;
-          if (await isGitBoundary(fullPath)) continue; // another repo's subtree
+          if (await this.isBoundary(fullPath, rootPath)) continue; // a subproject or worktree
           await this.traversePaths(
             fullPath,
             rootPath,
@@ -1500,7 +1598,7 @@ export class CodeScanner {
         if (stats.isDirectory()) {
           // .gitignore/.mnemonikignore, then soft-default directories
           if (this.skipDirectory(relativePath, localStack)) continue;
-          if (await isGitBoundary(fullPath)) continue; // another repo's subtree
+          if (await this.isBoundary(fullPath, rootPath)) continue; // a subproject or worktree
           await this.traverseDirectory(
             fullPath,
             rootPath,
@@ -2423,7 +2521,7 @@ export class CodeScanner {
 
         if (this.ignoredByStack(rel, isDir, localStack)) continue; // .gitignore/.mnemonikignore
         if (isDir) {
-          if (await isGitBoundary(full)) continue; // another repo's subtree
+          if (await this.isBoundary(full, projectRoot)) continue; // a subproject or worktree
           await walk(full, depth + 1, localStack);
         } else if (isFile && AUTHORITY_FILE_MATCHERS.some((m) => m(rel))) {
           let file: { path: string; content: string; hash: string } | undefined;

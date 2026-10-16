@@ -54,7 +54,8 @@ export interface EnsureOptions {
     cwd: string;
     owner?: Owner;
     allowCreate: boolean;
-    allowNestedInherit: boolean;
+    /** Act on exactly `cwd`, not the project it sits in: init, link or setup of a named folder. */
+    namedRoot?: true;
     intent?: {
         action: 'link';
         projectId: string;

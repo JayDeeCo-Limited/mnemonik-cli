@@ -1,4 +1,10 @@
 type Platform = NodeJS.Platform;
+/**
+ * Mnemonik's local state folder: the same answer as `stateDirectory` in
+ * @mnemonik/local-setup, which depends on this package and so cannot be
+ * imported here.
+ */
+export declare function mnemonikStateDirectory(platform?: Platform, env?: NodeJS.ProcessEnv, home?: string): string;
 /** Local state and credential locations that Mnemonik must never scan. */
 export declare function protectedLocalPaths(platform?: Platform, env?: NodeJS.ProcessEnv, home?: string): string[];
 /** True when candidate is the protected path itself or lies below it. */

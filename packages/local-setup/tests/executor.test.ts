@@ -111,7 +111,6 @@ async function fixture() {
   const options = {
     cwd: root,
     allowCreate: true,
-    allowNestedInherit: false,
   };
   const deps = {
     resolver,
@@ -285,7 +284,7 @@ describe('durable local setup', () => {
     await symlink(f.root, alias, 'dir');
     const caseAlias = f.root.toUpperCase();
     const canonicalizingResolver = {
-      resolveProjectIdentity: (cwd: string, options?: { allowNestedInherit?: boolean }) =>
+      resolveProjectIdentity: (cwd: string, options?: { namedRoot?: boolean }) =>
         resolveProjectIdentity(cwd === caseAlias ? f.root : cwd, options),
     };
 
@@ -778,7 +777,7 @@ describe('durable local setup', () => {
           const executor = createProjectSetupExecutor({resolver: {resolveProjectIdentity}, stateDir,
             scopeKey: 'user:device', bindContext: async () => {throw new Error('unexpected bind')},
             transport: {}});
-          const result = await executor.rollback({cwd: root, allowCreate: true, allowNestedInherit: false});
+          const result = await executor.rollback({cwd: root, allowCreate: true});
           if (result.status !== 'rolled_back') throw new Error(JSON.stringify(result));
         `,
             f.root,
@@ -941,7 +940,7 @@ describe('durable local setup', () => {
     expect(await readFile(f.file, 'utf8')).toBe('user edit');
   });
 
-  it.each(['unknown_version', 'malformed', 'conflict', 'nested', 'git_unavailable'] as const)(
+  it.each(['unknown_version', 'malformed', 'git_unavailable'] as const)(
     'preserves local %s without any state or server writes',
     async (status) => {
       const f = await fixture();
@@ -950,7 +949,7 @@ describe('durable local setup', () => {
         root: f.root,
         repository: { kind: 'plain', root: f.root },
         nested: [],
-      } as ProjectIdentityResolution;
+      } as unknown as ProjectIdentityResolution;
       expect(await createProjectSetupExecutor(f.deps).ensureProject(f.options)).toMatchObject({
         status: 'ACTION_REQUIRED',
         state: status,
@@ -1199,7 +1198,7 @@ describe('a setup that waits on a question can always be answered', () => {
 
 describe('selected-root setup of a folder whose identity file names another schema', () => {
   const selectedResolver = {
-    resolveProjectIdentity: (cwd: string, options?: { allowNestedInherit?: boolean }) =>
+    resolveProjectIdentity: (cwd: string, options?: { namedRoot?: boolean }) =>
       resolveProjectIdentity(cwd, { ...options, selectedRoot: true }),
   };
 

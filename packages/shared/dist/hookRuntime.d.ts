@@ -1,5 +1,10 @@
 import { type Execute } from './runtimeSigners.js';
 import { type ProjectIdentityResolution } from './repositoryRoot.js';
+/**
+ * A cwd the model typed, as an absolute folder: a leading `~` is the home
+ * folder, and a relative path is taken from the host's cwd.
+ */
+export declare function modelTypedCwd(hostCwd: string, typed: string): string;
 export interface ProjectIdentity {
     projectId: string;
     projectName?: string;
@@ -7,14 +12,9 @@ export interface ProjectIdentity {
 }
 /** Forget cached resolutions (after project setup wrote a `.mnemonik.json`). */
 export declare function clearProjectIdentityCache(): void;
-export declare function findProjectIdentity(startCwd: string, options?: {
-    allowNestedInherit?: boolean;
-    maxDepth?: number;
-}): Promise<ProjectIdentity | null>;
-export declare function findProjectIdentityDetailed(startCwd: string, options?: {
-    allowNestedInherit?: boolean;
-    maxDepth?: number;
-}): Promise<ProjectIdentityResolution>;
+export declare function findProjectIdentity(startCwd: string): Promise<ProjectIdentity | null>;
+/** The project a hook's working folder belongs to: the nearest `.mnemonik.json` above it. */
+export declare function findProjectIdentityDetailed(startCwd: string): Promise<ProjectIdentityResolution>;
 /** Largest hook payload read from stdin; a bigger one fails open. */
 export declare const HOOK_STDIN_MAX_BYTES = 1048576;
 /**
@@ -61,4 +61,5 @@ export * from './runtimeReader.js';
 export * from './runtimeSigners.js';
 export * from './projectSetupHandoff.js';
 export * from './hookConversation.js';
+export * from './hookTrace.js';
 //# sourceMappingURL=hookRuntime.d.ts.map

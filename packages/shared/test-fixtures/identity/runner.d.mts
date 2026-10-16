@@ -2,7 +2,7 @@ export interface IdentityFixtureAdapter {
   parse(text: string): unknown;
   read(dir: string): Promise<unknown>;
   resolveRoot(cwd: string): Promise<unknown>;
-  resolve(cwd: string, options?: { allowNestedInherit?: boolean }): Promise<unknown>;
+  resolve(cwd: string, options?: { namedRoot?: boolean }): Promise<unknown>;
   find?(cwd: string): Promise<unknown>;
 }
 

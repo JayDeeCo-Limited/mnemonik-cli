@@ -1,7 +1,18 @@
 import { protectWindowsDirectory } from './runtimeSigners.js';
 import { stderr, stdin } from 'node:process';
 import { HOOK_STDIN_TIMEOUT_MS } from './hookTimeouts.js';
-import { resolveProjectIdentity } from './repositoryRoot.js';
+import { resolveNearestProjectIdentity } from './repositoryRoot.js';
+import { noteHookTraceProject } from './hookTrace.js';
+import { homedir } from 'node:os';
+import { join, resolve } from 'node:path';
+/**
+ * A cwd the model typed, as an absolute folder: a leading `~` is the home
+ * folder, and a relative path is taken from the host's cwd.
+ */
+export function modelTypedCwd(hostCwd, typed) {
+    const expanded = typed === '~' ? homedir() : /^~[\\/]/.test(typed) ? join(homedir(), typed.slice(2)) : typed;
+    return resolve(hostCwd, expanded);
+}
 /**
  * One resolution per directory per process. A hook process serves one event,
  * and its handlers resolve the same cwd several times in sequence (each
@@ -15,17 +26,13 @@ const identityCache = new Map();
 export function clearProjectIdentityCache() {
     identityCache.clear();
 }
-export async function findProjectIdentity(startCwd, options = {}) {
+export async function findProjectIdentity(startCwd) {
     if (!startCwd)
         return null;
-    const key = JSON.stringify([
-        startCwd,
-        options.allowNestedInherit ?? null,
-        options.maxDepth ?? null,
-    ]);
+    const key = startCwd;
     let pending = identityCache.get(key);
     if (!pending) {
-        pending = findProjectIdentityDetailed(startCwd, options).then((result) => result.kind === 'ok'
+        pending = findProjectIdentityDetailed(startCwd).then((result) => result.kind === 'ok'
             ? {
                 projectId: result.identity.projectId,
                 projectName: result.identity.projectName,
@@ -35,11 +42,14 @@ export async function findProjectIdentity(startCwd, options = {}) {
         identityCache.set(key, pending);
         // A failure is not an answer: the next caller resolves afresh.
         pending.catch(() => identityCache.delete(key));
+        // The hook flight recorder notes the project this invocation resolved.
+        pending.then((found) => noteHookTraceProject(found?.projectId), () => undefined);
     }
     return pending;
 }
-export async function findProjectIdentityDetailed(startCwd, options = {}) {
-    return resolveProjectIdentity(startCwd, options);
+/** The project a hook's working folder belongs to: the nearest `.mnemonik.json` above it. */
+export async function findProjectIdentityDetailed(startCwd) {
+    return resolveNearestProjectIdentity(startCwd);
 }
 /** Largest hook payload read from stdin; a bigger one fails open. */
 export const HOOK_STDIN_MAX_BYTES = 1_048_576;
@@ -218,4 +228,5 @@ export * from './runtimeReader.js';
 export * from './runtimeSigners.js';
 export * from './projectSetupHandoff.js';
 export * from './hookConversation.js';
+export * from './hookTrace.js';
 //# sourceMappingURL=hookRuntime.js.map

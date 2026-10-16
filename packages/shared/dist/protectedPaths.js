@@ -3,17 +3,26 @@ import { posix, win32 } from 'node:path';
 function pathsFor(platform) {
     return platform === 'win32' ? win32 : posix;
 }
+/**
+ * Mnemonik's local state folder: the same answer as `stateDirectory` in
+ * @mnemonik/local-setup, which depends on this package and so cannot be
+ * imported here.
+ */
+export function mnemonikStateDirectory(platform = process.platform, env = process.env, home = homedir()) {
+    if (env.MNEMONIK_STATE_DIR)
+        return env.MNEMONIK_STATE_DIR;
+    if (platform === 'win32')
+        return win32.join(env.LOCALAPPDATA || win32.join(home, 'AppData', 'Local'), 'Mnemonik');
+    if (platform === 'darwin')
+        return posix.join(home, 'Library', 'Application Support', 'Mnemonik');
+    return posix.join(env.XDG_STATE_HOME || posix.join(home, '.local', 'state'), 'mnemonik');
+}
 /** Local state and credential locations that Mnemonik must never scan. */
 export function protectedLocalPaths(platform = process.platform, env = process.env, home = homedir()) {
     const path = pathsFor(platform);
     const localAppData = env.LOCALAPPDATA || win32.join(home, 'AppData', 'Local');
     const appData = env.APPDATA || win32.join(home, 'AppData', 'Roaming');
-    const state = env.MNEMONIK_STATE_DIR ||
-        (platform === 'win32'
-            ? win32.join(localAppData, 'Mnemonik')
-            : platform === 'darwin'
-                ? posix.join(home, 'Library', 'Application Support', 'Mnemonik')
-                : posix.join(env.XDG_STATE_HOME || posix.join(home, '.local', 'state'), 'mnemonik'));
+    const state = mnemonikStateDirectory(platform, env, home);
     const common = [
         state,
         path.join(home, '.mnemonik'),

@@ -265,45 +265,6 @@ describe('project init', () => {
     expect(f.stdout.text + f.stderr.text).toContain('Projects: 1 used, limit 1');
   });
 
-  it.each(['nested', 'conflict'] as const)(
-    'shows the %s boundary and only the documented choices before writing',
-    async (kind) => {
-      const f = await baseFixture();
-      await gitRoot(f.root);
-      const base = {
-        root: f.root,
-        repository: {
-          kind: 'git' as const,
-          root: join(f.root, 'nested'),
-          commonDir: join(f.root, 'nested', '.git'),
-          isLinkedWorktree: false,
-          nested: [{ path: join(f.root, 'nested'), kind: 'directory' as const }],
-        },
-        nested: [{ path: join(f.root, 'nested'), kind: 'directory' as const }],
-      };
-      const resolution: ProjectIdentityResolution =
-        kind === 'conflict'
-          ? {
-              ...base,
-              kind,
-              rootIdentity: { schemaVersion: 1, projectId },
-              nestedIdentity: { schemaVersion: 1, projectId: otherId },
-            }
-          : { ...base, kind, parentIdentity: { schemaVersion: 1, projectId } };
-      const deps = commandDeps(f, { resolution });
-      const ensure = vi.spyOn(deps.projectExecutor!, 'ensureProject');
-      expect(await runCli(['project', 'init'], deps)).toBe(3);
-      expect(f.stdout.text).toContain(`Root: ${resolution.root}`);
-      expect(f.stdout.text).toContain(`Identity: ${join(resolution.root, '.mnemonik.json')}`);
-      expect(f.stdout.text).toContain('You can use the parent project identity.');
-      expect(f.stdout.text).toContain('You can set up the nested project separately.');
-      expect(f.stdout.text).toContain('You can choose the main checkout or worktree identity.');
-      expect(f.stdout.text).not.toContain('Allowed actions');
-      expect(ensure).not.toHaveBeenCalled();
-      expect(await readFile(join(f.root, '.mnemonik.json')).catch(() => null)).toBeNull();
-    }
-  );
-
   it('ignores an inaccessible repository, keeps agent ensure silent, and offers to clear', async () => {
     const f = await baseFixture();
     await gitRoot(f.root);
@@ -484,7 +445,6 @@ describe('project link and setup', () => {
       cwd: f.root,
       owner: 'personal',
       allowCreate: false,
-      allowNestedInherit: false,
       intent,
     });
     expect(await readFile(join(f.root, '.mnemonik.json'))).toEqual(before);
@@ -555,7 +515,6 @@ describe('project link and setup', () => {
         cwd: f.root,
         owner: 'personal',
         allowCreate: true,
-        allowNestedInherit: false,
       })
     ).toMatchObject({ status: 'staged' });
     const team = ['project', 'setup', `--owner=team:${otherId}`, '--non-interactive', '--apply'];
@@ -603,51 +562,37 @@ describe('project link and setup', () => {
 });
 
 describe('project status and command records', () => {
-  it.each([
-    'ok',
-    'absent',
-    'unknown_version',
-    'malformed',
-    'nested',
-    'conflict',
-    'git_unavailable',
-  ] as const)('reports %s without invoking the executor or writing', async (kind) => {
-    const f = await baseFixture();
-    const base = {
-      root: f.root,
-      repository: { kind: 'plain' as const, root: f.root },
-      nested: [],
-    };
-    const resolution = (
-      kind === 'ok'
-        ? { ...base, kind, identity: { schemaVersion: 1 as const, projectId } }
-        : kind === 'unknown_version'
-          ? { ...base, kind, version: 2, path: f.root }
-          : kind === 'malformed'
-            ? { ...base, kind, detail: 'bad', path: f.root }
-            : kind === 'nested'
-              ? { ...base, kind }
-              : kind === 'conflict'
-                ? {
-                    ...base,
-                    kind,
-                    rootIdentity: { schemaVersion: 1 as const, projectId },
-                    nestedIdentity: { schemaVersion: 1 as const, projectId: otherId },
-                  }
-                : kind === 'git_unavailable'
-                  ? { kind, detail: 'missing git' }
-                  : { ...base, kind }
-    ) as ProjectIdentityResolution;
-    const deps = commandDeps(f, { resolution });
-    const ensure = vi.spyOn(deps.projectExecutor!, 'ensureProject');
-    expect(await runCli(['project', 'status', '--json', '--non-interactive'], deps)).toBe(0);
-    expect(JSON.parse(f.stdout.text)).toMatchObject({
-      resolvedRoot: f.root,
-      decisionReason: kind,
-    });
-    expect(ensure).not.toHaveBeenCalled();
-    expect(await readdir(f.stateDir).catch(() => [])).toEqual([]);
-  });
+  it.each(['ok', 'absent', 'unknown_version', 'malformed', 'git_unavailable'] as const)(
+    'reports %s without invoking the executor or writing',
+    async (kind) => {
+      const f = await baseFixture();
+      const base = {
+        root: f.root,
+        repository: { kind: 'plain' as const, root: f.root },
+        nested: [],
+      };
+      const resolution = (
+        kind === 'ok'
+          ? { ...base, kind, identity: { schemaVersion: 1 as const, projectId } }
+          : kind === 'unknown_version'
+            ? { ...base, kind, version: 2, path: f.root }
+            : kind === 'malformed'
+              ? { ...base, kind, detail: 'bad', path: f.root }
+              : kind === 'git_unavailable'
+                ? { kind, detail: 'missing git' }
+                : { ...base, kind }
+      ) as ProjectIdentityResolution;
+      const deps = commandDeps(f, { resolution });
+      const ensure = vi.spyOn(deps.projectExecutor!, 'ensureProject');
+      expect(await runCli(['project', 'status', '--json', '--non-interactive'], deps)).toBe(0);
+      expect(JSON.parse(f.stdout.text)).toMatchObject({
+        resolvedRoot: f.root,
+        decisionReason: kind,
+      });
+      expect(ensure).not.toHaveBeenCalled();
+      expect(await readdir(f.stateDir).catch(() => [])).toEqual([]);
+    }
+  );
 
   it('reads an existing executor record without changing its files or command count', async () => {
     const f = await baseFixture();
@@ -726,4 +671,65 @@ it('counts several connected folders as project folders', () => {
   expect(connectedProjectsMessage(['/work/a', '/work/b', '/work/c'])).toBe(
     '  ✓ Connected 3 project folders.'
   );
+});
+
+describe('the folder a person names (owner rule, 2026-10-16)', () => {
+  async function projectWithSubfolder() {
+    const f = await baseFixture();
+    await gitRoot(f.root);
+    const identity = JSON.stringify({ schemaVersion: 1, projectId: oldId });
+    await writeFile(join(f.root, '.mnemonik.json'), identity);
+    const sub = join(f.root, 'home-agent');
+    await mkdir(sub);
+    return { f, sub, identity };
+  }
+
+  it('init <folder> inside a project makes that folder its own project', async () => {
+    const { f, sub, identity } = await projectWithSubfolder();
+    const deps = commandDeps(f);
+    expect(
+      await runCli(['project', 'init', sub, '--json', '--non-interactive', '--apply'], deps)
+    ).toBe(0);
+    expect(JSON.parse(await readFile(join(sub, '.mnemonik.json'), 'utf8')).projectId).toBe(
+      projectId
+    );
+    expect(await readFile(join(f.root, '.mnemonik.json'), 'utf8')).toBe(identity);
+  });
+
+  it('init <folder> on a git clone inside a project, without its own file, makes it a project', async () => {
+    const { f, sub } = await projectWithSubfolder();
+    await gitRoot(sub);
+    const deps = commandDeps(f);
+    expect(
+      await runCli(['project', 'init', sub, '--json', '--non-interactive', '--apply'], deps)
+    ).toBe(0);
+    expect(JSON.parse(await readFile(join(sub, '.mnemonik.json'), 'utf8')).projectId).toBe(
+      projectId
+    );
+  });
+
+  it('init with no folder named, from a subfolder, keeps to the project the subfolder is in', async () => {
+    const { f, sub } = await projectWithSubfolder();
+    const deps = { ...commandDeps(f), cwd: sub };
+    expect(await runCli(['project', 'init', '--json', '--non-interactive', '--apply'], deps)).toBe(
+      0
+    );
+    expect(await readFile(join(sub, '.mnemonik.json')).catch(() => null)).toBeNull();
+    expect(JSON.parse(await readFile(join(f.root, '.mnemonik.json'), 'utf8')).projectId).toBe(
+      oldId
+    );
+    expect(JSON.parse(f.stdout.text)).toMatchObject({ projectId: oldId });
+  });
+
+  it('status of a subfolder reports the project around it', async () => {
+    const { f, sub } = await projectWithSubfolder();
+    await gitRoot(sub);
+    const deps = commandDeps(f);
+    expect(await runCli(['project', 'status', sub, '--json'], deps)).toBe(0);
+    expect(JSON.parse(f.stdout.text)).toMatchObject({
+      resolvedRoot: f.root,
+      projectId: oldId,
+      identity: 'ok',
+    });
+  });
 });

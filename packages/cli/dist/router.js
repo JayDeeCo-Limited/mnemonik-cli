@@ -11,6 +11,8 @@ import { stateDirectory } from '@mnemonik/local-setup';
 import { isCredentialSessionUnavailableError } from '@mnemonik/credentials';
 import { runHosts, hostSource, codexTrustConditions, logoutHost, selectOwned, } from './install/hosts.js';
 import { hostOrder, launchHostLabels } from './install/adapters.js';
+import { hookActivityLines, hooksLog, invocationLine, tracedHosts, } from './hooksLog.js';
+import { hookTraceEnabled } from '@mnemonik/shared/hook-runtime';
 import { readInstallVersions } from './install/ownership.js';
 import { ensureLauncher, removeLauncher, LauncherError } from './launcher.js';
 import { readFile, realpath } from 'node:fs/promises';
@@ -25,7 +27,7 @@ import { SCANNER_RESTART_MESSAGE } from './scanner/service.js';
 import { SCANNER_FAILURE_MESSAGE, SCANNER_RETRY_MESSAGE } from './screens/journey.js';
 import { renderPreflight, runPreflight } from './preflight.js';
 import { postCurrentReadiness } from './installSession.js';
-import { createRealProjectRuntime, ensureProjectRoot, ensureProjectForAgent, folderRefusalMessage, projectLimitMessage, runProjectCommand, } from './project.js';
+import { createRealProjectRuntime, ensureProjectRoot, ensureProjectForAgent, projectFolderFor, folderRefusalMessage, projectLimitMessage, runProjectCommand, } from './project.js';
 import { evaluateRoot } from './project/eligibility.js';
 import { accountActions } from './transport/server.js';
 import { apiOrigin, describeReadiness, serializeReadiness as baseReadiness, resolveProjectIdentity, } from '@mnemonik/shared';
@@ -51,6 +53,7 @@ export const removeFolderPrompt = (name) => `Stop indexing ${name}? Its memories
 export const connectedFolderLine = (name) => `  ✓ Connected ${name}.`;
 export const alreadyConnectedFolderLine = (name) => `  ✓ ${name} is already connected and watched.`;
 export const removedFolderLine = (name) => `  ✓ ${name} is no longer connected.`;
+export const insideProjectLine = (name, projectFolder) => `${name} is part of the project in ${projectFolder}, so Mnemonik connects that folder.`;
 export const projectDeletionWarning = (name) => `Deleting ${name} removes its memories, code index and summaries for everyone. This cannot be undone.`;
 export const projectDeletedLine = (name) => `Deleted ${name}.`;
 export const NOTHING_DELETED_LINE = 'Nothing was deleted.';
@@ -287,6 +290,7 @@ const booleans = new Set([
     'cancel',
     'retry',
     'skip',
+    'follow',
 ]);
 const values = new Set([
     'components',
@@ -299,6 +303,7 @@ const values = new Set([
     'out',
     'project',
     'exclusions',
+    'last',
 ]);
 export const help = helpScreen([]) ?? '';
 function parse(args) {
@@ -1295,6 +1300,8 @@ async function doctorCommand(parsed, deps, output) {
     else {
         renderPreflight(result, output);
         renderStatusSummaries(document, output, { diagnostics: true });
+        for (const line of await hookActivityLines(deps.installStateDir ?? stateDirectory(process.platform, process.env, deps.home), deps.hooksLog?.now?.() ?? Date.now(), deps.hooksLog?.alive).catch(() => []))
+            output.line(line);
         if (document.installation.reasons.some((reason) => reason === 'scanner_failing' || reason === 'scanner_signed_out'))
             await renderScannerFailure(refusalStateDir(deps), output);
         await renderRefusals(refusalStateDir(deps), output, true);
@@ -1413,7 +1420,7 @@ async function deleteProjectCommand(parsed, rest, deps, output) {
     const json = parsed.flags.has('json');
     const cwd = deps.cwd ?? process.cwd();
     const resolve = deps.projectResolver?.resolveProjectIdentity ?? resolveProjectIdentity;
-    const here = await resolve(cwd, { allowNestedInherit: false });
+    const here = await resolve(cwd);
     const hereId = here.kind === 'ok' ? here.identity.projectId : undefined;
     const root = 'root' in here ? here.root : cwd;
     const target = rest[0] ?? hereId;
@@ -1587,10 +1594,16 @@ export async function runCli(args, deps = {}) {
             !parsed.flags.has('apply'))
             return actionRequired(output, parsed.flags.has('json'), 'Rerun with --apply', '--apply');
         const pathArgument = actionArguments[0] ?? '';
-        const requested = action === 'add'
+        const named = action === 'add'
             ? await realpath(pathArgument)
             : (saved.config.roots.find((root) => root === pathArgument) ?? pathArgument);
+        // A folder inside a project is part of it: adding one connects the project's folder.
+        const requested = action === 'add'
+            ? await projectFolderFor(named, deps.projectExecutor ?? { resolveProjectIdentity })
+            : named;
         const name = requested.split(/[\\/]/u).filter(Boolean).at(-1) ?? requested;
+        if (requested !== named && !parsed.flags.has('json'))
+            output.line(insideProjectLine(named.split(/[\\/]/u).filter(Boolean).at(-1) ?? named, requested));
         // Already connected and watched: say so and stop. Nothing is asked again.
         if (action === 'add' && saved.config.roots.includes(requested)) {
             if (parsed.flags.has('json'))
@@ -1617,7 +1630,7 @@ export async function runCli(args, deps = {}) {
                     getCliBearer: async () => bearer,
                     fetch: deps.grantFetch,
                 })).executor;
-            const resolution = await executor.resolveProjectIdentity(requested);
+            const resolution = await executor.resolveProjectIdentity(requested, { namedRoot: true });
             const decision = await evaluateRoot(resolution, { cwd: requested, home: deps.home });
             if (!decision.allowed) {
                 if (parsed.flags.has('json'))
@@ -1919,6 +1932,57 @@ export async function runCli(args, deps = {}) {
                     : 'Diagnostics could not be sent.\nCheck your internet connection, then try again.');
             return 1;
         }
+    }
+    if (command === 'hooks') {
+        const invalid = allowed(parsed, ['host', 'last', 'follow']);
+        if (invalid)
+            return flagError(output, parsed, invalid);
+        if (subcommand !== 'log')
+            return usageError(['hooks']);
+        if (rest.length)
+            return argumentError(['hooks', 'log'], ['hooks', 'log'], rest, 0);
+        const host = parsed.flags.get('host');
+        if (host !== undefined && !tracedHosts.includes(host))
+            return usageFailure(output, parsed, { reason: 'invalid_value', path: ['hooks', 'log'], detail: String(host) }, `Unknown coding tool: ${String(host)}. Use claude-code, codex, cursor or copilot.`);
+        const lastFlag = parsed.flags.get('last');
+        const last = lastFlag === undefined ? 20 : Number(lastFlag);
+        if (!Number.isInteger(last) || last < 1 || last > 10_000)
+            return usageFailure(output, parsed, { reason: 'invalid_value', path: ['hooks', 'log'], detail: String(lastFlag) }, '--last takes a whole number from 1 to 10000.');
+        const json = parsed.flags.has('json');
+        const follow = parsed.flags.has('follow');
+        const stop = new AbortController();
+        const interrupt = () => stop.abort();
+        if (follow && !deps.hooksLog?.signal)
+            process.once('SIGINT', interrupt);
+        try {
+            const shown = await hooksLog({
+                stateDir: deps.installStateDir ?? stateDirectory(process.platform, process.env, deps.home),
+                hosts: host ? [host] : undefined,
+                alive: deps.hooksLog?.alive,
+                now: deps.hooksLog?.now,
+                last,
+                follow: follow && {
+                    signal: deps.hooksLog?.signal ?? stop.signal,
+                    pollMs: deps.hooksLog?.pollMs,
+                },
+                print: (invocation) => {
+                    if (json && follow)
+                        output.json(invocation);
+                    else if (!json)
+                        output.line(invocationLine(invocation));
+                },
+            });
+            if (json && !follow)
+                output.json({ invocations: shown });
+            else if (!json && !shown.length && !follow)
+                output.line(hookTraceEnabled(process.env)
+                    ? "No hook runs were found in this machine's Mnemonik state folder."
+                    : "No hook runs were found in this machine's Mnemonik state folder. MNEMONIK_HOOK_TRACE=off is set here, so hooks started from this environment record nothing.");
+        }
+        finally {
+            process.removeListener('SIGINT', interrupt);
+        }
+        return 0;
     }
     if (command === 'status') {
         const invalid = allowed(parsed, []);

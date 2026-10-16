@@ -1487,7 +1487,6 @@ describe('host state matrix', () => {
     const result = await executor.ensureProject({
       cwd: f.projectRoot,
       allowCreate: true,
-      allowNestedInherit: false,
     });
     expect(result).toMatchObject({ status: 'ACTION_REQUIRED', state: 'context_mismatch' });
     expect(consume).toHaveBeenCalledOnce();

@@ -39,7 +39,14 @@ import {
 } from './project/records.js';
 
 export interface ProjectExecutor {
-  resolveProjectIdentity(cwd: string): Promise<ProjectIdentityResolution>;
+  /**
+   * Which project the folder is in, by the nearest `.mnemonik.json`; with
+   * `namedRoot`, exactly the folder a person named for init, link or setup.
+   */
+  resolveProjectIdentity(
+    cwd: string,
+    options?: { namedRoot?: boolean }
+  ): Promise<ProjectIdentityResolution>;
   ensureProject(options: EnsureOptions): Promise<SetupResult>;
   stage(options: EnsureOptions): Promise<SetupResult>;
   apply(options: EnsureOptions): Promise<SetupResult>;
@@ -80,11 +87,28 @@ export function answerCommands(
   });
 }
 
+/**
+ * The folder Mnemonik connects when a person names `folder`: the project it is
+ * in (the nearest `.mnemonik.json`; a linked worktree's main checkout), or
+ * exactly the folder named when it is in none. A subfolder belongs to its
+ * project, so naming one connects that project's folder, never a new project.
+ */
+export async function projectFolderFor(
+  folder: string,
+  resolver: Pick<ProjectExecutor, 'resolveProjectIdentity'>
+): Promise<string> {
+  const resolution = await resolver.resolveProjectIdentity(folder);
+  return resolution.kind === 'absent' || resolution.kind === 'git_unavailable'
+    ? folder
+    : resolution.root;
+}
+
+/** Set up exactly `root`, a folder projectFolderFor chose. */
 export async function ensureProjectRoot(
   root: string,
   executor: ProjectExecutor
 ): Promise<SetupResult> {
-  return executor.ensureProject({ cwd: root, allowCreate: true, allowNestedInherit: false });
+  return executor.ensureProject({ cwd: root, allowCreate: true, namedRoot: true });
 }
 
 const refusalReasons: Record<string, string> = {
@@ -103,8 +127,6 @@ const refusalReasons: Record<string, string> = {
   fingerprint_mismatch:
     'Its Git remote does not match the repository this project was set up with.',
   confirmation_required: 'Mnemonik has not seen this folder on this machine before.',
-  nested: 'It sits inside another project.',
-  conflict: 'It holds project files that disagree.',
   invalid_identity: 'Its project file cannot be read.',
   malformed: 'Its project file cannot be read.',
   unknown_version: 'Its project file was written by a newer version of Mnemonik.',
@@ -144,8 +166,6 @@ const refusalSteps: Record<string, string> = {
   fingerprint_mismatch:
     'Run mnemonik project link <project id> --confirm-mismatch in that folder to connect it anyway.',
   confirmation_required: 'Run mnemonik project setup in that folder to confirm it.',
-  nested: 'Run mnemonik project setup in that folder and choose which project it belongs to.',
-  conflict: 'Run mnemonik project setup in that folder and choose which project it belongs to.',
   identity_changed: AGAIN,
   operation_context_changed:
     'Run mnemonik project setup --cancel in that folder, then run the command again.',
@@ -197,8 +217,8 @@ export const connectedProjectsMessage = (roots: string[]): string =>
 export const projectExecutor = (dependencies: ExecutorDependencies): ProjectExecutor => {
   const executor = createProjectSetupExecutor(dependencies);
   return {
-    resolveProjectIdentity: (cwd) =>
-      dependencies.resolver.resolveProjectIdentity(cwd, { allowNestedInherit: false }),
+    resolveProjectIdentity: (cwd, options) =>
+      dependencies.resolver.resolveProjectIdentity(cwd, options),
     ...executor,
   };
 };
@@ -279,6 +299,55 @@ export async function repositoryFingerprint(root: string): Promise<RepositoryFin
     : null;
 }
 
+/**
+ * What the CLI tells the server about a folder it is setting up: the device
+ * binding, the folder's identity file, and a Git fingerprint only when the
+ * folder is the top of its own repository (the hooks' rule). A plain subfolder
+ * of a repository would otherwise send the enclosing repository's remote and
+ * be taken for that repository's project.
+ */
+export async function rootIssueContext(
+  root: string,
+  dependencies: {
+    hmacRootBinding(version: 1, root: string): Promise<{ version: 1; hmac: string }>;
+    resolveIdentity: typeof resolveProjectIdentity;
+    fingerprint?: typeof repositoryFingerprint;
+  }
+): Promise<{
+  evidence: Pick<CliIssueContext, 'deviceRootContext' | 'repositoryFingerprint'>;
+  context: CliIssueContext;
+}> {
+  const [binding, resolution] = await Promise.all([
+    dependencies.hmacRootBinding(1, root),
+    // The root is already chosen: read its own identity file, not a parent's.
+    dependencies.resolveIdentity(root, { namedRoot: true }),
+  ]);
+  const fingerprint =
+    resolution.kind !== 'git_unavailable' && resolution.repository.kind === 'git'
+      ? await (dependencies.fingerprint ?? repositoryFingerprint)(root)
+      : null;
+  const evidence = {
+    deviceRootContext: {
+      algorithmVersion: binding.version,
+      hash: Buffer.from(binding.hmac, 'base64url').toString('hex'),
+    },
+    repositoryFingerprint: fingerprint,
+  };
+  const context: CliIssueContext = {
+    ...evidence,
+    rootKind:
+      resolution.kind !== 'git_unavailable' && resolution.repository.kind === 'plain'
+        ? 'selected_non_git'
+        : resolution.kind === 'git_unavailable'
+          ? 'ineligible'
+          : 'git',
+    identityState:
+      resolution.kind === 'ok' ? 'valid' : resolution.kind === 'absent' ? 'absent' : 'invalid',
+    ...(resolution.kind === 'ok' ? { projectId: resolution.identity.projectId } : {}),
+  };
+  return { evidence, context };
+}
+
 export async function createRealProjectRuntime(options: RealProjectRuntimeOptions = {}) {
   const resolveIdentity: typeof resolveProjectIdentity = (cwd, resolverOptions) =>
     resolveProjectIdentity(cwd, { ...resolverOptions, selectedRoot: options.selectedRoots });
@@ -311,30 +380,10 @@ export async function createRealProjectRuntime(options: RealProjectRuntimeOption
   });
   const account = await transport.accountContext();
   const bindContext = async (root: string) => {
-    const [binding, fingerprint, resolution] = await Promise.all([
-      credentials.hmacRootBinding(1, root),
-      repositoryFingerprint(root),
-      resolveIdentity(root, { allowNestedInherit: false }),
-    ]);
-    const evidence = {
-      deviceRootContext: {
-        algorithmVersion: binding.version,
-        hash: Buffer.from(binding.hmac, 'base64url').toString('hex'),
-      },
-      repositoryFingerprint: fingerprint,
-    };
-    const context: CliIssueContext = {
-      ...evidence,
-      rootKind:
-        resolution.kind !== 'git_unavailable' && resolution.repository.kind === 'plain'
-          ? 'selected_non_git'
-          : resolution.kind === 'git_unavailable'
-            ? 'ineligible'
-            : 'git',
-      identityState:
-        resolution.kind === 'ok' ? 'valid' : resolution.kind === 'absent' ? 'absent' : 'invalid',
-      ...(resolution.kind === 'ok' ? { projectId: resolution.identity.projectId } : {}),
-    };
+    const { evidence, context } = await rootIssueContext(root, {
+      hmacRootBinding: (version, path) => credentials.hmacRootBinding(version, path),
+      resolveIdentity,
+    });
     contexts.set(contextKey(evidence), context);
     return evidence;
   };
@@ -577,9 +626,10 @@ async function statusCommand(
   deps: ProjectCommandDependencies
 ): Promise<number> {
   const cwd = input.path ?? deps.cwd;
-  const resolution = await (deps.resolver?.resolveProjectIdentity ?? resolveProjectIdentity)(cwd, {
-    allowNestedInherit: false,
-  });
+  const resolution = await (deps.resolver?.resolveProjectIdentity ?? resolveProjectIdentity)(
+    cwd,
+    {}
+  );
   const root = 'root' in resolution ? resolution.root : cwd;
   const projectId = resolution.kind === 'ok' ? resolution.identity.projectId : null;
   const currentHash = await identityHash(root);
@@ -637,7 +687,7 @@ async function cancelCommand(
   const resolution = await (
     deps.executor ??
     deps.resolver ?? { resolveProjectIdentity }
-  ).resolveProjectIdentity(cwd, { allowNestedInherit: false });
+  ).resolveProjectIdentity(cwd, { namedRoot: input.path !== undefined });
   const result = await cancelProjectSetup(
     'root' in resolution ? resolution.root : cwd,
     deps.stateDir
@@ -675,29 +725,14 @@ async function runProjectCommandInner(
       allowedActions: ['choose_personal_or_team_owner', 'cancel'],
     });
   const cwd = input.path ?? deps.cwd;
-  const resolution = await executor.resolveProjectIdentity(cwd);
-  if (resolution.kind === 'nested' || resolution.kind === 'conflict') {
-    const identityLocation = join(resolution.root, '.mnemonik.json');
-    if (!input.json) {
-      deps.output.line(`Root: ${resolution.root}`);
-      deps.output.line(`Identity: ${identityLocation}`);
-    }
-    return finishRequired(
-      deps,
-      input,
-      resolution.root,
-      resolution.kind,
-      owner,
-      resolution.kind,
-      [
-        'use_parent_identity',
-        'initialize_nested_separately',
-        'select_main_or_worktree_identity',
-        'cancel',
-      ],
-      { identityLocation }
-    );
-  }
+  // A folder the person names becomes a project exactly there, even inside
+  // another project. With no folder named, the current folder's project is
+  // the one it is in (the nearest .mnemonik.json), as status reports it.
+  const named = input.path !== undefined;
+  const resolution = await executor.resolveProjectIdentity(
+    cwd,
+    named ? { namedRoot: true } : undefined
+  );
   const decision = await evaluateRoot(resolution, { cwd, home: deps.home });
   if (!decision.allowed) {
     if (!input.json)
@@ -714,7 +749,7 @@ async function runProjectCommandInner(
     cwd,
     owner,
     allowCreate: input.command !== 'link',
-    allowNestedInherit: false,
+    ...(named ? { namedRoot: true as const } : {}),
   };
   if (input.command === 'setup') {
     if ((input.nonInteractive || input.json) && !input.apply) {
@@ -998,7 +1033,6 @@ export async function ensureProjectForAgent(options: {
   const result = await executor.ensureProject({
     cwd: options.cwd,
     allowCreate: true,
-    allowNestedInherit: false,
   });
   options.output.json(result);
   return result.status === 'ACTION_REQUIRED' || result.status === 'project_setup_required' ? 3 : 0;
@@ -1013,7 +1047,6 @@ export async function rollbackProjectIdentity(options: {
   const result = await options.executor.rollback({
     cwd: options.cwd,
     allowCreate: false,
-    allowNestedInherit: false,
   });
   options.output.json(result);
   return result.status === 'rolled_back' ? 0 : 3;

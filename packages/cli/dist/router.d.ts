@@ -22,6 +22,7 @@ export declare const removeFolderPrompt: (name: string) => string;
 export declare const connectedFolderLine: (name: string) => string;
 export declare const alreadyConnectedFolderLine: (name: string) => string;
 export declare const removedFolderLine: (name: string) => string;
+export declare const insideProjectLine: (name: string, projectFolder: string) => string;
 export declare const projectDeletionWarning: (name: string) => string;
 export declare const projectDeletedLine: (name: string) => string;
 export declare const NOTHING_DELETED_LINE = "Nothing was deleted.";
@@ -89,6 +90,13 @@ export interface CliDependencies {
     codexStore?: Omit<CodexStoreOptions, 'home'>;
     /** Where Cursor's own stored authorization is read: this platform, environment and node:sqlite by default. */
     cursorStore?: Omit<CursorStoreOptions, 'home'>;
+    /** `hooks log --follow` stops when this aborts (Ctrl-C by default); the clock and pid probe for tests. */
+    hooksLog?: {
+        signal?: AbortSignal;
+        pollMs?: number;
+        alive?: (pid: number) => boolean;
+        now?: () => number;
+    };
 }
 export declare function runCli(args: string[], deps?: CliDependencies): Promise<number>;
 //# sourceMappingURL=router.d.ts.map

@@ -352,9 +352,6 @@ export function humanReport(report) {
 }
 const projectActionLabels = {
     choose_personal_or_team_owner: 'Choose a personal or team account',
-    use_parent_identity: 'Use the parent project identity',
-    initialize_nested_separately: 'Set up the nested project separately',
-    select_main_or_worktree_identity: 'Choose the main checkout or worktree identity',
     link: 'Connect this folder to the project its file names',
     create: 'Create a new project for this folder',
     restore: 'Restore the archived project',

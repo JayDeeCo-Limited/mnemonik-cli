@@ -29,6 +29,8 @@ const paths: string[][] = [
   ['roots'],
   ['data', 'delete'],
   ['diagnostics'],
+  ['hooks'],
+  ['hooks', 'log'],
   ['identity', 'migrate'],
 ];
 

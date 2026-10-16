@@ -125,7 +125,7 @@ beforeEach(async () => {
       return 'cli-token';
     },
     projectExecutor: {
-      resolveProjectIdentity: (cwd) => resolveProjectIdentity(cwd, { allowNestedInherit: false }),
+      resolveProjectIdentity: (cwd) => resolveProjectIdentity(cwd),
       ensureProject: async ({ cwd }) => ({
         status: 'done',
         operationId: '11111111-1111-4111-8111-111111111111',
@@ -435,7 +435,7 @@ it('creates every approved project once across repeated enables', async () => {
     stateDir: state,
   });
   options.projectExecutor = {
-    resolveProjectIdentity: (cwd) => resolveProjectIdentity(cwd, { allowNestedInherit: false }),
+    resolveProjectIdentity: (cwd) => resolveProjectIdentity(cwd),
     ...setup,
   };
 
@@ -866,7 +866,7 @@ it.each(['success', 'failure', 'existing-identity', 'skip'])(
     });
     const identity = join(root, '.mnemonik.json');
     if (ending === 'existing-identity')
-      await executor.ensureProject({ cwd: root, allowCreate: true, allowNestedInherit: false });
+      await executor.ensureProject({ cwd: root, allowCreate: true });
     const before = await bytesAt(identity);
     if (ending === 'failure' || ending === 'existing-identity')
       options.source = async () => {

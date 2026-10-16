@@ -17,7 +17,7 @@ import { evaluateRoot, repositoryAt } from '../project/eligibility.js';
 import { scannerService } from './service.js';
 import { ABANDONED_PAUSE_RESUMED, controlScanner, resumeAbandonedPause, scannerReceipt, } from './control.js';
 import { bytesAt, digest, withInstall } from '../install/journal.js';
-import { connectedProjectsMessage, createRealProjectRuntime, ensureProjectRoot, projectLimitMessage, } from '../project.js';
+import { connectedProjectsMessage, createRealProjectRuntime, ensureProjectRoot, projectFolderFor, projectLimitMessage, } from '../project.js';
 import { consentDraft, runScannerBoundaryPicker } from './picker.js';
 export const scannerStateBytes = (state) => Buffer.from(`${JSON.stringify(state, null, 2)}\n`);
 export const SCANNER_APPROVAL_WAIT = 'Waiting for approval in your browser, up to 10 minutes.';
@@ -84,7 +84,11 @@ export async function enableScanner(options) {
         const executor = await prepared.projectExecutor();
         const connected = [];
         let limit;
-        for (const root of [...prepared.roots]) {
+        // A folder inside a project connects that project's folder.
+        const projectFolders = new Set();
+        for (const folder of prepared.roots)
+            projectFolders.add(await projectFolderFor(folder, executor));
+        for (const root of projectFolders) {
             const result = await ensureProjectRoot(root, executor);
             if (result.status === 'done')
                 connected.push(root);

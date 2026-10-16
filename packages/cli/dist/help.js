@@ -191,7 +191,9 @@ file. Use it when a folder was never connected. Asks first unless you pass
 Usage: mnemonik project init [path] [options]
 
 Arguments
-  [path]                      The project folder. Default: current folder.
+  [path]                      Make the project in exactly this folder, even
+                              inside another project. Without a path: the
+                              project the current folder belongs to.
 
 Options
   --apply                     Make the change. Required with --non-interactive.
@@ -211,7 +213,9 @@ Usage: mnemonik project link <project-id> [path] [options]
 
 Arguments
   <project-id>                The project to link to. Required.
-  [path]                      The folder. Default: current folder.
+  [path]                      Link exactly this folder, even inside another
+                              project. Without a path: the project the
+                              current folder belongs to.
 
 Options
   --apply                     Make the change. Required with --non-interactive.
@@ -233,7 +237,9 @@ you; use it directly when a folder was never connected. Asks first.
 Usage: mnemonik project setup [path] [options]
 
 Arguments
-  [path]                      The folder. Default: the current folder.
+  [path]                      Set up exactly this folder, even inside another
+                              project. Without a path: the project the
+                              current folder belongs to.
 
 Options
   --owner <team-or-user>      Create the project under this owner.
@@ -639,6 +645,46 @@ Example
 `,
     ],
     [
+        'hooks',
+        `See what the coding tool hooks on this machine received and answered.
+
+Usage: mnemonik hooks log [options]
+
+Subcommands
+  log                         Show recent hook runs, newest last.
+
+Run mnemonik hooks log --help for details.
+
+Example
+  mnemonik hooks log
+`,
+    ],
+    [
+        'hooks log',
+        `Show recent hook runs on this machine, newest last: when each ran, the
+coding tool, the event, what the hook answered, how long it took and each
+call it made to Mnemonik. A run marked UNFINISHED started but never ended,
+usually because the coding tool stopped it. Reads only this machine's hook
+trace; changes nothing and sends nothing. The trace keeps event names, ids,
+field names and sizes, never prompts, tool input or output, or file contents.
+
+Usage: mnemonik hooks log [options]
+
+Options
+  --host <tool>               One coding tool only: claude-code, codex, cursor,
+                              copilot.
+  --last <n>                  How many runs to show. Default: 20.
+  --follow                    Keep watching and show each run as it ends.
+                              Press Ctrl-C to stop.
+  --json                      Print each run's full trace records.
+
+Set MNEMONIK_HOOK_TRACE=off where the coding tool runs to stop recording.
+
+Example
+  mnemonik hooks log --host cursor --last 50
+`,
+    ],
+    [
         'identity migrate',
         `Bring older .mnemonik.json files up to the current format. Reports by
 default and changes nothing; --backup saves copies; --apply rewrites them;
@@ -663,7 +709,7 @@ Example
 `,
     ],
 ]);
-const groupsWithSubcommandHelp = new Set(['auth', 'project', 'scanner']);
+const groupsWithSubcommandHelp = new Set(['auth', 'hooks', 'project', 'scanner']);
 const sharedGroupScreens = new Map([
     ['diagnostics', new Set(['preview', 'send'])],
     ['roots', new Set(['add', 'remove', 'list'])],

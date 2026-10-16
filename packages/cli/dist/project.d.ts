@@ -3,8 +3,15 @@ import type { createCredentialAdapter } from '@mnemonik/credentials';
 import { type ExecutorDependencies, type EnsureOptions, type Owner, type SetupResult } from '@mnemonik/local-setup';
 import { resolveProjectIdentity, type ProjectIdentityResolution, type RepositoryFingerprint } from '@mnemonik/shared';
 import type { Output } from './output.js';
+import { type CliIssueContext } from './transport/server.js';
 export interface ProjectExecutor {
-    resolveProjectIdentity(cwd: string): Promise<ProjectIdentityResolution>;
+    /**
+     * Which project the folder is in, by the nearest `.mnemonik.json`; with
+     * `namedRoot`, exactly the folder a person named for init, link or setup.
+     */
+    resolveProjectIdentity(cwd: string, options?: {
+        namedRoot?: boolean;
+    }): Promise<ProjectIdentityResolution>;
     ensureProject(options: EnsureOptions): Promise<SetupResult>;
     stage(options: EnsureOptions): Promise<SetupResult>;
     apply(options: EnsureOptions): Promise<SetupResult>;
@@ -23,6 +30,14 @@ export declare function answerCommands(actions: readonly string[], root: string,
     action: string;
     command: string;
 }>;
+/**
+ * The folder Mnemonik connects when a person names `folder`: the project it is
+ * in (the nearest `.mnemonik.json`; a linked worktree's main checkout), or
+ * exactly the folder named when it is in none. A subfolder belongs to its
+ * project, so naming one connects that project's folder, never a new project.
+ */
+export declare function projectFolderFor(folder: string, resolver: Pick<ProjectExecutor, 'resolveProjectIdentity'>): Promise<string>;
+/** Set up exactly `root`, a folder projectFolderFor chose. */
 export declare function ensureProjectRoot(root: string, executor: ProjectExecutor): Promise<SetupResult>;
 /** Does Mnemonik have plain words for this state? */
 export declare const hasRefusalWords: (reason: string) => boolean;
@@ -57,6 +72,24 @@ export interface RealProjectRuntimeOptions {
     deadline?: number;
 }
 export declare function repositoryFingerprint(root: string): Promise<RepositoryFingerprint | null>;
+/**
+ * What the CLI tells the server about a folder it is setting up: the device
+ * binding, the folder's identity file, and a Git fingerprint only when the
+ * folder is the top of its own repository (the hooks' rule). A plain subfolder
+ * of a repository would otherwise send the enclosing repository's remote and
+ * be taken for that repository's project.
+ */
+export declare function rootIssueContext(root: string, dependencies: {
+    hmacRootBinding(version: 1, root: string): Promise<{
+        version: 1;
+        hmac: string;
+    }>;
+    resolveIdentity: typeof resolveProjectIdentity;
+    fingerprint?: typeof repositoryFingerprint;
+}): Promise<{
+    evidence: Pick<CliIssueContext, 'deviceRootContext' | 'repositoryFingerprint'>;
+    context: CliIssueContext;
+}>;
 export declare function createRealProjectRuntime(options?: RealProjectRuntimeOptions): Promise<{
     transport: {
         issueSetupRequest(input: import("@mnemonik/local-setup").Evidence & {

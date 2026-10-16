@@ -124,7 +124,7 @@ describe('repository discovery', () => {
     expect(stream.text).toBe('Where do your projects live? [~/Projects]\n');
   });
 
-  it('lists a git repository with descendant identities and a nested git repository only once', async () => {
+  it('lists a git repository and a project folder inside it, but not a nested clone that belongs to it', async () => {
     const boundary = await temporaryDirectory();
     const repository = join(boundary, 'devops');
     const nested = join(repository, 'dokploy-mcp-server');
@@ -136,10 +136,53 @@ describe('repository discovery', () => {
 
     const discovered = await scannerCandidates(boundary);
 
+    // home-agent has its own .mnemonik.json, so it is its own project; the
+    // nested clone has none, so it is part of devops.
     expect(discovered.candidates).toEqual([
       { path: repository, name: 'devops', kind: 'git', projectId: uuid('1') },
-      { path: nested, name: 'devops/dokploy-mcp-server', kind: 'git' },
+      {
+        path: join(repository, 'home-agent'),
+        name: 'devops/home-agent',
+        kind: 'folder',
+        projectId: uuid('2'),
+      },
     ]);
+  });
+
+  it('lists a nested clone outside every project, and a linked worktree as its main checkout', async () => {
+    const boundary = await temporaryDirectory();
+    const elsewhere = await temporaryDirectory();
+    const plain = join(boundary, 'plain');
+    const clone = join(plain, 'clone');
+    await fs.mkdir(plain);
+    await git(clone);
+    const main = join(elsewhere, 'main');
+    await git(main);
+    await identity(main, uuid('5'));
+    await execFile('git', ['-C', main, 'add', '.mnemonik.json']);
+    await execFile('git', [
+      '-C',
+      main,
+      '-c',
+      'user.name=t',
+      '-c',
+      'user.email=t@example.invalid',
+      'commit',
+      '--quiet',
+      '-m',
+      'init',
+    ]);
+    await execFile('git', ['-C', main, 'worktree', 'add', '--quiet', join(boundary, 'wt')]);
+
+    const discovered = await scannerCandidates(boundary);
+
+    expect(discovered.repositories.map(({ path, state }) => ({ path, state }))).toEqual(
+      expect.arrayContaining([
+        { path: await fs.realpath(main), state: 'existing_project' },
+        { path: await fs.realpath(clone), state: 'not_set_up' },
+      ])
+    );
+    expect(discovered.repositories).toHaveLength(2);
   });
 
   it('carries the project a non-Git folder names, and nothing for a folder without one', async () => {
@@ -275,7 +318,7 @@ describe('repository discovery', () => {
     expect(picked).toMatchObject({ boundary });
   });
 
-  it('finds real repositories through depth 3, nested roots separately, and never follows links or reads source', async () => {
+  it('finds real repositories through depth 3, nested roots separately, a worktree as its main checkout, and never follows links or reads source', async () => {
     const parent = await temporaryDirectory();
     const outside = await temporaryDirectory();
     await git(join(parent, 'one'));
@@ -319,12 +362,15 @@ describe('repository discovery', () => {
       [
         join(parent, 'a', 'b', 'three'),
         join(parent, 'group', 'two'),
-        join(parent, 'file-boundary'),
+        // The linked worktree file-boundary, as the checkout it belongs to.
+        outside,
         join(parent, 'one'),
         join(parent, 'one', 'nested'),
-      ].sort()
+      ].sort((left, right) => left.localeCompare(right))
     );
-    expect(result.repositories.some((row) => row.path === outside)).toBe(false);
+    expect(result.repositories.some((row) => row.path.startsWith(join(parent, 'linked')))).toBe(
+      false
+    );
     expect(
       fsCalls.readFile.mock.calls.every(([path]) =>
         /(?:\.git|\.mnemonik\.json)(?:[/\\]|$)/u.test(String(path))
@@ -860,12 +906,10 @@ describe('review-time staging and later status', () => {
     expect(stage).toHaveBeenCalledWith({
       cwd: selected,
       allowCreate: true,
-      allowNestedInherit: false,
     });
     expect(stage).toHaveBeenCalledWith({
       cwd: action,
       allowCreate: true,
-      allowNestedInherit: false,
     });
     expect(stage.mock.calls.some(([options]) => options.cwd === excluded)).toBe(false);
     expect(handoff).toMatchObject({

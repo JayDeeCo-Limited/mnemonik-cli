@@ -190,6 +190,39 @@ export declare function makeIgnoreMatcher(extraPatterns?: readonly string[]): (r
  */
 export declare function isGitBoundary(dirPath: string): Promise<boolean>;
 /**
+ * How many folders deep a project's scan walks. Discovery searches a project
+ * for subprojects to the same depth, so a subproject the scan leaves out is
+ * always found and scanned as its own project.
+ */
+export declare const SCANNER_MAX_DEPTH = 10;
+/**
+ * True when `dirPath` starts a subtree that is not this project's to index.
+ * A file belongs to the project of the nearest `.mnemonik.json` above it, so:
+ *  - a folder with its own identity file is a subproject, indexed as its own
+ *    project, never also into this one. A file naming the enclosing project
+ *    (`enclosingProjectId`, a copy) is the same project, and a
+ *    configuration-only file (no `projectId`) names none: neither is a
+ *    boundary. A file that cannot be read as an identity still is;
+ *  - a linked worktree (a `.git` FILE whose git directory has a `commondir`)
+ *    is another checkout of a project, indexed from its main checkout.
+ * A nested clone or a submodule without its own `.mnemonik.json` belongs to
+ * this project and is indexed with it (its `.git` directory is ignored by the
+ * built-in rules). The scan ROOT is exempt by construction (callers only test
+ * child directories).
+ */
+export declare function isProjectBoundary(dirPath: string, enclosingProjectId?: string): Promise<boolean>;
+/**
+ * The project a scan root's own identity file names, or undefined: the
+ * enclosing project for isProjectBoundary.
+ */
+export declare function rootProjectId(rootPath: string): Promise<string | undefined>;
+/**
+ * True when `dirPath` is the top of a linked git worktree: its `.git` is a
+ * FILE pointing at a git directory that has a `commondir`. A submodule's
+ * `.git` file points at `.git/modules/<name>`, which has none.
+ */
+export declare function isLinkedWorktreeCheckout(dirPath: string): Promise<boolean>;
+/**
  * Log which grammars this install ships - ONCE per process, at daemon start,
  * never per file.
  *
@@ -293,7 +326,7 @@ export declare class CodeScanner {
     directoryFilter(rootPath: string): (absDir: string) => Promise<boolean>;
     /**
      * True when any directory strictly between `rootPath` and `filePath`
-     * carries its own `.git` entry (see isGitBoundary). Paths that don't
+     * starts a subtree this project does not index (see isProjectBoundary). Paths that don't
      * resolve under `rootPath` are not judged here (return false) - the
      * server's path validation handles escapes.
      */
@@ -303,6 +336,13 @@ export declare class CodeScanner {
      * Prevents runaway recursion on deep/symlinked structures
      */
     private static readonly MAX_DEPTH;
+    private rootProjectIds;
+    /**
+     * isProjectBoundary, with the scan root's own project as the enclosing one.
+     * The root's file is read at most once a minute: a walk tests many folders,
+     * and a project relinked since is seen on the next scan.
+     */
+    private isBoundary;
     private canonicalRoots;
     private canonicalRoot;
     static containsCanonical(candidate: string, root: string, paths?: {
