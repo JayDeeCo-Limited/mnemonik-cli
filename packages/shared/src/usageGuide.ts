@@ -41,7 +41,7 @@ session_bootstrap -> memory_search -> file_context -> [work] -> memory_add -> me
 - Detailed retrieval defaults to one document and returns at most 8 findings within 16 KiB. Each packet carries compact causal triggers plus current Markdown and code locations resolved from stable identities; line numbers are display metadata and may move.
 - Complete every finding in the document: edit update_doc/regenerate_doc items, submit mnemonik.docs({ action: 'verdicts', scopePath, items: [...] }) with independently cited evidence for settled verify_and_report items, or call mnemonik.docs({ action: 'flag_for_review', scopePath, findingId, evidence }) when inspected evidence cannot settle a claim.
 - The document under review cannot confirm or refute its own claim. Verdict evidence must cite an independent source; route a rejected circular verdict to flag_for_review.
-- Absence of repository evidence is not refutation. Claims about human intent, plans, positioning, or external facts require affirmative contradictory evidence to refute; otherwise flag them for review.
+- Absence of repository evidence is not refutation. Claims about human intent, plans, or external facts require affirmative contradictory evidence to refute; otherwise flag them for review.
 - Follow the document-local retrieveMore call until that document is complete, and follow inventory cursors until every affected document has a terminal disposition.
 
 ### After significant work
