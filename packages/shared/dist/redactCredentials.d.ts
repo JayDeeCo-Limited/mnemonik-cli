@@ -18,6 +18,11 @@ export declare function redactCredentials(text: string, options?: RedactCredenti
     redactions: number;
     kinds: string[];
 };
+/** Source callers edit literal AST spans within these existing command-line matches. */
+export declare function commandLineCredentialRanges(text: string): Array<{
+    start: number;
+    end: number;
+}>;
 /**
  * The credential values the context rules (command-line passwords, URL
  * passwords, named values, Bearer tokens) would redact from `text`, for a

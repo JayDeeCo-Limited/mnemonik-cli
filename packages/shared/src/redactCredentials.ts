@@ -578,6 +578,29 @@ export function redactCredentials(
   return redact(text, options, new Set());
 }
 
+/** Source callers edit literal AST spans within these existing command-line matches. */
+export function commandLineCredentialRanges(text: string): Array<{ start: number; end: number }> {
+  const ranges: Array<{ start: number; end: number }> = [];
+  for (const { pattern, replacement, secretGroup, commandLine } of PATTERNS) {
+    if (!commandLine || !secretGroup || typeof replacement !== 'function') continue;
+    for (const match of text.matchAll(pattern)) {
+      const prefix = match[1];
+      const value = match[secretGroup];
+      if (prefix === undefined || value === undefined) continue;
+      // Runtime expressions can contain literal defaults; the source AST separates them.
+      const runtimeWord = /^"?\$/.test(value);
+      if (
+        !runtimeWord &&
+        replacement(match[0], ...match.slice(1).map((group) => group ?? '')) === match[0]
+      )
+        continue;
+      const start = match.index + prefix.length;
+      ranges.push({ start, end: start + value.length });
+    }
+  }
+  return ranges.sort((a, b) => a.start - b.start);
+}
+
 /**
  * The credential values the context rules (command-line passwords, URL
  * passwords, named values, Bearer tokens) would redact from `text`, for a
