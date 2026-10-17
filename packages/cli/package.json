@@ -1,6 +1,6 @@
 {
   "name": "@mnemonik/cli",
-  "version": "0.1.153",
+  "version": "0.1.154",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/JayDeeCo-Limited/mnemonik-cli.git"
@@ -28,9 +28,9 @@
     "prepack": "node ../../scripts/host-closure.mjs"
   },
   "dependencies": {
-    "@mnemonik/credentials": "0.1.153",
-    "@mnemonik/local-setup": "0.1.153",
-    "@mnemonik/shared": "7.140.3",
+    "@mnemonik/credentials": "0.1.154",
+    "@mnemonik/local-setup": "0.1.154",
+    "@mnemonik/shared": "7.141.0",
     "smol-toml": "^1.9.0"
   },
   "devDependencies": {
@@ -44,27 +44,27 @@
     "hosts": {
       "claude-code": {
         "package": "@mnemonik/claude-code-hooks",
-        "version": "0.9.332",
+        "version": "0.9.333",
         "closure": [
           {
             "name": "@mnemonik/claude-code-hooks",
-            "version": "0.9.332",
-            "integrity": "sha512-Id3DAcv44WZi600Fsl+XOceTJNPPBdGajCvzUJypsAej01Wjn2L36bYyRAqn2Z4l2STW58u4N/Sk++EmAgjGKg=="
+            "version": "0.9.333",
+            "integrity": "sha512-HER/yQrciFvfFQF4FsX1Lighq4FP/BwPs4uvykOmBW7FrSXLchIny02muFAhoXLsokMczsAm5dRkzrmbCHJtxw=="
           },
           {
             "name": "@mnemonik/credentials",
-            "version": "0.1.153",
-            "integrity": "sha512-KLANnVuQytF0bHZ/PdgEGsIgK2GHJhJ2kO44xhQCWCm1AH350G2gVpy78hzobs032n1jG+ys2gs8TRQ9weijFg=="
+            "version": "0.1.154",
+            "integrity": "sha512-+l7pRckA7HhVAwTHGaLu4Pl0WOk5a+aFrI1BKEKsIK+1Ab5v5cRvqL9XmUgxdKsECMi0NrfK43q9EWtsa6+USA=="
           },
           {
             "name": "@mnemonik/local-setup",
-            "version": "0.1.153",
-            "integrity": "sha512-Rhb8kaqFdXplNya14//f8IIKZx8t/mY8U1a1LcvR0cyTUMQZFIGJSn4rLKI7AwrG/5WoWZGNpgYdyU55TixUsQ=="
+            "version": "0.1.154",
+            "integrity": "sha512-z6VyybKkOSjws4DjVWnpXhgSqt15PdXPMKFPy++iNARpBpTqXmiBS+Jq1uFvrK8mGA17bo4dzHs1l+cqxt/HEA=="
           },
           {
             "name": "@mnemonik/shared",
-            "version": "7.140.3",
-            "integrity": "sha512-f1Fel7z58mGvOdoec0ZCtjNXulyZV/wF/9xQS98RKpO2eXy0ItXmGJhG7iX9uLNt6Ve2P+1U2uE36n1Z0rBkoQ=="
+            "version": "7.141.0",
+            "integrity": "sha512-vojIo9BPHluZbJ40TeAlKqsPYI//D1jOBx1rKNSdODMRAWgRtO28g6paUBy9ot7rFm752LVhpVqb7UowyHb/4A=="
           },
           {
             "name": "ignore",
@@ -100,27 +100,27 @@
       },
       "codex": {
         "package": "@mnemonik/codex-hooks",
-        "version": "0.8.301",
+        "version": "0.8.302",
         "closure": [
           {
             "name": "@mnemonik/codex-hooks",
-            "version": "0.8.301",
-            "integrity": "sha512-V5ulOeZUHh79LBhym/CdUikzBUGAuzblgoqcBVwi7BXMeWkv3o9ZsxqMOxpj4Gs28ib+PfBNEvI0ej5OMLoYVA=="
+            "version": "0.8.302",
+            "integrity": "sha512-NHCvAWKs+cdrEcbHPvvyQXo96NUni6cJsRMBtkYjZfbzXH7J6p0ep4GINSo+FU/0d/bL9IgTZk92M2ndpAE2yA=="
           },
           {
             "name": "@mnemonik/credentials",
-            "version": "0.1.153",
-            "integrity": "sha512-KLANnVuQytF0bHZ/PdgEGsIgK2GHJhJ2kO44xhQCWCm1AH350G2gVpy78hzobs032n1jG+ys2gs8TRQ9weijFg=="
+            "version": "0.1.154",
+            "integrity": "sha512-+l7pRckA7HhVAwTHGaLu4Pl0WOk5a+aFrI1BKEKsIK+1Ab5v5cRvqL9XmUgxdKsECMi0NrfK43q9EWtsa6+USA=="
           },
           {
             "name": "@mnemonik/local-setup",
-            "version": "0.1.153",
-            "integrity": "sha512-Rhb8kaqFdXplNya14//f8IIKZx8t/mY8U1a1LcvR0cyTUMQZFIGJSn4rLKI7AwrG/5WoWZGNpgYdyU55TixUsQ=="
+            "version": "0.1.154",
+            "integrity": "sha512-z6VyybKkOSjws4DjVWnpXhgSqt15PdXPMKFPy++iNARpBpTqXmiBS+Jq1uFvrK8mGA17bo4dzHs1l+cqxt/HEA=="
           },
           {
             "name": "@mnemonik/shared",
-            "version": "7.140.3",
-            "integrity": "sha512-f1Fel7z58mGvOdoec0ZCtjNXulyZV/wF/9xQS98RKpO2eXy0ItXmGJhG7iX9uLNt6Ve2P+1U2uE36n1Z0rBkoQ=="
+            "version": "7.141.0",
+            "integrity": "sha512-vojIo9BPHluZbJ40TeAlKqsPYI//D1jOBx1rKNSdODMRAWgRtO28g6paUBy9ot7rFm752LVhpVqb7UowyHb/4A=="
           },
           {
             "name": "ignore",
@@ -156,27 +156,27 @@
       },
       "cursor": {
         "package": "@mnemonik/cursor-hooks",
-        "version": "0.7.288",
+        "version": "0.7.289",
         "closure": [
           {
             "name": "@mnemonik/cursor-hooks",
-            "version": "0.7.288",
-            "integrity": "sha512-/yCarreRt3SmnIxZTB57Yw4IykS7O21Oyyq8+efFZkS28J0w2lKapVDIHdlkx1W4/wTRHCvgxshu1118MweV9A=="
+            "version": "0.7.289",
+            "integrity": "sha512-jCUWvA8O2oFYh266IrW3HBBYO35ZPmDZFb9q0xEkHVzYNF9rc9DIXpNsrCnsVGKfj+sPtCHmzsXUjzyNsg4Q0Q=="
           },
           {
             "name": "@mnemonik/credentials",
-            "version": "0.1.153",
-            "integrity": "sha512-KLANnVuQytF0bHZ/PdgEGsIgK2GHJhJ2kO44xhQCWCm1AH350G2gVpy78hzobs032n1jG+ys2gs8TRQ9weijFg=="
+            "version": "0.1.154",
+            "integrity": "sha512-+l7pRckA7HhVAwTHGaLu4Pl0WOk5a+aFrI1BKEKsIK+1Ab5v5cRvqL9XmUgxdKsECMi0NrfK43q9EWtsa6+USA=="
           },
           {
             "name": "@mnemonik/local-setup",
-            "version": "0.1.153",
-            "integrity": "sha512-Rhb8kaqFdXplNya14//f8IIKZx8t/mY8U1a1LcvR0cyTUMQZFIGJSn4rLKI7AwrG/5WoWZGNpgYdyU55TixUsQ=="
+            "version": "0.1.154",
+            "integrity": "sha512-z6VyybKkOSjws4DjVWnpXhgSqt15PdXPMKFPy++iNARpBpTqXmiBS+Jq1uFvrK8mGA17bo4dzHs1l+cqxt/HEA=="
           },
           {
             "name": "@mnemonik/shared",
-            "version": "7.140.3",
-            "integrity": "sha512-f1Fel7z58mGvOdoec0ZCtjNXulyZV/wF/9xQS98RKpO2eXy0ItXmGJhG7iX9uLNt6Ve2P+1U2uE36n1Z0rBkoQ=="
+            "version": "7.141.0",
+            "integrity": "sha512-vojIo9BPHluZbJ40TeAlKqsPYI//D1jOBx1rKNSdODMRAWgRtO28g6paUBy9ot7rFm752LVhpVqb7UowyHb/4A=="
           },
           {
             "name": "ignore",
