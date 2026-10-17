@@ -55,6 +55,9 @@ const AST_LANGUAGE_ID_LIST = [
   'bash',
   'groovy',
   'powershell',
+  'swift',
+  'sql',
+  'lua',
 ] as const;
 
 /** A language this build can AST-parse. Exactly the vendored set, no aspirations. */
@@ -123,6 +126,9 @@ export const QUERY_CHAIN: Readonly<Record<AstLanguageId, readonly AstLanguageId[
   bash: ['bash'],
   groovy: ['groovy'],
   powershell: ['powershell'],
+  swift: ['swift'],
+  sql: ['sql'],
+  lua: ['lua'],
 };
 
 /**
@@ -144,7 +150,7 @@ const EXTENSION_GRAMMARS: Readonly<Record<string, AstLanguageId>> = {
  *
  * Absences are deliberate answers, not gaps. `markdown` is missing because
  * headers already are a document's semantic unit and 10,483 production chunks
- * depend on `chunkMarkdown` keeping them; `kotlin`, `swift`, `dart` and friends
+ * depend on `chunkMarkdown` keeping them; `kotlin`, `dart` and friends
  * are missing because no loadable grammar is vendored yet. Both resolve to
  * `null` and the heuristic chunker takes over.
  */
@@ -166,6 +172,9 @@ const LANGUAGE_GRAMMARS: Readonly<Record<string, AstLanguageId>> = {
   shell: 'bash',
   groovy: 'groovy',
   powershell: 'powershell',
+  swift: 'swift',
+  sql: 'sql',
+  lua: 'lua',
 };
 
 /** A loaded grammar plus its compiled query. Compiled once, reused per file. */

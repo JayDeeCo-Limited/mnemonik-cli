@@ -26,6 +26,8 @@ export {
   isFixturePath,
   isSecretFile,
   isAuthorityOnlyPath,
+  XCODE_AUTHORITY_PATH,
+  isXcodeAuthorityPath,
   isCursorRulePath,
   logAstCapabilityOnce,
   type CodeChunk,

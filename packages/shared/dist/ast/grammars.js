@@ -53,6 +53,9 @@ const AST_LANGUAGE_ID_LIST = [
     'bash',
     'groovy',
     'powershell',
+    'swift',
+    'sql',
+    'lua',
 ];
 /** The vendored set as a runtime value, for capability reporting and tests. */
 export const AST_LANGUAGE_IDS = AST_LANGUAGE_ID_LIST;
@@ -114,6 +117,9 @@ export const QUERY_CHAIN = {
     bash: ['bash'],
     groovy: ['groovy'],
     powershell: ['powershell'],
+    swift: ['swift'],
+    sql: ['sql'],
+    lua: ['lua'],
 };
 /**
  * Extensions whose grammar the language string alone gets WRONG.
@@ -133,7 +139,7 @@ const EXTENSION_GRAMMARS = {
  *
  * Absences are deliberate answers, not gaps. `markdown` is missing because
  * headers already are a document's semantic unit and 10,483 production chunks
- * depend on `chunkMarkdown` keeping them; `kotlin`, `swift`, `dart` and friends
+ * depend on `chunkMarkdown` keeping them; `kotlin`, `dart` and friends
  * are missing because no loadable grammar is vendored yet. Both resolve to
  * `null` and the heuristic chunker takes over.
  */
@@ -155,6 +161,9 @@ const LANGUAGE_GRAMMARS = {
     shell: 'bash',
     groovy: 'groovy',
     powershell: 'powershell',
+    swift: 'swift',
+    sql: 'sql',
+    lua: 'lua',
 };
 const WASM_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'wasm');
 /**

@@ -447,6 +447,9 @@ export function languageForExtension(filePathOrExt) {
  * reason a nested `packages/x/migrations/y.sql` is left alone.
  */
 const isMigrationSqlAuthorityPath = (posixRelPath) => /^migrations\/.*\.sql$/.test(posixRelPath);
+/** Content-only build authority, shared by scanner collection and server admission. */
+export const XCODE_AUTHORITY_PATH = /(?:^|\/)[^/]+\.xcodeproj\/project\.pbxproj$|\.xcconfig$/;
+export const isXcodeAuthorityPath = (path) => XCODE_AUTHORITY_PATH.test(path);
 /**
  * Predicates for paths whose verbatim content is ALREADY shipped by
  * `collectAuthorityFiles` and that carry no additional value as embedded code
@@ -466,6 +469,7 @@ const isMigrationSqlAuthorityPath = (posixRelPath) => /^migrations\/.*\.sql$/.te
  */
 const AUTHORITY_ONLY_PATH_PREDICATES = [
     isMigrationSqlAuthorityPath,
+    isXcodeAuthorityPath,
 ];
 /**
  * True when `relPath` is collected verbatim as authority content and must not
@@ -509,6 +513,7 @@ export const AUTHORITY_FILE_MATCHERS = [
     // `AUTHORITY_ONLY_PATH_PREDICATES` by reference, not by a copied regex, so
     // collection and the chunking exclusion cannot disagree.
     isMigrationSqlAuthorityPath,
+    isXcodeAuthorityPath,
 ];
 /**
  * Segment-anchored match for `tests/fixtures/` - matches at the path root or

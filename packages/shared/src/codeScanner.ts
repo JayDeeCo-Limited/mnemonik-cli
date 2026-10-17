@@ -563,6 +563,10 @@ export function languageForExtension(filePathOrExt: string): string {
 const isMigrationSqlAuthorityPath = (posixRelPath: string): boolean =>
   /^migrations\/.*\.sql$/.test(posixRelPath);
 
+/** Content-only build authority, shared by scanner collection and server admission. */
+export const XCODE_AUTHORITY_PATH = /(?:^|\/)[^/]+\.xcodeproj\/project\.pbxproj$|\.xcconfig$/;
+export const isXcodeAuthorityPath = (path: string): boolean => XCODE_AUTHORITY_PATH.test(path);
+
 /**
  * Predicates for paths whose verbatim content is ALREADY shipped by
  * `collectAuthorityFiles` and that carry no additional value as embedded code
@@ -582,6 +586,7 @@ const isMigrationSqlAuthorityPath = (posixRelPath: string): boolean =>
  */
 const AUTHORITY_ONLY_PATH_PREDICATES: readonly ((posixRelPath: string) => boolean)[] = [
   isMigrationSqlAuthorityPath,
+  isXcodeAuthorityPath,
 ];
 
 /**
@@ -627,6 +632,7 @@ export const AUTHORITY_FILE_MATCHERS: Array<(relPath: string) => boolean> = [
   // `AUTHORITY_ONLY_PATH_PREDICATES` by reference, not by a copied regex, so
   // collection and the chunking exclusion cannot disagree.
   isMigrationSqlAuthorityPath,
+  isXcodeAuthorityPath,
 ];
 
 /**

@@ -30,7 +30,7 @@
  * expression is correct for both the TS sources and the shipped build.
  */
 import { Language, Query } from 'web-tree-sitter';
-declare const AST_LANGUAGE_ID_LIST: readonly ['typescript', 'tsx', 'javascript', 'python', 'go', 'java', 'c', 'cpp', 'csharp', 'ruby', 'php', 'rust', 'scala', 'elixir', 'solidity', 'bash', 'groovy', 'powershell'];
+declare const AST_LANGUAGE_ID_LIST: readonly ['typescript', 'tsx', 'javascript', 'python', 'go', 'java', 'c', 'cpp', 'csharp', 'ruby', 'php', 'rust', 'scala', 'elixir', 'solidity', 'bash', 'groovy', 'powershell', 'swift', 'sql', 'lua'];
 /** A language this build can AST-parse. Exactly the vendored set, no aspirations. */
 export type AstLanguageId = (typeof AST_LANGUAGE_ID_LIST)[number];
 /** The vendored set as a runtime value, for capability reporting and tests. */

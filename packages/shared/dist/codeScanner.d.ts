@@ -146,6 +146,9 @@ export declare function isCursorRulePath(relPath: string): boolean;
  * preference) need the same answer without constructing a scanner.
  */
 export declare function languageForExtension(filePathOrExt: string): string;
+/** Content-only build authority, shared by scanner collection and server admission. */
+export declare const XCODE_AUTHORITY_PATH: RegExp;
+export declare const isXcodeAuthorityPath: (path: string) => boolean;
 /**
  * True when `relPath` is collected verbatim as authority content and must not
  * also be chunked. Accepts OS-native or POSIX separators.
