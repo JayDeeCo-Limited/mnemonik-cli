@@ -40,6 +40,83 @@
  * guarded against hashes, UUIDs, paths, slugs and identifiers.
  */
 export const SECRET_REDACTION_PLACEHOLDER = '[REDACTED]';
+const SECRET_LABEL = String.raw `[\w$-]*(?:api[_-]?key|secret|token|password|credential|auth)|aws_secret_access_key`;
+export const SECRET_LABEL_RE = new RegExp(`^(?:${SECRET_LABEL}|MYSQL_PWD|SSHPASS)$`, 'i');
+const LABELED_VALUE_RE = new RegExp(String.raw `(?<![\w$-])((["']?)(?:${SECRET_LABEL})\2\s*[:=]\s*)(?=\S)`, 'gi');
+/** Keep physical and escaped newline sequences, including JS line continuations. */
+export function redactSecretValue(value) {
+    return (SECRET_REDACTION_PLACEHOLDER +
+        (value.match(/\\(?:\r\n|[\r\n])|\r\n|[\r\n]|\\[rn]/g)?.join('') ?? ''));
+}
+function redactLabeledValues(text) {
+    let result = '';
+    let offset = 0;
+    LABELED_VALUE_RE.lastIndex = 0;
+    for (const match of text.matchAll(LABELED_VALUE_RE)) {
+        if (match.index < offset)
+            continue;
+        const start = match.index + match[0].length;
+        const escaped = text[start] === '\\' && /^["']/.test(text.charAt(start + 1));
+        const quote = escaped
+            ? text.charAt(start + 1)
+            : /^["'`]/.test(text.charAt(start))
+                ? text.charAt(start)
+                : '';
+        const delimiter = (escaped ? '\\' : '') + quote;
+        let end = start;
+        let closed = false;
+        if (quote) {
+            end += delimiter.length;
+            while (end < text.length) {
+                if (text[end] === '\\') {
+                    if (escaped) {
+                        const begin = end;
+                        while (text[end] === '\\')
+                            end++;
+                        // A quoted value embedded in a string: \" closes, \\\" escapes its quote.
+                        if (text[end] === quote && (end - begin) % 4 === 1) {
+                            end++;
+                            closed = true;
+                            break;
+                        }
+                        end = Math.min(end + 1, text.length);
+                    }
+                    else {
+                        end = Math.min(end + 2, text.length);
+                    }
+                }
+                else if (text[end++] === quote && !escaped) {
+                    closed = true;
+                    break;
+                }
+            }
+        }
+        else {
+            // Never split an escape pair and leave its quote as executable syntax.
+            end += /^(?:\\[^\r\n]|[^\s"'`,;()[\]{}\\])+/.exec(text.slice(start))?.[0].length ?? 0;
+        }
+        const value = text.slice(start, end);
+        if (!/[A-Za-z0-9]/.test(value) || ENV_READ_VALUE_RE.test(match[0] + value))
+            continue;
+        // The quote closes a command string or anchored label search, such as '^API_KEY='.
+        if (quote &&
+            !escaped &&
+            (text[match.index - 1] === quote ||
+                (text[match.index - 1] === '^' &&
+                    text[match.index - 2] === quote &&
+                    (start + 1 === text.length || /\s/.test(text.charAt(start + 1))))))
+            continue;
+        if (/aws_secret_access_key/i.test(match[0]) && /^<[^>]*>$/.test(value))
+            continue;
+        const body = quote
+            ? value.slice(delimiter.length, closed ? -delimiter.length : undefined)
+            : value.replace(/(?:\*\/|[.!?]+)$/, '');
+        const tail = quote ? (closed ? delimiter : '') : value.slice(body.length);
+        result += text.slice(offset, start) + delimiter + redactSecretValue(body) + tail;
+        offset = end;
+    }
+    return result + text.slice(offset);
+}
 // Shared by the scanner daemon and server-side scrub paths.
 //
 // A value must hold a letter or a digit, in every pattern whose value is free
@@ -48,7 +125,7 @@ export const SECRET_REDACTION_PLACEHOLDER = '[REDACTED]';
 // flag: "--password=; repeated copies" in a stored checkpoint became
 // "--[REDACTED] repeated copies" (2026-10-13), and so did "password: ***".
 export const SECRET_PATTERNS = [
-    /(?:api[_-]?key|secret|token|password|credential|auth)\s*[:=]\s*(?=\S*[A-Za-z0-9])\S+/gi,
+    LABELED_VALUE_RE, // Select the label; the linear reader consumes its complete value.
     // Stripe-shape: (sk|pk)_(live|test)_<24+ alphanumerics>. Catches modern
     // Stripe keys whose body is split by an environment separator that
     // breaks the contiguous-alphanum pattern below. Required `live|test`
@@ -69,10 +146,7 @@ export const SECRET_PATTERNS = [
     // \b-delimited, so prose ("AKIAMIA is a place name") cannot match.
     /\bAKIA[0-9A-Z]{16}\b/g,
     /\bASIA[0-9A-Z]{16}\b/g,
-    // AWS secret access key, labeled. The generic key=value pattern above does
-    // NOT cover this: its `secret` alternative must be followed immediately by
-    // `[:=]`, and here it is followed by `_access_key`.
-    /\baws_secret_access_key\s*[:=]\s*[A-Za-z0-9/+=]{40}\b/gi,
+    // Labeled AWS secret access keys are covered by LABELED_VALUE_RE, including quotes.
     // JWT: three base64url segments. Length minimums keep dotted identifiers
     // (`payload.header.signature`) out.
     /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{5,}\b/g,
@@ -252,7 +326,12 @@ export function scrubSecrets(text) {
         return text;
     let result = text;
     for (const pattern of SECRET_PATTERNS) {
-        result = result.replace(pattern, (match) => ENV_READ_VALUE_RE.test(match) ? match : SECRET_REDACTION_PLACEHOLDER);
+        if (pattern === LABELED_VALUE_RE) {
+            result = redactLabeledValues(result);
+        }
+        else {
+            result = result.replace(pattern, (match) => ENV_READ_VALUE_RE.test(match) ? match : redactSecretValue(match));
+        }
     }
     // Backstop for credentials with no recognizable prefix. Runs last so the
     // precise provider patterns get first claim on their own shapes.

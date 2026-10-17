@@ -8,7 +8,7 @@ import { createHash } from 'crypto';
 import ignore from 'ignore';
 import { debug as logDebug, info as logInfo, warn as logWarn } from './logger.js';
 import { withTimeout } from './asyncUtils.js';
-import { scrubSecrets } from './secretPatterns.js';
+import { scrubSourceSecrets } from './sourceRedaction.js';
 import { isProtectedLocalPath, protectedLocalPaths } from './protectedPaths.js';
 import { readIdentityFile } from './projectIdentityFile.js';
 import { MAX_AST_PARSE_BYTES, MAX_SIGNATURE_CHARS, chunkWithAst, } from './ast/astChunker.js';
@@ -1076,7 +1076,7 @@ export class CodeScanner {
         const excluded = [];
         const walk = { complete: true };
         await this.traverseDirectory(rootPath, rootPath, chunks, 0, walk, [], chunkless, excluded);
-        return { chunks: this.scrubChunks(chunks), complete: walk.complete, chunkless, excluded };
+        return { chunks: await this.scrubChunks(chunks), complete: walk.complete, chunkless, excluded };
     }
     /**
      * Enumerate scan-eligible relative file paths under `rootPath` without
@@ -1262,18 +1262,20 @@ export class CodeScanner {
      * before they leave this process. contentHash is recomputed from the
      * scrubbed content so the server-side dedup cache (which keys on
      * contentHash) hits when team members push the same scrubbed text.
-     * Server still re-applies scrubSecrets in the /scan/push handler as
+     * Server still re-applies source sanitation in the /scan/push handler as
      * defense in depth (idempotent). Shared by `scanFiles` (watcher path)
      * and `scanDirectoryWithStatus` (initial/full-rescan path) so both
      * honor the same redaction guarantee.
      */
-    scrubChunks(chunks) {
-        return chunks.flatMap((chunk) => {
-            const scrubbed = scrubSecrets(chunk.content);
+    async scrubChunks(chunks) {
+        const result = [];
+        for (const chunk of chunks) {
+            const scrubbed = await scrubSourceSecrets(chunk.content.replace(/\0/g, ''), chunk.filePath);
             if (scrubbed.length <= MAX_PUSH_CHUNK_CONTENT_LENGTH) {
-                return scrubbed === chunk.content
+                result.push(...(scrubbed === chunk.content
                     ? [chunk]
-                    : [{ ...chunk, content: scrubbed, contentHash: this.hash(scrubbed) }];
+                    : [{ ...chunk, content: scrubbed, contentHash: this.hash(scrubbed) }]));
+                continue;
             }
             const pieces = [];
             let startLine = chunk.startLine;
@@ -1297,8 +1299,9 @@ export class CodeScanner {
                 startLine = endLine;
                 offset = end;
             }
-            return pieces;
-        });
+            result.push(...pieces);
+        }
+        return result;
     }
     /**
      * Recursively traverse directory
@@ -1441,7 +1444,7 @@ export class CodeScanner {
             // the first 8,000 bytes now means "binary, skip" (git's heuristic)
             // instead of strip-and-index.
             if (contentGate.applyContentRules) {
-                const byContent = softDefaultForContent(relativePath, scrubSecrets(content));
+                const byContent = softDefaultForContent(relativePath, await scrubSourceSecrets(content, relativePath));
                 if (byContent) {
                     contentGate.excluded?.push({
                         path: relativePath.split(sep).join('/'),

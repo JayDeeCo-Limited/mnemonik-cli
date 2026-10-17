@@ -13,6 +13,8 @@ export { makeIndexJudge, type IndexJudge, type IndexJudgement } from './indexJud
 export { AST_LANGUAGE_IDS, QUERY_CHAIN, VENDORED_ARTIFACT_DIR, astArtifactReport, astCapabilityReport, grammarArtifactBasename, loadGrammar, loadedGrammarIds, resolveAstLanguage, type AstLanguageId, type GrammarBinding, type GrammarLoad, type GrammarUnavailableReason, } from './ast/grammars.js';
 export { MAX_AST_PARSE_BYTES, chunkWithAst, type AstChunk, type AstChunkResult, } from './ast/astChunker.js';
 export { SECRET_PATTERNS, SECRET_REDACTION_PLACEHOLDER, scrubSecrets, redactHighEntropyTokens, } from './secretPatterns.js';
+export { scrubSourceSecrets } from './sourceRedaction.js';
+export { redactCredentials, credentialValues, type RedactCredentialsOptions, } from './redactCredentials.js';
 export { FETCH_TIMEOUT_MS, TELEMETRY_TIMEOUT_MS, POST_TOOL_TIMEOUT_MS, MCP_PRECHECK_TIMEOUT_MS, PRECOMPACT_TIMEOUT_MS, HOST_HOOK_TIMEOUT_MS, HOOK_TIMEOUT_MARGIN_MS, HOOK_STDIN_TIMEOUT_MS, hookDeadlineMs, type HookHost, withHookTimeout, } from './hookTimeouts.js';
 export { persistJitDeliveryRef, readPendingJitDeliveryRefs, reportJitDeliveryRefsAttached, acknowledgeJitDeliveryRefs, pruneExpiredJitDeliveryRefs, applyJitDeliveryReceiptResponse, normalizeJitHookVersion, type JitReceiptClientEvent, type JitReceiptClientEventName, type JitReceiptEventContext, } from './jitDeliveryAck.js';
 export * from './settingsIo.js';

@@ -40,6 +40,9 @@
  * guarded against hashes, UUIDs, paths, slugs and identifiers.
  */
 export declare const SECRET_REDACTION_PLACEHOLDER = "[REDACTED]";
+export declare const SECRET_LABEL_RE: RegExp;
+/** Keep physical and escaped newline sequences, including JS line continuations. */
+export declare function redactSecretValue(value: string): string;
 export declare const SECRET_PATTERNS: ReadonlyArray<RegExp>;
 /**
  * Redact standalone high-entropy tokens that no provider pattern claimed.

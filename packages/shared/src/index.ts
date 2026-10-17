@@ -92,6 +92,12 @@ export {
   scrubSecrets,
   redactHighEntropyTokens,
 } from './secretPatterns.js';
+export { scrubSourceSecrets } from './sourceRedaction.js';
+export {
+  redactCredentials,
+  credentialValues,
+  type RedactCredentialsOptions,
+} from './redactCredentials.js';
 export {
   FETCH_TIMEOUT_MS,
   TELEMETRY_TIMEOUT_MS,

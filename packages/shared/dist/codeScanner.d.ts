@@ -440,7 +440,7 @@ export declare class CodeScanner {
      * before they leave this process. contentHash is recomputed from the
      * scrubbed content so the server-side dedup cache (which keys on
      * contentHash) hits when team members push the same scrubbed text.
-     * Server still re-applies scrubSecrets in the /scan/push handler as
+     * Server still re-applies source sanitation in the /scan/push handler as
      * defense in depth (idempotent). Shared by `scanFiles` (watcher path)
      * and `scanDirectoryWithStatus` (initial/full-rescan path) so both
      * honor the same redaction guarantee.
