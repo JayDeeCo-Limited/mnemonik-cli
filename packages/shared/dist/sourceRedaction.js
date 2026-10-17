@@ -16,7 +16,9 @@ export async function scrubSourceSecrets(text, filePath) {
             ? 'tsx'
             : ['.js', '.jsx', '.mjs', '.cjs'].includes(extension)
                 ? 'javascript'
-                : null;
+                : ['.py', '.pyi'].includes(extension)
+                    ? 'python'
+                    : null;
     if (!text || !language || Buffer.byteLength(text, 'utf8') > MAX_AST_PARSE_BYTES) {
         return scrubPayload(text);
     }
@@ -45,8 +47,11 @@ export async function scrubSourceSecrets(text, filePath) {
 function secretLabel(node) {
     if (!node)
         return false;
-    const property = node.childForFieldName('property') ?? node;
-    const name = property.type === 'string' ? property.text.slice(1, -1) : property.text;
+    const property = node.childForFieldName('property') ?? node.childForFieldName('attribute') ?? node;
+    const name = property.type === 'string'
+        ? (property.namedChildren.find((child) => child.type === 'string_content')?.text ??
+            property.text.slice(1, -1))
+        : property.text;
     return SECRET_LABEL_RE.test(name);
 }
 function literalPayload(text, sensitive) {
@@ -58,11 +63,16 @@ function literalPayload(text, sensitive) {
 function redactNode(node, sensitive = false) {
     const original = node.text;
     if (node.type === 'comment') {
+        if (original.startsWith('#'))
+            return '#' + scrubPayload(original.slice(1));
         return original.startsWith('/*')
             ? '/*' + scrubPayload(original.slice(2, -2)) + '*/'
             : '//' + scrubPayload(original.slice(2));
     }
-    if (node.type === 'string') {
+    const stringStart = node.type === 'string' && node.firstNamedChild?.type === 'string_start'
+        ? node.firstNamedChild
+        : null;
+    if (node.type === 'string' && !stringStart) {
         return original[0] + literalPayload(original.slice(1, -1), sensitive) + original.at(-1);
     }
     if (node.type === 'property_identifier' &&
@@ -71,19 +81,22 @@ function redactNode(node, sensitive = false) {
         const payload = literalPayload(original, false);
         return payload === original ? original : '"' + payload + '"';
     }
-    if (node.type === 'number' && sensitive)
+    if (['number', 'integer', 'float'].includes(node.type) && sensitive)
         return `'${redactSecretValue(original)}'`;
-    if (node.type === 'template_string') {
-        let result = '`';
-        let offset = node.startIndex + 1;
+    if (node.type === 'template_string' || stringStart) {
+        const stringEnd = stringStart ? node.lastNamedChild : null;
+        let result = stringStart?.text ?? '`';
+        let offset = stringStart?.endIndex ?? node.startIndex + 1;
         for (const child of node.namedChildren) {
-            if (child.type !== 'template_substitution')
+            if (child.type !== 'template_substitution' && child.type !== 'interpolation')
                 continue;
             result += literalPayload(original.slice(offset - node.startIndex, child.startIndex - node.startIndex), sensitive);
             result += redactNode(child);
             offset = child.endIndex;
         }
-        return result + literalPayload(original.slice(offset - node.startIndex, -1), sensitive) + '`';
+        return (result +
+            literalPayload(original.slice(offset - node.startIndex, (stringEnd?.startIndex ?? node.endIndex - 1) - node.startIndex), sensitive) +
+            (stringEnd?.text ?? '`'));
     }
     if (node.type === 'regex_pattern' || node.type === 'jsx_text')
         return scrubPayload(original);
@@ -101,6 +114,9 @@ function redactNode(node, sensitive = false) {
         'public_field_definition',
         'assignment_pattern',
         'required_parameter',
+        'default_parameter',
+        'typed_default_parameter',
+        'keyword_argument',
     ].includes(node.type)) {
         key =
             node.childForFieldName('name') ??
@@ -109,7 +125,7 @@ function redactNode(node, sensitive = false) {
                 node.childForFieldName('left');
         value = node.childForFieldName('value') ?? node.childForFieldName('right');
     }
-    else if (node.type === 'assignment_expression') {
+    else if (['assignment_expression', 'assignment', 'augmented_assignment', 'named_expression'].includes(node.type)) {
         key = node.childForFieldName('left');
         value = node.childForFieldName('right');
     }
@@ -123,16 +139,22 @@ function redactNode(node, sensitive = false) {
         result += original.slice(offset - node.startIndex, child.startIndex - node.startIndex);
         // Carry labels through value wrappers, never through call arguments or conditions.
         const carry = sensitive &&
-            (([
-                'parenthesized_expression',
-                'as_expression',
-                'satisfies_expression',
-                'non_null_expression',
-            ].includes(node.type) &&
-                child.id === node.firstNamedChild?.id) ||
+            (node.type === 'concatenated_string' ||
+                node.type === 'binary_operator' ||
+                node.type === 'unary_operator' ||
+                (node.type === 'call' && child.id === node.childForFieldName('function')?.id) ||
+                (node.type === 'attribute' && child.id === node.childForFieldName('object')?.id) ||
+                (node.type === 'conditional_expression' && child.id !== node.namedChildren[1]?.id) ||
+                ([
+                    'parenthesized_expression',
+                    'as_expression',
+                    'satisfies_expression',
+                    'non_null_expression',
+                ].includes(node.type) &&
+                    child.id === node.firstNamedChild?.id) ||
                 (node.type === 'type_assertion' && child.id === node.lastNamedChild?.id) ||
-                (node.type === 'binary_expression' &&
-                    ['+', '||', '&&', '??'].includes(node.childForFieldName('operator')?.text ?? '')) ||
+                (['binary_expression', 'boolean_operator'].includes(node.type) &&
+                    ['+', '||', '&&', '??', 'or', 'and'].includes(node.childForFieldName('operator')?.text ?? '')) ||
                 (node.type === 'ternary_expression' &&
                     child.id !== node.childForFieldName('condition')?.id));
         result += redactNode(child, carry || (labeled && child.id === value?.id));

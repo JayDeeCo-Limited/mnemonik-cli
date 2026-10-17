@@ -33,6 +33,7 @@ import {
   readdirSync,
   rmSync,
   statSync,
+  writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
@@ -88,11 +89,16 @@ interface GrammarSpec {
 const GRAMMARS: GrammarSpec[] = [
   {
     id: 'typescript',
-    pkg: 'tree-sitter-typescript',
+    pkg: 'tree-sitter-typescript@0.23.2',
     wasmFile: 'tree-sitter-typescript.wasm',
     tags: 'upstream',
   },
-  { id: 'tsx', pkg: 'tree-sitter-typescript', wasmFile: 'tree-sitter-tsx.wasm', tags: 'inherited' },
+  {
+    id: 'tsx',
+    pkg: 'tree-sitter-typescript@0.23.2',
+    wasmFile: 'tree-sitter-tsx.wasm',
+    tags: 'inherited',
+  },
   { id: 'javascript', pkg: 'tree-sitter-javascript', tags: 'upstream' },
   { id: 'python', pkg: 'tree-sitter-python', tags: 'upstream' },
   { id: 'go', pkg: 'tree-sitter-go', tags: 'upstream' },
@@ -216,6 +222,57 @@ async function checkOnly(): Promise<Problem[]> {
   return problems;
 }
 
+/**
+ * 0.23.2's published WASMs and generated C share these two grammar defects.
+ * Keep `unique` contextual, and let GLR distinguish typeof-import type queries
+ * from runtime calls instead of discarding the type reading on static precedence.
+ * Source: https://github.com/tree-sitter/tree-sitter-typescript/tree/v0.23.2
+ * MIT; CLI 0.24.4 uses emscripten/emsdk:3.1.64 for the WASM build.
+ */
+function rebuildTypescript(dir: string, work: string): void {
+  const grammarPath = join(dir, 'common', 'define-grammar.js');
+  let grammar = readFileSync(grammarPath, 'utf8');
+  for (const [before, after] of [
+    [
+      '      _reserved_identifier: (_, previous) => choice(',
+      "      _reserved_identifier: (_, previous) => choice(\n        'unique',",
+    ],
+    ['      [$.call_expression, $._type_query_call_expression],\n', ''],
+    [
+      '    conflicts: ($, previous) => previous.concat([',
+      '    conflicts: ($, previous) => previous.concat([\n      [$.call_expression, $._type_query_call_expression],',
+    ],
+  ] as const) {
+    if (!grammar.includes(before)) throw new Error('TypeScript grammar patch no longer applies');
+    grammar = grammar.replace(before, after);
+  }
+  writeFileSync(grammarPath, grammar);
+  const tools = join(work, 'typescript-build');
+  execFileSync('npm', [
+    'install',
+    '--prefix',
+    tools,
+    '--no-audit',
+    '--no-fund',
+    '--no-package-lock',
+    'tree-sitter-cli@0.24.4',
+    'tree-sitter-javascript@0.23.1',
+  ]);
+  const cli = join(tools, 'node_modules', '.bin', 'tree-sitter');
+  for (const dialect of ['typescript', 'tsx']) {
+    const options = {
+      cwd: join(dir, dialect),
+      env: { ...process.env, NODE_PATH: join(tools, 'node_modules') },
+    };
+    execFileSync(cli, ['generate'], options);
+    execFileSync(
+      cli,
+      ['build', '--wasm', '--docker', '--output', join(dir, `tree-sitter-${dialect}.wasm`)],
+      options
+    );
+  }
+}
+
 function vendor(): Problem[] {
   mkdirSync(WASM_DIR, { recursive: true });
   const work = mkdtempSync(join(tmpdir(), 'ts-grammars-'));
@@ -247,6 +304,7 @@ function vendor(): Problem[] {
             dir,
             '--strip-components=1',
           ]);
+          if (spec.id === 'typescript') rebuildTypescript(dir, work);
           extracted.set(spec.pkg, dir);
         } catch (err) {
           problems.push({
