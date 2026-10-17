@@ -589,9 +589,12 @@ export const SCANNER_MAX_DEPTH = 10;
  *    project, never also into this one. A file naming the enclosing project
  *    (`enclosingProjectId`, a copy) is the same project, and a
  *    configuration-only file (no `projectId`) names none: neither is a
- *    boundary. A file that cannot be read as an identity still is;
- *  - a linked worktree (a `.git` FILE whose git directory has a `commondir`)
- *    is another checkout of a project, indexed from its main checkout.
+ *    boundary. A file that cannot be read as an identity still is, and so is
+ *    a copy in a full clone (its own `.git` DIRECTORY): a second checkout of
+ *    the project, whose files would otherwise be indexed twice;
+ *  - a linked worktree (a `.git` FILE whose git directory has a `commondir`,
+ *    or is missing) is another checkout of a project, indexed from its main
+ *    checkout.
  * A nested clone or a submodule without its own `.mnemonik.json` belongs to
  * this project and is indexed with it (its `.git` directory is ignored by the
  * built-in rules). The scan ROOT is exempt by construction (callers only test
@@ -604,6 +607,8 @@ export async function isProjectBoundary(dirPath, enclosingProjectId) {
             return true;
         if (identity.kind === 'ok') {
             if (identity.identity.projectId !== enclosingProjectId)
+                return true;
+            if ((await lstatWithin(join(dirPath, '.git')))?.isDirectory())
                 return true;
         }
         else if (identity.kind !== 'absent')
@@ -622,8 +627,10 @@ export async function rootProjectId(rootPath) {
 const lstatWithin = (path) => withTimeout(lstat(path), FILE_OP_TIMEOUT_MS, `lstat timed out: ${path}`).catch(() => undefined);
 /**
  * True when `dirPath` is the top of a linked git worktree: its `.git` is a
- * FILE pointing at a git directory that has a `commondir`. A submodule's
- * `.git` file points at `.git/modules/<name>`, which has none.
+ * FILE pointing at a git directory that has a `commondir`, or at one that no
+ * longer exists (a pruned or moved worktree, or one made on another machine):
+ * nothing shows it is this project's own. A submodule's `.git` file points at
+ * `.git/modules/<name>`, which exists and has no `commondir`.
  */
 export async function isLinkedWorktreeCheckout(dirPath) {
     const marker = await lstatWithin(join(dirPath, '.git'));
@@ -633,7 +640,10 @@ export async function isLinkedWorktreeCheckout(dirPath) {
         const pointer = /^gitdir:\s*(.+?)\s*$/im.exec(await withTimeout(readFile(join(dirPath, '.git'), 'utf8'), FILE_OP_TIMEOUT_MS, `read timed out: ${join(dirPath, '.git')}`))?.[1];
         if (!pointer)
             return false;
-        return !!(await lstatWithin(join(resolve(dirPath, pointer), 'commondir')));
+        const gitDirectory = resolve(dirPath, pointer);
+        if (!(await lstatWithin(gitDirectory)))
+            return true;
+        return !!(await lstatWithin(join(gitDirectory, 'commondir')));
     }
     catch {
         return false;

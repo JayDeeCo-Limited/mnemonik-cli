@@ -4,6 +4,7 @@ import {
   humanIdentityState,
   INTERRUPTED_INSTALL,
   INTERRUPTED_INSTALL_MESSAGE,
+  REGISTRY_FAILURE,
   approvalMessage,
   knownReason,
   SCANNER_APPROVAL_ACTION,
@@ -81,6 +82,7 @@ import {
   createRealProjectRuntime,
   ensureProjectRoot,
   ensureProjectForAgent,
+  insideProjectLine,
   projectFolderFor,
   folderRefusalMessage,
   projectLimitMessage,
@@ -164,8 +166,6 @@ export const connectedFolderLine = (name: string): string => `  ✓ Connected ${
 export const alreadyConnectedFolderLine = (name: string): string =>
   `  ✓ ${name} is already connected and watched.`;
 export const removedFolderLine = (name: string): string => `  ✓ ${name} is no longer connected.`;
-export const insideProjectLine = (name: string, projectFolder: string): string =>
-  `${name} is part of the project in ${projectFolder}, so Mnemonik connects that folder.`;
 export const projectDeletionWarning = (name: string): string =>
   `Deleting ${name} removes its memories, code index and summaries for everyone. This cannot be undone.`;
 export const projectDeletedLine = (name: string): string => `Deleted ${name}.`;
@@ -418,10 +418,26 @@ function scannerConsentRequired(output: Output, json: boolean, agent: boolean): 
   return 3;
 }
 
+const hostTargetFailed = (target: HostResult): boolean =>
+  target.status !== 'READY' && target.reason !== 'codex_trust_pending';
 function hostUpdateFailed(result: { results: readonly HostResult[] }): boolean {
-  return result.results.some(
-    (target) => target.status !== 'READY' && target.reason !== 'codex_trust_pending'
-  );
+  return result.results.some(hostTargetFailed);
+}
+/**
+ * The reason to tell the person when every host that did not update stopped
+ * only because its new files could not be downloaded; undefined otherwise.
+ */
+function registryFailure(
+  hostError: string | undefined,
+  results: readonly HostResult[]
+): string | undefined {
+  const reasons =
+    hostError !== undefined
+      ? [hostError]
+      : results.filter(hostTargetFailed).map((target) => target.reason);
+  return reasons.length > 0 && reasons.every((reason) => REGISTRY_FAILURE.test(reason))
+    ? reasons[0]
+    : undefined;
 }
 const updateFailureMessage = 'Mnemonik could not update. It will try again automatically tomorrow.';
 const booleans = new Set([
@@ -1147,7 +1163,12 @@ async function runHostCommand(
             output.error(INTERRUPTED_INSTALL_MESSAGE.sentence);
             output.error(INTERRUPTED_INSTALL_MESSAGE.nextStep);
           } else if (hostError === 'lock_held') output.error(humanReason(hostError));
-          else output.error('Run mnemonik repair, then start a new session in each coding tool.');
+          else {
+            // Repair cannot fetch files the registry will not serve or cannot be reached for.
+            const registry = registryFailure(hostError, result.results);
+            if (registry) for (const line of humanReport(registry).split('\n')) output.error(line);
+            else output.error('Run mnemonik repair, then start a new session in each coding tool.');
+          }
         }
         if (scanner?.status === 'FAILED') {
           output.error(scannerRecovery?.message ?? 'The scanner could not update.');

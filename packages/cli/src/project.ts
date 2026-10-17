@@ -209,6 +209,9 @@ export function projectLimitMessage(
   ];
 }
 
+export const insideProjectLine = (name: string, projectFolder: string): string =>
+  `${name} is part of the project in ${projectFolder}, so Mnemonik connects that folder.`;
+
 export const connectedProjectsMessage = (roots: string[]): string =>
   roots.length === 1
     ? `  ✓ Connected ${basename(roots[0] ?? '')}.`

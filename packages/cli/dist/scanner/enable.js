@@ -1,9 +1,9 @@
 import { revokeInstallComponent } from '../install/transaction.js';
 import { mkdir, readFile, realpath } from 'node:fs/promises';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { atomicWrite, withLock } from '@mnemonik/local-setup';
-import { apiOrigin, disclosureCovers, serializeReadiness, } from '@mnemonik/shared';
+import { apiOrigin, disclosureCovers, resolveProjectIdentity, serializeReadiness, } from '@mnemonik/shared';
 import { createCliAuth } from '../auth/index.js';
 import { REPOSITORY_APPROVAL_INSTRUCTION } from '../auth/device.js';
 import { createCliCredentials } from '../auth/credentials.js';
@@ -17,7 +17,7 @@ import { evaluateRoot, repositoryAt } from '../project/eligibility.js';
 import { scannerService } from './service.js';
 import { ABANDONED_PAUSE_RESUMED, controlScanner, resumeAbandonedPause, scannerReceipt, } from './control.js';
 import { bytesAt, digest, withInstall } from '../install/journal.js';
-import { connectedProjectsMessage, createRealProjectRuntime, ensureProjectRoot, projectFolderFor, projectLimitMessage, } from '../project.js';
+import { connectedProjectsMessage, createRealProjectRuntime, ensureProjectRoot, insideProjectLine, projectFolderFor, projectLimitMessage, } from '../project.js';
 import { consentDraft, runScannerBoundaryPicker } from './picker.js';
 export const scannerStateBytes = (state) => Buffer.from(`${JSON.stringify(state, null, 2)}\n`);
 export const SCANNER_APPROVAL_WAIT = 'Waiting for approval in your browser, up to 10 minutes.';
@@ -216,6 +216,27 @@ export async function prepareScanner(options, work) {
             if (!picked.roots.length && !picked.candidates?.length)
                 throw new Error('scan_roots_required');
             picked.roots = await Promise.all(picked.roots.map((root) => realpath(root)));
+            // A named folder inside a project connects that project's folder (as
+            // `roots add` does), so the folder check and the consent name the folder
+            // the scanner will watch; a consent naming only the subfolder leaves the
+            // scanner paused for consent, indexing nothing.
+            if (options.roots) {
+                const resolver = options.projectExecutor ?? { resolveProjectIdentity };
+                const folders = [];
+                for (const named of picked.roots) {
+                    const folder = await projectFolderFor(named, resolver);
+                    if (folder !== named) {
+                        const line = insideProjectLine(basename(named), folder);
+                        if (options.nonInteractive)
+                            options.output.error(line);
+                        else
+                            options.output.line(line);
+                    }
+                    if (!folders.includes(folder))
+                        folders.push(folder);
+                }
+                picked.roots = folders;
+            }
             picked.exclusions = await Promise.all(picked.exclusions.map((root) => realpath(root)));
             for (const root of picked.roots) {
                 const decision = await evaluateRoot({ kind: 'absent', root, repository: await repositoryAt(root), nested: [] }, { cwd: root });

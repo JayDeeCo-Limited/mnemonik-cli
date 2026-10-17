@@ -141,9 +141,9 @@ export async function updateRuntime(update) {
     }
     return installed;
 }
-export async function hostNpmSource(host, pin, fetcher = fetch, releaseKey) {
+export async function hostNpmSource(host, pin, fetcher = fetch, releaseKey, retryDelaysMs) {
     const { releaseBytes, signedReleaseManifest } = await import('./releaseSource.js');
-    const { unpack } = await import('./bootstrap.js');
+    const { fromRegistry, RegistryBusy, registryBusyStatus, unpack } = await import('./bootstrap.js');
     if (pin.package !== `@mnemonik/${host}-hooks` ||
         !/^\d+\.\d+\.\d+(?:-[\w.-]+)?$/.test(pin.version) ||
         !pin.closure.length ||
@@ -164,11 +164,40 @@ export async function hostNpmSource(host, pin, fetcher = fetch, releaseKey) {
     const seen = new Set();
     const exactBytes = async (address, name, version) => {
         try {
-            return await releaseBytes(address, fetcher);
+            return await fromRegistry(async () => {
+                let answered;
+                let unreachable = false;
+                try {
+                    return await releaseBytes(address, async (input, init) => {
+                        try {
+                            const response = await fetcher(input, init);
+                            answered = response.status;
+                            return response;
+                        }
+                        catch (error) {
+                            unreachable = true;
+                            throw error;
+                        }
+                    });
+                }
+                catch (error) {
+                    // A version published moments ago can 404 until npm's CDN has it.
+                    if (error instanceof RuntimeError) {
+                        if (answered !== undefined && registryBusyStatus(answered))
+                            throw new RegistryBusy();
+                    }
+                    else if (unreachable || ['TimeoutError', 'AbortError'].includes(error?.name))
+                        throw new RegistryBusy(true);
+                    throw error;
+                }
+            }, retryDelaysMs);
         }
         catch (error) {
-            if (error instanceof RuntimeError && error.reason === 'manifest_missing')
-                error.message = `manifest_missing: ${name}@${version}`;
+            if (error instanceof RuntimeError &&
+                (error.reason === 'manifest_missing' ||
+                    error.reason === 'registry_unavailable' ||
+                    error.reason === 'registry_unreachable'))
+                error.message = `${error.reason}: ${name}@${version}`;
             throw error;
         }
     };

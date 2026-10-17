@@ -333,6 +333,52 @@ it('says it will wait for scanner consent for the full approval lifetime', async
 
   expect(text).toContain('Waiting for approval in your browser, up to 10 minutes.');
 });
+it('a folder inside a project asks consent for the project folder it connects', async () => {
+  // The consent must name the folder the scanner watches, or the scanner
+  // pauses as consent_required and indexes nothing.
+  let text = '';
+  options.output = new Output({ write: (chunk) => void (text += chunk) });
+  const project = consent.roots[0]!;
+  await writeFile(
+    join(project, '.mnemonik.json'),
+    JSON.stringify({ schemaVersion: 1, projectId: '33333333-3333-4333-8333-333333333333' })
+  );
+  const sub = join(project, 'services', 'api');
+  await mkdir(sub, { recursive: true });
+  options.roots = [sub];
+  consent.roots = [];
+  const authorize = vi.fn(async (selection?: { roots: string[] }) => {
+    if (selection) consent = { ...consent, roots: [...selection.roots] };
+    return 'cli-token';
+  });
+  options.authorize = authorize;
+
+  await enableScanner(options);
+
+  expect(authorize).toHaveBeenCalledWith(
+    { roots: [project], exclusions: [] },
+    '11111111-1111-4111-8111-111111111111'
+  );
+  const saved = JSON.parse(await readFile(join(state, 'scanner/state.json'), 'utf8'));
+  expect(saved.config.roots).toEqual([project]);
+  expect(saved.consent.roots).toEqual([project]);
+  expect(text).toContain('api is part of the project in');
+});
+it('checks the project folder a named subfolder connects, not only the subfolder', async () => {
+  let text = '';
+  options.output = new Output({ write: (chunk) => void (text += chunk) });
+  const project = consent.roots[0]!;
+  await writeFile(
+    join(project, '.mnemonik.json'),
+    JSON.stringify({ schemaVersion: 1, projectId: '33333333-3333-4333-8333-333333333333' })
+  );
+  // The project folder holds two repositories: a parent of projects.
+  for (const name of ['one', 'two']) await mkdir(join(project, name, '.git'), { recursive: true });
+  options.roots = [join(project, 'one')];
+
+  await expect(enableScanner(options)).rejects.toThrow('broad_workspace_parent');
+  expect(text).toContain(`${project}: That folder cannot be used.`);
+});
 it('uses the repository approval instruction in the joined installer', async () => {
   let text = '';
   options.output = new Output({ write: (chunk) => void (text += chunk) });

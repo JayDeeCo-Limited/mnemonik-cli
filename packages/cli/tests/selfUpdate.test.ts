@@ -829,6 +829,33 @@ it('reports one failure after both host update attempts fail', async () => {
   expect(runHosts).toHaveBeenCalledTimes(2);
 });
 
+it.each([
+  [
+    'the registry would not serve the new hooks',
+    'registry_unavailable: @mnemonik/codex-hooks@0.8.300',
+    'Mnemonik could not download the files it needs.\nTry again in a few minutes.\n',
+  ],
+  [
+    'the computer could not reach the registry',
+    'registry_unreachable: @mnemonik/codex-hooks@0.8.300',
+    'Mnemonik could not be reached.\nCheck your internet connection, then try again.\n',
+  ],
+])('says to try again later, not to repair, when %s', async (_, reason, said) => {
+  selectCodexHooks();
+  vi.spyOn(hosts, 'runHosts').mockResolvedValue({
+    results: [{ target: 'codex-hooks', elapsedMs: 1, status: 'ACTION_REQUIRED', reason }],
+    reports: [],
+    journal: { state: 'ACTION_REQUIRED' } as never,
+  });
+
+  const result = await update(false);
+  expect(result).toMatchObject({
+    text: 'The mnemonik command updated.\n',
+    errors: 'Your coding tools could not update.\n' + said,
+  });
+  expect(result.errors).not.toMatch(/repair|being published/i);
+});
+
 it('manual update failure reports one automatic-follow-up line without internal detail', async () => {
   corrupt = true;
   const result = await update(false);

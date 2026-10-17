@@ -21,7 +21,12 @@ export type Reason =
   | 'unsigned'
   | 'permission'
   | 'acl_unavailable'
-  | 'lock_held';
+  | 'lock_held'
+  // The registry answered without the package (404, 429 or 5xx): a fresh release
+  // still reaching its CDN, a busy registry, or a pin it does not have.
+  | 'registry_unavailable'
+  // The registry could not be reached at all: offline, DNS, refused, timed out.
+  | 'registry_unreachable';
 export class RuntimeError extends Error {
   constructor(public readonly reason: Reason) {
     super(reason);

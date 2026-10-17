@@ -28,5 +28,5 @@ export interface HostPackagePin {
 export interface HostReleaseMap {
     hosts: Record<HostArtifact, HostPackagePin>;
 }
-export declare function hostNpmSource(host: HostArtifact, pin: HostPackagePin, fetcher?: typeof fetch, releaseKey?: string): Promise<RuntimeSource>;
+export declare function hostNpmSource(host: HostArtifact, pin: HostPackagePin, fetcher?: typeof fetch, releaseKey?: string, retryDelaysMs?: readonly number[]): Promise<RuntimeSource>;
 //# sourceMappingURL=store.d.ts.map

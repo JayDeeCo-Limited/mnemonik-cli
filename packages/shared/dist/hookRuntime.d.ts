@@ -13,6 +13,15 @@ export interface ProjectIdentity {
 /** Forget cached resolutions (after project setup wrote a `.mnemonik.json`). */
 export declare function clearProjectIdentityCache(): void;
 export declare function findProjectIdentity(startCwd: string): Promise<ProjectIdentity | null>;
+/**
+ * What a hook tells the server about its working folder: the project's id
+ * (the only project identity) and the project's root folder (the root for
+ * repo-relative paths). Both are absent outside a project.
+ */
+export declare function projectScope(startCwd: string): Promise<{
+    projectId?: string;
+    projectRoot?: string;
+}>;
 /** The project a hook's working folder belongs to: the nearest `.mnemonik.json` above it. */
 export declare function findProjectIdentityDetailed(startCwd: string): Promise<ProjectIdentityResolution>;
 /** Largest hook payload read from stdin; a bigger one fails open. */

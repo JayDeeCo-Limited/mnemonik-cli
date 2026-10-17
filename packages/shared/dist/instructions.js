@@ -155,7 +155,7 @@
  */
 // Dynamic response orchestration remains authoritative. This universal floor stays
 // self-scoping when project context was already loaded through another channel.
-const INSTRUCTIONS_CONTENT = `Mnemonik provides persistent project memory: decisions, rationale, tasks, and policies across sessions. If no block begins "PROJECT_CONTEXT schemaVersion=", session_bootstrap({ cwd }) loads project context when cwd is the real absolute path of the project root; a placeholder or relative path fails. With that block, context is loaded and no session_bootstrap call is needed. Code and docs show current artifacts, git shows changes, and memory carries the why; memory_search recalls rationale or intent, then Grep or Read verifies current source.
+const INSTRUCTIONS_CONTENT = `Mnemonik provides persistent project memory: decisions, rationale, tasks, and policies across sessions. If no block begins "PROJECT_CONTEXT schemaVersion=", session_bootstrap({}) loads project context; installed hooks supply the project. With that block, context is loaded and no session_bootstrap call is needed. Code and docs show current artifacts, git shows changes, and memory carries the why; memory_search recalls rationale or intent, then Grep or Read verifies current source.
 
 What I learn about you belongs in Companion; what I learn about this project belongs here.
 

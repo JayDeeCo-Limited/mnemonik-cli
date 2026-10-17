@@ -38,7 +38,7 @@ interface Package {
   dependencies?: Record<string, string>;
   scripts?: Record<string, string>;
 }
-interface LockEntry {
+export interface LockEntry {
   version: string;
   resolved: string;
   integrity: string;
@@ -167,7 +167,54 @@ export function unpack(tarball: Buffer): Record<string, Buffer> {
   return files;
 }
 
-async function tarballBytes(entry: LockEntry, prefix: string): Promise<Buffer> {
+/**
+ * A registry answer that may change in a moment. npm's CDN can answer 404 for a
+ * version for a few minutes after it is published, and a registry can be busy
+ * or out of reach.
+ */
+export class RegistryBusy extends Error {
+  /** True when no answer came back at all (offline, DNS, refused, timed out). */
+  constructor(readonly unreachable = false) {
+    super(unreachable ? 'registry_unreachable' : 'registry_unavailable');
+  }
+}
+export const registryBusyStatus = (status: number): boolean =>
+  status === 404 || status === 429 || status >= 500;
+/** Pauses between attempts at one registry fetch. */
+export const REGISTRY_RETRY_DELAYS_MS: readonly number[] = [5_000, 10_000];
+// Every registry fetch in this process shares one allowance, so an update that
+// fetches several packages still waits at most this long in total.
+let registryWaitLeftMs = 15_000;
+
+/**
+ * Runs one registry fetch, again after a short pause while the registry is busy,
+ * and names a registry that stays busy as temporary rather than as a missing
+ * package, so the person is told to try again later. A registry that never
+ * answered is named unreachable, so the person is told to check the connection.
+ */
+export async function fromRegistry<T>(
+  attempt: () => Promise<T>,
+  delays: readonly number[] = REGISTRY_RETRY_DELAYS_MS
+): Promise<T> {
+  for (let tried = 0; ; tried += 1) {
+    try {
+      return await attempt();
+    } catch (error) {
+      if (!(error instanceof RegistryBusy)) throw error;
+      const delay = delays[tried];
+      if (delay === undefined || delay > registryWaitLeftMs)
+        throw new RuntimeError(error.unreachable ? 'registry_unreachable' : 'registry_unavailable');
+      registryWaitLeftMs -= delay;
+      await new Promise((resolve) => setTimeout(resolve, delay));
+    }
+  }
+}
+
+export async function tarballBytes(
+  entry: LockEntry,
+  prefix: string,
+  delays?: readonly number[]
+): Promise<Buffer> {
   let bytes: Buffer;
   if (entry.resolved.startsWith('file:'))
     bytes = await readFile(
@@ -175,12 +222,21 @@ async function tarballBytes(entry: LockEntry, prefix: string): Promise<Buffer> {
     );
   else {
     if (!entry.resolved.startsWith('https://')) throw new RuntimeError('unsigned');
-    const response = await fetch(entry.resolved, {
-      redirect: 'error',
-      signal: AbortSignal.timeout(30_000),
-    });
-    if (!response.ok) throw new RuntimeError('manifest_missing');
-    bytes = Buffer.from(await response.arrayBuffer());
+    bytes = await fromRegistry(async () => {
+      try {
+        const response = await fetch(entry.resolved, {
+          redirect: 'error',
+          signal: AbortSignal.timeout(30_000),
+        });
+        if (registryBusyStatus(response.status)) throw new RegistryBusy();
+        if (!response.ok) throw new RuntimeError('manifest_missing');
+        return Buffer.from(await response.arrayBuffer());
+      } catch (error) {
+        if (error instanceof RuntimeError || error instanceof RegistryBusy) throw error;
+        // A refused or reset connection, or a timeout: the network's, not the package's.
+        throw new RegistryBusy(true);
+      }
+    }, delays);
   }
   const match = /^(sha512|sha256)-([A-Za-z0-9+/=]+)$/.exec(entry.integrity);
   if (!match?.[1] || createHash(match[1]).update(bytes).digest('base64') !== match[2])

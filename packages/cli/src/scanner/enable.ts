@@ -1,6 +1,6 @@
 import { revokeInstallComponent } from '../install/transaction.js';
 import { mkdir, readFile, realpath } from 'node:fs/promises';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import type { Readable } from 'node:stream';
 import { atomicWrite, withLock } from '@mnemonik/local-setup';
@@ -8,6 +8,7 @@ import { type ComponentCredentialResponse } from '@mnemonik/credentials';
 import {
   apiOrigin,
   disclosureCovers,
+  resolveProjectIdentity,
   serializeReadiness,
   type SupervisorStatus,
   type ServiceDefinition,
@@ -36,6 +37,7 @@ import {
   connectedProjectsMessage,
   createRealProjectRuntime,
   ensureProjectRoot,
+  insideProjectLine,
   projectFolderFor,
   projectLimitMessage,
   type ProjectExecutor,
@@ -321,6 +323,24 @@ export async function prepareScanner<T>(
       if (!picked.roots.length && !picked.candidates?.length)
         throw new Error('scan_roots_required');
       picked.roots = await Promise.all(picked.roots.map((root) => realpath(root)));
+      // A named folder inside a project connects that project's folder (as
+      // `roots add` does), so the folder check and the consent name the folder
+      // the scanner will watch; a consent naming only the subfolder leaves the
+      // scanner paused for consent, indexing nothing.
+      if (options.roots) {
+        const resolver = options.projectExecutor ?? { resolveProjectIdentity };
+        const folders: string[] = [];
+        for (const named of picked.roots) {
+          const folder = await projectFolderFor(named, resolver);
+          if (folder !== named) {
+            const line = insideProjectLine(basename(named), folder);
+            if (options.nonInteractive) options.output.error(line);
+            else options.output.line(line);
+          }
+          if (!folders.includes(folder)) folders.push(folder);
+        }
+        picked.roots = folders;
+      }
       picked.exclusions = await Promise.all(picked.exclusions.map((root) => realpath(root)));
       for (const root of picked.roots) {
         const decision = await evaluateRoot(

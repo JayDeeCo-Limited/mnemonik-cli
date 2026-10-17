@@ -206,18 +206,23 @@ describe('release-pinned host closures', () => {
     expect(fixture.requests).toEqual([]);
   });
 
-  it('names a missing exact entry and never requests a range version', async () => {
+  it('names an entry the registry does not serve and never requests a range version', async () => {
     const missing = fixture.pins.codex.closure[1]!;
     const missingPath = `/${encodeURIComponent(missing.name)}/${missing.version}`;
     await expect(
-      hostNpmSource('codex', fixture.pins.codex, async (input, init) =>
-        new URL(String(input)).pathname === missingPath
-          ? new Response(null, { status: 404 })
-          : fixture.fetcher(input, init)
+      hostNpmSource(
+        'codex',
+        fixture.pins.codex,
+        async (input, init) =>
+          new URL(String(input)).pathname === missingPath
+            ? new Response(null, { status: 404 })
+            : fixture.fetcher(input, init),
+        undefined,
+        [0, 0]
       )
     ).rejects.toMatchObject({
-      reason: 'manifest_missing',
-      message: `manifest_missing: ${missing.name}@${missing.version}`,
+      reason: 'registry_unavailable',
+      message: `registry_unavailable: ${missing.name}@${missing.version}`,
     });
 
     fixture.requests.length = 0;
@@ -228,5 +233,71 @@ describe('release-pinned host closures', () => {
     expect(versions.every((version) => exactVersion.test(version))).toBe(true);
     expect(fixture.requests.join('\n')).not.toMatch(/%5e|~|%3e|%3c|%2a|[><*]/i);
     expect(versions.join('/')).not.toMatch(/(?:^|\/)x(?:\/|$)/i);
+  });
+
+  // npm's CDN answered 404 for a hook tarball for minutes after its release was
+  // published, and every update in that window rolled the hooks back.
+  it('fetches a just-published hook tarball again until npm serves it', async () => {
+    const pin = fixture.pins.cursor;
+    const tarball = `/${encodeURIComponent(pin.package)}/archive.tgz`;
+    let refused = 0;
+    const source = await hostNpmSource(
+      'cursor',
+      pin,
+      async (input, init) =>
+        new URL(String(input)).pathname === tarball && refused++ < 2
+          ? new Response(null, { status: 404 })
+          : fixture.fetcher(input, init),
+      undefined,
+      [0, 0]
+    );
+    expect(refused).toBe(3);
+    expect(source.manifest.version).toBe(pin.version);
+  });
+
+  it('says the registry is unavailable after the retries, naming the package', async () => {
+    const pin = fixture.pins.cursor;
+    const tarball = `/${encodeURIComponent(pin.package)}/archive.tgz`;
+    let asked = 0;
+    await expect(
+      hostNpmSource(
+        'cursor',
+        pin,
+        async (input, init) => {
+          if (new URL(String(input)).pathname !== tarball) return fixture.fetcher(input, init);
+          asked += 1;
+          return new Response(null, { status: 404 });
+        },
+        undefined,
+        [0, 0]
+      )
+    ).rejects.toMatchObject({
+      reason: 'registry_unavailable',
+      message: `registry_unavailable: ${pin.package}@${pin.version}`,
+    });
+    expect(asked).toBe(3);
+  });
+
+  it('says the registry is unreachable when the computer cannot reach it, naming the package', async () => {
+    const pin = fixture.pins.cursor;
+    const tarball = `/${encodeURIComponent(pin.package)}/archive.tgz`;
+    let asked = 0;
+    await expect(
+      hostNpmSource(
+        'cursor',
+        pin,
+        async (input, init) => {
+          if (new URL(String(input)).pathname !== tarball) return fixture.fetcher(input, init);
+          asked += 1;
+          throw new TypeError('fetch failed');
+        },
+        undefined,
+        [0, 0]
+      )
+    ).rejects.toMatchObject({
+      reason: 'registry_unreachable',
+      message: `registry_unreachable: ${pin.package}@${pin.version}`,
+    });
+    expect(asked).toBe(3);
   });
 });

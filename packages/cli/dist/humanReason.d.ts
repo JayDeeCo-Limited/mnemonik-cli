@@ -39,6 +39,13 @@ export declare const INTERRUPTED_INSTALL_MESSAGE: {
     sentence: string;
     nextStep: string;
 };
+export declare const REGISTRY_UNAVAILABLE: RegExp;
+export declare const REGISTRY_UNAVAILABLE_MESSAGE: {
+    sentence: string;
+    nextStep: string;
+};
+/** A registry fetch that failed for good: the files were refused, or the registry was never reached. */
+export declare const REGISTRY_FAILURE: RegExp;
 /** The table's words for a reason, or undefined when the table has none. */
 export declare function knownReason(reason: string): ReadinessMessage | undefined;
 /**

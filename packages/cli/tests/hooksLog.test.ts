@@ -256,7 +256,9 @@ describe('mnemonik hooks log', () => {
     const running = runCli(['hooks', 'log', '--follow', '--last', '1', '--host', 'codex'], {
       installStateDir: state,
       stdout: io.stdout,
-      hooksLog: { alive: () => true, signal: stop.signal, pollMs: 10 },
+      // The fixture's clock: a run started "now" is still running. Real time
+      // made it a minute old once 2026-10-17T01:01Z passed.
+      hooksLog: { alive: () => true, now: () => NOW, signal: stop.signal, pollMs: 10 },
     });
     await new Promise((resolve) => setTimeout(resolve, 30));
     await write(state, 'codex', start('codex', 'x2', 'PreToolUse', 0));

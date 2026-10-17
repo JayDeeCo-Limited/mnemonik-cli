@@ -63,8 +63,8 @@ export declare function isBootstrapDigestPayload(text: string): boolean;
  * The explicit call that re-fetches a bootstrap digest, for the item that
  * carries one. A shed emission without a route leaves no stub, so a digest
  * shed for budget once vanished without a trace (2026-10-10); with this route
- * the not-reached marker names the call that brings it back. The digest's own
- * `cwd=` line supplies the scope.
+ * the not-reached marker names the call that brings it back. The call carries
+ * no scope: the hook adds the project.
  */
 export declare function projectContextRetrievalRoute(text: string): string | undefined;
 /** Fit one rendered envelope while preserving its exact under-budget bytes. */

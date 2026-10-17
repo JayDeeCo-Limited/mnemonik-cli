@@ -62,13 +62,14 @@
  *
  * Each report also carries where the edit happened (`editScope`): the git
  * worktree and repository of the file, or a mark that the file lies outside
- * the project's repository (/tmp, another repository, a `.git` directory). The
+ * the project (/tmp, another project, a `.git` directory). The
  * server counts only project edits, and gates a push on the uncheckpointed
  * files it carries (`describeHandoffs`).
  */
 import { execFileSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdirSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync, } from 'node:fs';
+import { lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync, } from 'node:fs';
+import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { performance } from 'node:perf_hooks';
 /** Bounded so a pathological repo cannot stall the hook's PostToolUse turn. */
@@ -417,15 +418,116 @@ function isWithin(path, dir) {
     const base = dir.endsWith('/') ? dir : `${dir}/`;
     return path === dir || path.startsWith(base);
 }
+const CANONICAL_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+/**
+ * The `projectId` a folder's own `.mnemonik.json` names: 'absent' when there is
+ * no file or it holds configuration only (no `projectId`, schema 1 or none),
+ * null when it cannot be read or is not a valid schema 1 identity.
+ */
+function identityFileAt(dir) {
+    const path = join(dir, '.mnemonik.json');
+    let text;
+    try {
+        if (!lstatSync(path).isFile())
+            return null;
+        text = readFileSync(path, 'utf8');
+    }
+    catch (error) {
+        const code = error.code;
+        return code === 'ENOENT' || code === 'ENOTDIR' ? 'absent' : null;
+    }
+    try {
+        const value = JSON.parse(text);
+        if (!value || typeof value !== 'object' || Array.isArray(value))
+            return null;
+        const record = value;
+        if (!('projectId' in record)) {
+            return !('schemaVersion' in record) || record.schemaVersion === 1 ? 'absent' : null;
+        }
+        return record.schemaVersion === 1 &&
+            typeof record.projectId === 'string' &&
+            CANONICAL_UUID.test(record.projectId)
+            ? record.projectId
+            : null;
+    }
+    catch {
+        return null;
+    }
+}
+/** The main checkout of a linked worktree whose top is `dir`, or null when `dir` is no such top. */
+function linkedWorktreeMainCheckout(dir) {
+    const dotGit = join(dir, '.git');
+    try {
+        if (!lstatSync(dotGit).isFile())
+            return null;
+        const gitDir = gitDirFromFile(dotGit, dir);
+        if (!gitDir)
+            return null;
+        const common = readFileSync(join(gitDir, 'commondir'), 'utf8').trim();
+        return common ? dirname(canonicalPath(resolve(gitDir, common))) : null;
+    }
+    catch {
+        return null;
+    }
+}
+const projectIdCache = new Map();
+/**
+ * The Mnemonik project a directory belongs to: the `projectId` of the nearest
+ * `.mnemonik.json` at or above it, as the hooks resolve a session's project
+ * (repositoryRoot.ts `resolveNearestProjectIdentity`). A git repository is not
+ * a project's edge: a nested clone or submodule belongs to the project around
+ * it unless it has an identity file of its own. A configuration-only file is
+ * passed, the walk stops at the home folder (whose own file counts), and the
+ * top of a linked worktree stands for its main checkout (the worktree's own
+ * copy of the file does not count). 'none' outside any project; null when the
+ * identity cannot be read, which callers treat as unknown. Read from the file
+ * system without git, as `gitLocation` is, and with the Node standard library
+ * only (this file is copied into grok-hooks).
+ */
+function projectIdAt(dir) {
+    const cached = projectIdCache.get(dir);
+    if (cached !== undefined)
+        return cached;
+    const home = canonicalPath(homedir());
+    let result = 'none';
+    let current = canonicalPath(dir);
+    let inMainCheckout = false;
+    for (;;) {
+        const main = inMainCheckout ? null : linkedWorktreeMainCheckout(current);
+        if (main) {
+            current = main;
+            inMainCheckout = true;
+            continue;
+        }
+        const identity = identityFileAt(current);
+        if (identity !== 'absent') {
+            result = identity;
+            break;
+        }
+        if (current === home)
+            break;
+        const parent = dirname(current);
+        if (parent === current)
+            break;
+        current = parent;
+    }
+    projectIdCache.set(dir, result);
+    return result;
+}
 /**
  * Where `filePath` lies relative to the project the agent works in.
  *
  * `anchorDir` is the project directory: the host's project root when it has
- * one (Claude Code's CLAUDE_PROJECT_DIR), else the event's cwd. A file is
- * project work when it is in the same git repository as the anchor (any of
- * its worktrees), or, when the anchor is not in git, inside the anchor.
- * Anything that cannot be determined is reported as unknown (no claim), so an
- * unreadable directory never hides an edit.
+ * one (Claude Code's CLAUDE_PROJECT_DIR), else the event's cwd. When the
+ * anchor is in a Mnemonik project, a file is project work when the nearest
+ * `.mnemonik.json` above it names the same project (`projectIdAt`): a nested
+ * clone or submodule is in, and a subproject with its own identity file is
+ * out even when it shares the anchor's repository. Otherwise a file is project
+ * work when it is in the same git repository as the anchor (any of its
+ * worktrees), or, when the anchor is not in git, inside the anchor. A path
+ * inside `.git` is never project work. Anything that cannot be determined is
+ * reported as unknown (no claim), so an unreadable directory never hides an
+ * edit.
  */
 export function editScope(filePath, cwd, anchorDir = cwd) {
     if (!filePath)
@@ -433,9 +535,17 @@ export function editScope(filePath, cwd, anchorDir = cwd) {
     const absolute = isAbsolute(filePath) ? filePath : join(cwd, filePath);
     if (/(?:^|\/)\.git(?:\/|$)/.test(absolute))
         return { outsideProject: true };
-    const file = gitLocation(nearestExistingDirectory(dirname(absolute)));
-    const anchor = anchorDir ? gitLocation(anchorDir) : null;
+    const fileDir = nearestExistingDirectory(dirname(absolute));
+    const file = gitLocation(fileDir);
     const editRoot = file && file !== 'none' ? { editRoot: file.root, editRepo: file.commonDir } : {};
+    const anchorProject = anchorDir ? projectIdAt(anchorDir) : null;
+    if (anchorProject !== null && anchorProject !== 'none') {
+        const fileProject = projectIdAt(fileDir);
+        if (fileProject === null || fileProject === anchorProject)
+            return editRoot;
+        return { outsideProject: true };
+    }
+    const anchor = gitLocation(anchorDir);
     if (file === null || anchor === null)
         return editRoot;
     if (anchor === 'none') {

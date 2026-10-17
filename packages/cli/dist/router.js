@@ -1,4 +1,4 @@
-import { humanReason, humanReport, humanIdentityState, INTERRUPTED_INSTALL, INTERRUPTED_INSTALL_MESSAGE, approvalMessage, knownReason, SCANNER_APPROVAL_ACTION, SCANNER_APPROVAL_NOTE, SCANNER_CONSENT_MESSAGE, SCANNER_ENABLE_ACTION, SCANNER_UPDATE_CONSENT_MESSAGE, } from './humanReason.js';
+import { humanReason, humanReport, humanIdentityState, INTERRUPTED_INSTALL, INTERRUPTED_INSTALL_MESSAGE, REGISTRY_FAILURE, approvalMessage, knownReason, SCANNER_APPROVAL_ACTION, SCANNER_APPROVAL_NOTE, SCANNER_CONSENT_MESSAGE, SCANNER_ENABLE_ACTION, SCANNER_UPDATE_CONSENT_MESSAGE, } from './humanReason.js';
 import { consentDecision, consentLines } from './consent.js';
 import { helpScreen } from './help.js';
 import { enableScanner, updateScannerRoots } from './scanner/enable.js';
@@ -27,7 +27,7 @@ import { SCANNER_RESTART_MESSAGE } from './scanner/service.js';
 import { SCANNER_FAILURE_MESSAGE, SCANNER_RETRY_MESSAGE } from './screens/journey.js';
 import { renderPreflight, runPreflight } from './preflight.js';
 import { postCurrentReadiness } from './installSession.js';
-import { createRealProjectRuntime, ensureProjectRoot, ensureProjectForAgent, projectFolderFor, folderRefusalMessage, projectLimitMessage, runProjectCommand, } from './project.js';
+import { createRealProjectRuntime, ensureProjectRoot, ensureProjectForAgent, insideProjectLine, projectFolderFor, folderRefusalMessage, projectLimitMessage, runProjectCommand, } from './project.js';
 import { evaluateRoot } from './project/eligibility.js';
 import { accountActions } from './transport/server.js';
 import { apiOrigin, describeReadiness, serializeReadiness as baseReadiness, resolveProjectIdentity, } from '@mnemonik/shared';
@@ -53,7 +53,6 @@ export const removeFolderPrompt = (name) => `Stop indexing ${name}? Its memories
 export const connectedFolderLine = (name) => `  ✓ Connected ${name}.`;
 export const alreadyConnectedFolderLine = (name) => `  ✓ ${name} is already connected and watched.`;
 export const removedFolderLine = (name) => `  ✓ ${name} is no longer connected.`;
-export const insideProjectLine = (name, projectFolder) => `${name} is part of the project in ${projectFolder}, so Mnemonik connects that folder.`;
 export const projectDeletionWarning = (name) => `Deleting ${name} removes its memories, code index and summaries for everyone. This cannot be undone.`;
 export const projectDeletedLine = (name) => `Deleted ${name}.`;
 export const NOTHING_DELETED_LINE = 'Nothing was deleted.';
@@ -264,8 +263,21 @@ function scannerConsentRequired(output, json, agent) {
             output.line(line);
     return 3;
 }
+const hostTargetFailed = (target) => target.status !== 'READY' && target.reason !== 'codex_trust_pending';
 function hostUpdateFailed(result) {
-    return result.results.some((target) => target.status !== 'READY' && target.reason !== 'codex_trust_pending');
+    return result.results.some(hostTargetFailed);
+}
+/**
+ * The reason to tell the person when every host that did not update stopped
+ * only because its new files could not be downloaded; undefined otherwise.
+ */
+function registryFailure(hostError, results) {
+    const reasons = hostError !== undefined
+        ? [hostError]
+        : results.filter(hostTargetFailed).map((target) => target.reason);
+    return reasons.length > 0 && reasons.every((reason) => REGISTRY_FAILURE.test(reason))
+        ? reasons[0]
+        : undefined;
 }
 const updateFailureMessage = 'Mnemonik could not update. It will try again automatically tomorrow.';
 const booleans = new Set([
@@ -817,8 +829,15 @@ async function runHostCommand(command, parsed, deps, output, scannerSelected = f
                     }
                     else if (hostError === 'lock_held')
                         output.error(humanReason(hostError));
-                    else
-                        output.error('Run mnemonik repair, then start a new session in each coding tool.');
+                    else {
+                        // Repair cannot fetch files the registry will not serve or cannot be reached for.
+                        const registry = registryFailure(hostError, result.results);
+                        if (registry)
+                            for (const line of humanReport(registry).split('\n'))
+                                output.error(line);
+                        else
+                            output.error('Run mnemonik repair, then start a new session in each coding tool.');
+                    }
                 }
                 if (scanner?.status === 'FAILED') {
                     output.error(scannerRecovery?.message ?? 'The scanner could not update.');

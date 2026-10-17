@@ -16,6 +16,27 @@ it('explains that x64 Mac project indexing requires Apple Silicon with ARM64 Nod
       'Use ARM64 Node.js on an Apple Silicon Mac, or use Linux or Windows for project indexing.'
   );
 });
+// A registry 404 can mean a release npm is still serving out, but also a pin it
+// never had; a 5xx is a busy registry. None of them is known to be a release in
+// progress, so the words claim only what happened.
+it('says the files could not be downloaded when the registry would not serve them', () => {
+  for (const reason of [
+    'registry_unavailable',
+    'registry_unavailable: @mnemonik/cursor-hooks@0.7.287',
+  ])
+    expect(humanReport(reason)).toBe(
+      'Mnemonik could not download the files it needs.\nTry again in a few minutes.'
+    );
+});
+it('says a registry this computer could not reach is a connection problem', () => {
+  for (const reason of [
+    'registry_unreachable',
+    'registry_unreachable: @mnemonik/cursor-hooks@0.7.287',
+  ])
+    expect(humanReport(reason)).toBe(
+      'Mnemonik could not be reached.\nCheck your internet connection, then try again.'
+    );
+});
 it.each([401, 403])('explains a refused revocation sign-in (%s)', async (status) => {
   const f = await fixture();
   await mkdir(join(f.deps.installStateDir!, 'scanner'), { recursive: true });

@@ -9,7 +9,7 @@ import { runHosts } from '../src/install/hosts.js';
 import { ownershipPath, readOwnership, rollbackHost } from '../src/install/ownership.js';
 import { bytesAt, digest, interrupted, type Journal } from '../src/install/journal.js';
 import { hostPackageImports } from '../src/install/adapters.js';
-import { RuntimeStore } from '../src/runtime/store.js';
+import { hostNpmSource, RuntimeStore } from '../src/runtime/store.js';
 import { bump, hostFixture, hostStateFixture, packedHosts } from './fixtures/hostRuntime.js';
 
 let packed: Awaited<ReturnType<typeof packedHosts>>;
@@ -443,6 +443,39 @@ it('a hook update that fails its check puts the previous runtime back and report
   expect(await readFile(store.pointerPath('claude-code'))).toEqual(pointer);
   const after = await store.verifyRuntime('claude-code');
   expect(after.reference).toEqual(before.reference);
+  expect((await readOwnership(f.deps.stateDir)).targets[0]?.version).toBe(before.manifest.version);
+}, 120_000);
+
+it('a hook update whose tarball npm does not serve yet puts the previous runtime back', async () => {
+  const f = await fixture();
+  const selection = f.selections.find((t) => t.host === 'cursor')!;
+  await runHosts('install', [selection], f.deps);
+  const store = new RuntimeStore(f.deps.stateDir);
+  const before = await store.verifyRuntime('cursor');
+  const pointer = await readFile(store.pointerPath('cursor'));
+  const owned = (await readOwnership(f.deps.stateDir)).targets;
+  const pin = { ...structuredClone(packed.pins.cursor), version: '9.9.9' };
+  pin.closure[0]!.version = '9.9.9';
+  f.deps.source = (host) =>
+    hostNpmSource(
+      host,
+      pin,
+      async (input, init) =>
+        String(input).includes('9.9.9')
+          ? new Response(null, { status: 404 })
+          : packed.fetcher(input, init),
+      undefined,
+      [0, 0]
+    );
+  const result = await runHosts('update', owned, f.deps);
+  expect(result.results).toMatchObject([
+    {
+      status: 'ACTION_REQUIRED',
+      reason: `registry_unavailable: ${pin.package}@9.9.9`,
+    },
+  ]);
+  expect(await readFile(store.pointerPath('cursor'))).toEqual(pointer);
+  expect((await store.verifyRuntime('cursor')).reference).toEqual(before.reference);
   expect((await readOwnership(f.deps.stateDir)).targets[0]?.version).toBe(before.manifest.version);
 }, 120_000);
 

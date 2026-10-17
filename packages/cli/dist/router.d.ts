@@ -22,7 +22,6 @@ export declare const removeFolderPrompt: (name: string) => string;
 export declare const connectedFolderLine: (name: string) => string;
 export declare const alreadyConnectedFolderLine: (name: string) => string;
 export declare const removedFolderLine: (name: string) => string;
-export declare const insideProjectLine: (name: string, projectFolder: string) => string;
 export declare const projectDeletionWarning: (name: string) => string;
 export declare const projectDeletedLine: (name: string) => string;
 export declare const NOTHING_DELETED_LINE = "Nothing was deleted.";

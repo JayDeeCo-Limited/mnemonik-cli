@@ -63,6 +63,18 @@ export async function findProjectIdentity(startCwd: string): Promise<ProjectIden
   return pending;
 }
 
+/**
+ * What a hook tells the server about its working folder: the project's id
+ * (the only project identity) and the project's root folder (the root for
+ * repo-relative paths). Both are absent outside a project.
+ */
+export async function projectScope(
+  startCwd: string
+): Promise<{ projectId?: string; projectRoot?: string }> {
+  const identity = await findProjectIdentity(startCwd);
+  return identity ? { projectId: identity.projectId, projectRoot: identity.projectRoot } : {};
+}
+
 /** The project a hook's working folder belongs to: the nearest `.mnemonik.json` above it. */
 export async function findProjectIdentityDetailed(
   startCwd: string
@@ -128,20 +140,8 @@ export function readHookStdin(
   });
 }
 
-let mismatchEmitted = false;
-
 export async function parseHookResponse<T>(response: Response): Promise<T> {
-  const body = (await response.json()) as T;
-  const result = body as { ok?: boolean; reason?: string };
-  if (!mismatchEmitted && result?.ok === false && result.reason === 'identity_mismatch') {
-    stderr.write(
-      'mnemonik-hook: project identity mismatch - .mnemonik.json points to one project, ' +
-        'but this directory is registered to a different one on the server. ' +
-        'Fix .mnemonik.json (delete it and let session_bootstrap rewrite it) or cd to the correct project root.\n'
-    );
-    mismatchEmitted = true;
-  }
-  return body;
+  return (await response.json()) as T;
 }
 
 /** Native host correlation only; never accept checkpoint/model fields here. */

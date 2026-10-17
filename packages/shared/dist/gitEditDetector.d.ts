@@ -62,7 +62,7 @@
  *
  * Each report also carries where the edit happened (`editScope`): the git
  * worktree and repository of the file, or a mark that the file lies outside
- * the project's repository (/tmp, another repository, a `.git` directory). The
+ * the project (/tmp, another project, a `.git` directory). The
  * server counts only project edits, and gates a push on the uncheckpointed
  * files it carries (`describeHandoffs`).
  */
@@ -109,11 +109,16 @@ export interface EditScope {
  * Where `filePath` lies relative to the project the agent works in.
  *
  * `anchorDir` is the project directory: the host's project root when it has
- * one (Claude Code's CLAUDE_PROJECT_DIR), else the event's cwd. A file is
- * project work when it is in the same git repository as the anchor (any of
- * its worktrees), or, when the anchor is not in git, inside the anchor.
- * Anything that cannot be determined is reported as unknown (no claim), so an
- * unreadable directory never hides an edit.
+ * one (Claude Code's CLAUDE_PROJECT_DIR), else the event's cwd. When the
+ * anchor is in a Mnemonik project, a file is project work when the nearest
+ * `.mnemonik.json` above it names the same project (`projectIdAt`): a nested
+ * clone or submodule is in, and a subproject with its own identity file is
+ * out even when it shares the anchor's repository. Otherwise a file is project
+ * work when it is in the same git repository as the anchor (any of its
+ * worktrees), or, when the anchor is not in git, inside the anchor. A path
+ * inside `.git` is never project work. Anything that cannot be determined is
+ * reported as unknown (no claim), so an unreadable directory never hides an
+ * edit.
  */
 export declare function editScope(filePath: string, cwd: string, anchorDir?: string): EditScope;
 /** One handoff in a shell command. */

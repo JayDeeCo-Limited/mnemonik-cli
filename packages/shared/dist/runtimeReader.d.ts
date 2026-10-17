@@ -1,7 +1,7 @@
 import { type Execute, type Signer } from './runtimeSigners.js';
 export type HostArtifact = 'claude-code' | 'codex' | 'cursor' | 'grok';
 export type Artifact = 'cli' | 'scanner' | HostArtifact;
-export type Reason = 'digest_mismatch' | 'manifest_missing' | 'unsigned' | 'permission' | 'acl_unavailable' | 'lock_held';
+export type Reason = 'digest_mismatch' | 'manifest_missing' | 'unsigned' | 'permission' | 'acl_unavailable' | 'lock_held' | 'registry_unavailable' | 'registry_unreachable';
 export declare class RuntimeError extends Error {
     readonly reason: Reason;
     constructor(reason: Reason);

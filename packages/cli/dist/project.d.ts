@@ -44,6 +44,7 @@ export declare const hasRefusalWords: (reason: string) => boolean;
 /** No bare line: name the folder, say why in plain words, give the one command. */
 export declare function folderRefusalMessage(reason: string, root: string): string[];
 export declare function projectLimitMessage(result: SetupResult, roots: string | readonly string[]): string[] | undefined;
+export declare const insideProjectLine: (name: string, projectFolder: string) => string;
 export declare const connectedProjectsMessage: (roots: string[]) => string;
 export declare const projectExecutor: (dependencies: ExecutorDependencies) => ProjectExecutor;
 export type ServerProjectState = 'access' | 'archived' | 'deleted' | 'suspended' | 'mismatch' | 'not_found';

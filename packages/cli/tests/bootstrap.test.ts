@@ -1,10 +1,17 @@
+import { createHash } from 'node:crypto';
 import * as fs from 'node:fs/promises';
 import * as childProcess from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { bootstrapProgress, installBootstrap, launchChild } from '../src/runtime/bootstrap.js';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  bootstrapProgress,
+  installBootstrap,
+  launchChild,
+  REGISTRY_RETRY_DELAYS_MS,
+  tarballBytes,
+} from '../src/runtime/bootstrap.js';
 import { RuntimeError, RuntimeStore, type RuntimeSource } from '../src/runtime/store.js';
 
 vi.mock('node:fs/promises', async (original) => {
@@ -247,4 +254,66 @@ it('replaces a verified previous release on a subsequent update', async () => {
     expect(await installBootstrap(store, source)).toBe(bin);
     expect(await fs.readFile(join(root, 'dist/runtime/store.js'), 'utf8')).toBe(version);
   }
+});
+
+describe('a tarball npm has not served yet', () => {
+  const tarball = Buffer.from('published tarball');
+  const entry = {
+    version: '1.0.0',
+    resolved: 'https://registry.npmjs.org/@mnemonik/cli/-/cli-1.0.0.tgz',
+    integrity: `sha512-${createHash('sha512').update(tarball).digest('base64')}`,
+  };
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('is fetched again after a short pause, and the published bytes are used', async () => {
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(new Response(null, { status: 404 }))
+      .mockResolvedValueOnce(new Response(new Uint8Array(tarball)));
+    vi.stubGlobal('fetch', fetch);
+    expect(await tarballBytes(entry, state, [0, 0])).toEqual(tarball);
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    ['still answers 404', async () => new Response(null, { status: 404 })],
+    ['is busy', async () => new Response(null, { status: 503 })],
+  ])('is named temporary, not missing, when the registry %s', async (_, answer) => {
+    const fetch = vi.fn<typeof globalThis.fetch>(answer);
+    vi.stubGlobal('fetch', fetch);
+    await expect(tarballBytes(entry, state, [0, 0])).rejects.toMatchObject({
+      name: 'RuntimeError',
+      reason: 'registry_unavailable',
+    });
+    expect(fetch).toHaveBeenCalledTimes(3);
+  });
+
+  it('is named unreachable, not unavailable, when the registry cannot be reached', async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>(async () => {
+      throw new TypeError('fetch failed');
+    });
+    vi.stubGlobal('fetch', fetch);
+    await expect(tarballBytes(entry, state, [0, 0])).rejects.toMatchObject({
+      name: 'RuntimeError',
+      reason: 'registry_unreachable',
+    });
+    expect(fetch).toHaveBeenCalledTimes(3);
+  });
+
+  it('is not retried when the registry refuses it outright', async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>(async () => new Response(null, { status: 403 }));
+    vi.stubGlobal('fetch', fetch);
+    await expect(tarballBytes(entry, state, [0, 0])).rejects.toMatchObject({
+      reason: 'manifest_missing',
+    });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('waits at most about fifteen seconds in total', () => {
+    expect(REGISTRY_RETRY_DELAYS_MS.reduce((sum, delay) => sum + delay, 0)).toBeLessThanOrEqual(
+      15_000
+    );
+  });
 });

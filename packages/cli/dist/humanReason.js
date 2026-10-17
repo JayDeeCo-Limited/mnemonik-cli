@@ -49,12 +49,24 @@ export const INTERRUPTED_INSTALL_MESSAGE = {
     sentence: 'An earlier installation on this computer did not finish.',
     nextStep: 'Run mnemonik install to finish or remove it.',
 };
+// The registry answered without a package's files: a release npm is still
+// serving out, a busy registry, or a pin it does not have. Which one is not
+// known, so the words claim only that the download failed. Repair cannot help.
+export const REGISTRY_UNAVAILABLE = /registry_unavailable/u;
+export const REGISTRY_UNAVAILABLE_MESSAGE = {
+    sentence: 'Mnemonik could not download the files it needs.',
+    nextStep: 'Try again in a few minutes.',
+};
+/** A registry fetch that failed for good: the files were refused, or the registry was never reached. */
+export const REGISTRY_FAILURE = /registry_(?:unavailable|unreachable)/u;
 const readinessMessages = [
     [INTERRUPTED_INSTALL, INTERRUPTED_INSTALL_MESSAGE],
+    [REGISTRY_UNAVAILABLE, REGISTRY_UNAVAILABLE_MESSAGE],
     [/scanner_consent_required/u, SCANNER_CONSENT_MESSAGE],
     [/scanner_update_consent_required|release_consent_required/u, SCANNER_UPDATE_CONSENT_MESSAGE],
     [
-        /^(?:discovery_failed|unreachable)$/u,
+        // registry_unreachable: the package registry, offline or blocked, not a refusal.
+        /^(?:discovery_failed|unreachable|registry_unreachable)$/u,
         {
             sentence: 'Mnemonik could not be reached.',
             nextStep: 'Check your internet connection, then try again.',

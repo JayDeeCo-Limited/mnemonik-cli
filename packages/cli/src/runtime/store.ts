@@ -206,10 +206,11 @@ export async function hostNpmSource(
   host: HostArtifact,
   pin: HostPackagePin,
   fetcher: typeof fetch = fetch,
-  releaseKey?: string
+  releaseKey?: string,
+  retryDelaysMs?: readonly number[]
 ): Promise<RuntimeSource> {
   const { releaseBytes, signedReleaseManifest } = await import('./releaseSource.js');
-  const { unpack } = await import('./bootstrap.js');
+  const { fromRegistry, RegistryBusy, registryBusyStatus, unpack } = await import('./bootstrap.js');
   if (
     pin.package !== `@mnemonik/${host}-hooks` ||
     !/^\d+\.\d+\.\d+(?:-[\w.-]+)?$/.test(pin.version) ||
@@ -231,10 +232,37 @@ export async function hostNpmSource(
   const seen = new Set<string>();
   const exactBytes = async (address: string, name: string, version: string) => {
     try {
-      return await releaseBytes(address, fetcher);
+      return await fromRegistry(async () => {
+        let answered: number | undefined;
+        let unreachable = false;
+        try {
+          return await releaseBytes(address, async (input, init) => {
+            try {
+              const response = await fetcher(input, init);
+              answered = response.status;
+              return response;
+            } catch (error) {
+              unreachable = true;
+              throw error;
+            }
+          });
+        } catch (error) {
+          // A version published moments ago can 404 until npm's CDN has it.
+          if (error instanceof RuntimeError) {
+            if (answered !== undefined && registryBusyStatus(answered)) throw new RegistryBusy();
+          } else if (unreachable || ['TimeoutError', 'AbortError'].includes((error as Error)?.name))
+            throw new RegistryBusy(true);
+          throw error;
+        }
+      }, retryDelaysMs);
     } catch (error) {
-      if (error instanceof RuntimeError && error.reason === 'manifest_missing')
-        error.message = `manifest_missing: ${name}@${version}`;
+      if (
+        error instanceof RuntimeError &&
+        (error.reason === 'manifest_missing' ||
+          error.reason === 'registry_unavailable' ||
+          error.reason === 'registry_unreachable')
+      )
+        error.message = `${error.reason}: ${name}@${version}`;
       throw error;
     }
   };
