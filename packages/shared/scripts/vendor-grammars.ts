@@ -433,7 +433,23 @@ function rebuildSwift(dir: string, work: string): void {
   const grammar = readFileSync(grammarPath, 'utf8');
   const before = '              alias($._nil_coalescing_operator, "??")';
   if (!grammar.includes(before)) throw new Error('Swift optional-marker patch no longer applies');
-  writeFileSync(grammarPath, grammar.replace(before, '              token.immediate("??")'));
+  // Keep a conditional's braces outside nested `try await`, just as for direct calls.
+  const awaited =
+    '              prec.left(0, $.call_expression),\n              // Similarly special case';
+  if (!grammar.includes(awaited)) throw new Error('Swift try-await patch no longer applies');
+  const conflict = '    [$.try_expression, $._expression],';
+  if (!grammar.includes(conflict))
+    throw new Error('Swift try-await conflict patch no longer applies');
+  writeFileSync(
+    grammarPath,
+    grammar
+      .replace(before, '              token.immediate("??")')
+      .replace(
+        awaited,
+        '              prec.left(0, $.call_expression),\n              prec.left(0, $.await_expression),\n              // Similarly special case'
+      )
+      .replace(conflict, conflict + '\n    [$.try_expression, $._primary_expression],')
+  );
   const scannerPath = join(dir, 'src', 'scanner.c');
   const scanner = readFileSync(scannerPath, 'utf8');
   const continuation =
