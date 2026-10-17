@@ -43,6 +43,7 @@ const AST_LANGUAGE_ID_LIST = [
     'java',
     'c',
     'cpp',
+    'objcpp',
     'csharp',
     'ruby',
     'php',
@@ -56,6 +57,9 @@ const AST_LANGUAGE_ID_LIST = [
     'swift',
     'sql',
     'lua',
+    'terraform',
+    'nix',
+    'cmake',
 ];
 /** The vendored set as a runtime value, for capability reporting and tests. */
 export const AST_LANGUAGE_IDS = AST_LANGUAGE_ID_LIST;
@@ -107,6 +111,7 @@ export const QUERY_CHAIN = {
     java: ['java'],
     c: ['c'],
     cpp: ['c', 'cpp'],
+    objcpp: ['objcpp'],
     csharp: ['csharp'],
     ruby: ['ruby'],
     php: ['php'],
@@ -120,6 +125,9 @@ export const QUERY_CHAIN = {
     swift: ['swift'],
     sql: ['sql'],
     lua: ['lua'],
+    terraform: ['terraform'],
+    nix: ['nix'],
+    cmake: ['cmake'],
 };
 /**
  * Extensions whose grammar the language string alone gets WRONG.
@@ -131,7 +139,33 @@ export const QUERY_CHAIN = {
  */
 const EXTENSION_GRAMMARS = {
     '.tsx': 'tsx',
+    '.m': 'objcpp',
+    '.mm': 'objcpp',
 };
+/** Upstream permits a bodyless else for highlighting across preprocessor boundaries. */
+export function objcppSyntaxIssue(root) {
+    if (root.hasError)
+        return 'Objective-C++ contains ERROR or MISSING nodes';
+    const cursor = root.walk();
+    try {
+        for (;;) {
+            const node = cursor.currentNode;
+            if (node.type === 'else_clause' && node.namedChildCount === 0)
+                return 'Objective-C++ else clause has no body; conditional-source recovery is not admitted';
+            if (cursor.gotoFirstChild())
+                continue;
+            for (;;) {
+                if (cursor.gotoNextSibling())
+                    break;
+                if (!cursor.gotoParent())
+                    return null;
+            }
+        }
+    }
+    finally {
+        cursor.delete();
+    }
+}
 /**
  * Scanner language string -> grammar. Keyed on what `languageForExtension`
  * actually returns, so this table and the extension table cannot disagree about
@@ -164,6 +198,9 @@ const LANGUAGE_GRAMMARS = {
     swift: 'swift',
     sql: 'sql',
     lua: 'lua',
+    terraform: 'terraform',
+    nix: 'nix',
+    cmake: 'cmake',
 };
 const WASM_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'wasm');
 /**

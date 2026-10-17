@@ -55,7 +55,7 @@
  * whole-repo walk in a long-lived daemon (the scanner is one).
  */
 import { Parser } from 'web-tree-sitter';
-import { loadGrammar } from './grammars.js';
+import { loadGrammar, objcppSyntaxIssue, } from './grammars.js';
 /**
  * Parse ceiling, derived from Task 4's measurement rather than guessed: the
  * largest source file in this repo is 415 KB (`src/agent/ContextAgent.ts`) and
@@ -209,6 +209,11 @@ export async function chunkWithAst(content, languageId, opts) {
     }
     const parseMs = performance.now() - startedAt;
     try {
+        if (languageId === 'objcpp') {
+            const issue = objcppSyntaxIssue(tree.rootNode);
+            if (issue)
+                return { unsupported: 'parse_failed', detail: issue };
+        }
         const lines = content.split('\n');
         // A trailing newline TERMINATES the last line, it does not open a new one,
         // but `split` yields a phantom '' for it. Dropping it here - before

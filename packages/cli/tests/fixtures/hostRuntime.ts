@@ -34,6 +34,25 @@ export async function packedHosts() {
     ),
     resolve('../../node_modules/ignore'),
     resolve('../../node_modules/web-tree-sitter'),
+    ...[
+      '@vue/compiler-core',
+      '@vue/compiler-sfc',
+      '@vue/compiler-dom',
+      '@vue/compiler-ssr',
+      '@vue/shared',
+      '@babel/parser',
+      '@babel/types',
+      '@babel/helper-string-parser',
+      '@babel/helper-validator-identifier',
+      'entities',
+      '@vue/compiler-core/node_modules/estree-walker',
+      'source-map-js',
+      'magic-string',
+      '@jridgewell/sourcemap-codec',
+      '@vue/compiler-sfc/node_modules/postcss',
+      'nanoid',
+      'picocolors',
+    ].map((name) => resolve('../../node_modules', name)),
   ]) {
     const pkg = JSON.parse(await readFile(join(path, 'package.json'), 'utf8')) as {
       name: string;

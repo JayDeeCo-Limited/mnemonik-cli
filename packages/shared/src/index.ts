@@ -28,6 +28,8 @@ export {
   isAuthorityOnlyPath,
   XCODE_AUTHORITY_PATH,
   isXcodeAuthorityPath,
+  isCmakeListsPath,
+  CMAKE_LISTS_PATH,
   isCursorRulePath,
   logAstCapabilityOnce,
   type CodeChunk,
@@ -77,6 +79,7 @@ export {
   loadGrammar,
   loadedGrammarIds,
   resolveAstLanguage,
+  objcppSyntaxIssue,
   type AstLanguageId,
   type GrammarBinding,
   type GrammarLoad,
@@ -177,3 +180,5 @@ export {
 } from './systemdControl.js';
 
 export { pidIsScanner } from './scannerPid.js';
+
+export { parseVueSource, walkVueTemplate, VUE_FIDELITY_MARKER } from './vueSource.js';

@@ -293,6 +293,28 @@ it.skipIf(!process.env.PUBLIC_CLI_TARBALL)(
       const pkg = JSON.parse(
         await readFile(join(prefix, 'node_modules/@mnemonik/cli/package.json'), 'utf8')
       );
+      expect(pkg.dependencies).toEqual({});
+      // Optional Vue engines may stay lazy, but its required packages must be bundled.
+      const dist = join(prefix, 'node_modules/@mnemonik/cli/dist');
+      const vueDependencies = Object.keys(
+        JSON.parse(
+          await readFile(
+            resolve(import.meta.dirname, '../../../node_modules/@vue/compiler-sfc/package.json'),
+            'utf8'
+          )
+        ).dependencies
+      );
+      for (const file of await readdir(dist, { recursive: true })) {
+        if (!file.endsWith('.js')) continue;
+        const source = await readFile(join(dist, file), 'utf8');
+        const external = [...source.matchAll(/(?:require|import)\(["']([^"']+)["']\)/g)].map(
+          (match) => match[1]
+        );
+        expect(
+          external.filter((name) => vueDependencies.includes(name!)),
+          file
+        ).toEqual([]);
+      }
       // This catches bundlers moving auth/index's ../../package.json lookup into dist/router.js.
       expect(
         execFileSync(

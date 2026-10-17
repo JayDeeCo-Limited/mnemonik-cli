@@ -11,8 +11,15 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { build } from 'esbuild';
+import { createRequire, isBuiltin } from 'node:module';
 import { resolve } from 'node:path';
 import { sbom } from './sbom.mjs';
+
+const require = createRequire(import.meta.url);
+const vueCompiler = require.resolve('@vue/compiler-sfc');
+const vueDependencies = JSON.parse(
+  readFileSync(require.resolve('@vue/compiler-sfc/package.json'))
+).dependencies;
 
 for (const name of ['shared', 'local-setup', 'credentials', 'cli'])
   execFileSync('npm', ['run', 'build', '-w', `@mnemonik/${name}`], { stdio: 'inherit' });
@@ -27,6 +34,28 @@ const options = {
   platform: 'node',
   format: 'esm',
   target: 'node24',
+  plugins: [
+    {
+      name: 'preserve-vue-optional-engines',
+      setup(builder) {
+        // Vue's CJS compiler lazily requires undeclared template engines; parsing needs none.
+        builder.onResolve({ filter: /^[^./]/ }, (args) =>
+          args.importer === vueCompiler &&
+          args.kind === 'require-call' &&
+          !isBuiltin(args.path) &&
+          !Object.hasOwn(
+            vueDependencies,
+            args.path
+              .split('/')
+              .slice(0, args.path.startsWith('@') ? 2 : 1)
+              .join('/')
+          )
+            ? { path: args.path, external: true }
+            : undefined
+        );
+      },
+    },
+  ],
   banner: {
     js: 'import { createRequire as __createRequire } from "node:module"; const require = __createRequire(import.meta.url);',
   },
@@ -41,6 +70,7 @@ await build({
   outbase: 'packages/cli/src',
   outdir: 'dist-package/dist',
   plugins: [
+    ...options.plugins,
     {
       name: 'preserve-cli-module-paths',
       setup(builder) {

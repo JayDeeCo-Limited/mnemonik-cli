@@ -33,7 +33,7 @@
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { dirname, extname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { Language, Parser, Query } from 'web-tree-sitter';
+import { Language, Parser, Query, type Node } from 'web-tree-sitter';
 import { warn } from '../logger.js';
 
 const AST_LANGUAGE_ID_LIST = [
@@ -45,6 +45,7 @@ const AST_LANGUAGE_ID_LIST = [
   'java',
   'c',
   'cpp',
+  'objcpp',
   'csharp',
   'ruby',
   'php',
@@ -58,6 +59,9 @@ const AST_LANGUAGE_ID_LIST = [
   'swift',
   'sql',
   'lua',
+  'terraform',
+  'nix',
+  'cmake',
 ] as const;
 
 /** A language this build can AST-parse. Exactly the vendored set, no aspirations. */
@@ -116,6 +120,7 @@ export const QUERY_CHAIN: Readonly<Record<AstLanguageId, readonly AstLanguageId[
   java: ['java'],
   c: ['c'],
   cpp: ['c', 'cpp'],
+  objcpp: ['objcpp'],
   csharp: ['csharp'],
   ruby: ['ruby'],
   php: ['php'],
@@ -129,6 +134,9 @@ export const QUERY_CHAIN: Readonly<Record<AstLanguageId, readonly AstLanguageId[
   swift: ['swift'],
   sql: ['sql'],
   lua: ['lua'],
+  terraform: ['terraform'],
+  nix: ['nix'],
+  cmake: ['cmake'],
 };
 
 /**
@@ -141,7 +149,29 @@ export const QUERY_CHAIN: Readonly<Record<AstLanguageId, readonly AstLanguageId[
  */
 const EXTENSION_GRAMMARS: Readonly<Record<string, AstLanguageId>> = {
   '.tsx': 'tsx',
+  '.m': 'objcpp',
+  '.mm': 'objcpp',
 };
+
+/** Upstream permits a bodyless else for highlighting across preprocessor boundaries. */
+export function objcppSyntaxIssue(root: Node): string | null {
+  if (root.hasError) return 'Objective-C++ contains ERROR or MISSING nodes';
+  const cursor = root.walk();
+  try {
+    for (;;) {
+      const node = cursor.currentNode;
+      if (node.type === 'else_clause' && node.namedChildCount === 0)
+        return 'Objective-C++ else clause has no body; conditional-source recovery is not admitted';
+      if (cursor.gotoFirstChild()) continue;
+      for (;;) {
+        if (cursor.gotoNextSibling()) break;
+        if (!cursor.gotoParent()) return null;
+      }
+    }
+  } finally {
+    cursor.delete();
+  }
+}
 
 /**
  * Scanner language string -> grammar. Keyed on what `languageForExtension`
@@ -175,6 +205,9 @@ const LANGUAGE_GRAMMARS: Readonly<Record<string, AstLanguageId>> = {
   swift: 'swift',
   sql: 'sql',
   lua: 'lua',
+  terraform: 'terraform',
+  nix: 'nix',
+  cmake: 'cmake',
 };
 
 /** A loaded grammar plus its compiled query. Compiled once, reused per file. */

@@ -29,8 +29,8 @@
  * `dist/ast/` sit at the same depth below the package root, so one relative
  * expression is correct for both the TS sources and the shipped build.
  */
-import { Language, Query } from 'web-tree-sitter';
-declare const AST_LANGUAGE_ID_LIST: readonly ['typescript', 'tsx', 'javascript', 'python', 'go', 'java', 'c', 'cpp', 'csharp', 'ruby', 'php', 'rust', 'scala', 'elixir', 'solidity', 'bash', 'groovy', 'powershell', 'swift', 'sql', 'lua'];
+import { Language, Query, type Node } from 'web-tree-sitter';
+declare const AST_LANGUAGE_ID_LIST: readonly ['typescript', 'tsx', 'javascript', 'python', 'go', 'java', 'c', 'cpp', 'objcpp', 'csharp', 'ruby', 'php', 'rust', 'scala', 'elixir', 'solidity', 'bash', 'groovy', 'powershell', 'swift', 'sql', 'lua', 'terraform', 'nix', 'cmake'];
 /** A language this build can AST-parse. Exactly the vendored set, no aspirations. */
 export type AstLanguageId = (typeof AST_LANGUAGE_ID_LIST)[number];
 /** The vendored set as a runtime value, for capability reporting and tests. */
@@ -60,6 +60,8 @@ export declare function grammarArtifactBasename(id: AstLanguageId): string;
  * query that compiles and quietly under-matches.
  */
 export declare const QUERY_CHAIN: Readonly<Record<AstLanguageId, readonly AstLanguageId[]>>;
+/** Upstream permits a bodyless else for highlighting across preprocessor boundaries. */
+export declare function objcppSyntaxIssue(root: Node): string | null;
 /** A loaded grammar plus its compiled query. Compiled once, reused per file. */
 export interface GrammarBinding {
     id: AstLanguageId;

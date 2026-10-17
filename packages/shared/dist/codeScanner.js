@@ -418,6 +418,8 @@ const EXTENSION_LANGUAGES = {
  * preference) need the same answer without constructing a scanner.
  */
 export function languageForExtension(filePathOrExt) {
+    if (isCmakeListsPath(filePathOrExt))
+        return 'cmake';
     // `extname` FIRST. A dotfile that carries a real extension ('.eslintrc.js',
     // '.mocharc.cjs', '.prettierrc.ts') starts with '.' and contains no '/', so
     // a bare-extension-first reading swallowed the whole name and answered
@@ -450,6 +452,9 @@ const isMigrationSqlAuthorityPath = (posixRelPath) => /^migrations\/.*\.sql$/.te
 /** Content-only build authority, shared by scanner collection and server admission. */
 export const XCODE_AUTHORITY_PATH = /(?:^|\/)[^/]+\.xcodeproj\/project\.pbxproj$|\.xcconfig$/;
 export const isXcodeAuthorityPath = (path) => XCODE_AUTHORITY_PATH.test(path);
+/** Exact CMake build entrypoint; ordinary .txt files remain outside collection. */
+export const CMAKE_LISTS_PATH = /(?:^|\/)CMakeLists\.txt$/;
+export const isCmakeListsPath = (path) => CMAKE_LISTS_PATH.test(path);
 /**
  * Predicates for paths whose verbatim content is ALREADY shipped by
  * `collectAuthorityFiles` and that carry no additional value as embedded code
@@ -470,6 +475,7 @@ export const isXcodeAuthorityPath = (path) => XCODE_AUTHORITY_PATH.test(path);
 const AUTHORITY_ONLY_PATH_PREDICATES = [
     isMigrationSqlAuthorityPath,
     isXcodeAuthorityPath,
+    isCmakeListsPath,
 ];
 /**
  * True when `relPath` is collected verbatim as authority content and must not
@@ -514,6 +520,7 @@ export const AUTHORITY_FILE_MATCHERS = [
     // collection and the chunking exclusion cannot disagree.
     isMigrationSqlAuthorityPath,
     isXcodeAuthorityPath,
+    isCmakeListsPath,
 ];
 /**
  * Segment-anchored match for `tests/fixtures/` - matches at the path root or

@@ -50,7 +50,7 @@ const OURS_DIR = fileURLToPath(new URL('../queries/', import.meta.url));
 interface GrammarSpec {
   /** Vendored artifact basename, and the id the registry keys on. */
   id: string;
-  /** npm package or pinned source archive to fetch with npm pack. */
+  /** npm package/source archive, or the pinned ObjC++ source repository. */
   pkg: string;
   /**
    * `.wasm` basename inside the tarball when it differs from the package's own
@@ -73,9 +73,9 @@ interface GrammarSpec {
  * remove.
  *
  * Absent on purpose:
- *   julia, objc, haskell - the three largest grammars that ALSO ship no tag
- *     query, so each costs both its size (6.1/5.2/3.7 MB) and a hand-written
- *     query. Dropped to keep the payload under 40 MB; still indexed via the
+ *   julia, haskell - large grammars that ALSO ship no tag query, so each
+ *     costs both its size (6.1/3.7 MB) and a hand-written query. Dropped to
+ *     bound the payload; still indexed via the
  *     allowlist, still chunked heuristically.
  *   dart - its bundled .wasm (package v1.0.0, 2023) fails Language.load under
  *     web-tree-sitter 0.26.11 with a dylink-metadata error: the artifact
@@ -89,6 +89,20 @@ interface GrammarSpec {
  *     unit; an AST would not improve on them.
  */
 const GRAMMARS: GrammarSpec[] = [
+  {
+    // Uy Ha 0.7.5, MIT; build the committed ABI-14 source without native dependencies.
+    id: 'cmake',
+    pkg: 'https://codeload.github.com/uyha/tree-sitter-cmake/tar.gz/58993af75218bc99a1f5a04c832a5937e7c422cb',
+    wasmFile: 'tree-sitter-cmake.wasm',
+    tags: 'ours',
+  },
+  {
+    // nix-community 0.3.0, MIT; use its committed generated ABI-15 parser unchanged.
+    id: 'nix',
+    pkg: 'https://codeload.github.com/nix-community/tree-sitter-nix/tar.gz/32c3ce98afdafc2ec9aedf0280a678750f76254c',
+    wasmFile: 'tree-sitter-nix.wasm',
+    tags: 'ours',
+  },
   {
     id: 'typescript',
     pkg: 'tree-sitter-typescript@0.23.2',
@@ -106,7 +120,15 @@ const GRAMMARS: GrammarSpec[] = [
   { id: 'go', pkg: 'tree-sitter-go', tags: 'upstream' },
   { id: 'java', pkg: 'tree-sitter-java', tags: 'upstream' },
   { id: 'c', pkg: 'tree-sitter-c', tags: 'upstream' },
-  { id: 'cpp', pkg: 'tree-sitter-cpp', tags: 'upstream' },
+  // MIT 0.23.4, gitHead f41e1a044c8a84ea9fa8577fdd2eab92ec96de02.
+  { id: 'cpp', pkg: 'tree-sitter-cpp@0.23.4', tags: 'upstream' },
+  {
+    // MIT Objective-C++ 0.1.0; committed ABI-15 parser, not the pure Objective-C npm grammar.
+    id: 'objcpp',
+    pkg: 'https://tangled.org/dunkirk.sh/dots',
+    wasmFile: 'tree-sitter-objcpp.wasm',
+    tags: 'ours',
+  },
   {
     id: 'c-sharp',
     pkg: 'tree-sitter-c-sharp',
@@ -119,7 +141,8 @@ const GRAMMARS: GrammarSpec[] = [
   { id: 'scala', pkg: 'tree-sitter-scala', tags: 'upstream' },
   { id: 'elixir', pkg: 'tree-sitter-elixir', tags: 'upstream' },
   { id: 'solidity', pkg: 'tree-sitter-solidity', tags: 'upstream' },
-  { id: 'bash', pkg: 'tree-sitter-bash', tags: 'ours' },
+  // MIT 0.25.1, gitHead 801326684a26ffc4e749bb016c50c6c30bdfa345.
+  { id: 'bash', pkg: 'tree-sitter-bash@0.25.1', tags: 'ours' },
   {
     // Upstream MIT 0.4.1, gitHead 816840c592ab973500ae9750763c707b447e7fef; shipped ABI-15 WASM.
     id: 'lua',
@@ -127,7 +150,15 @@ const GRAMMARS: GrammarSpec[] = [
     wasmFile: 'tree-sitter-lua.wasm',
     tags: 'upstream',
   },
-  { id: 'groovy', pkg: 'tree-sitter-groovy', tags: 'ours' },
+  {
+    // Apache-2.0 v1.2.0, gitHead fad991865fee927dd1de5e172fb3f08ac674d914; packaged ABI-14 WASM.
+    id: 'terraform',
+    pkg: '@tree-sitter-grammars/tree-sitter-hcl@1.2.0',
+    wasmFile: 'tree-sitter-terraform.wasm',
+    tags: 'ours',
+  },
+  // MIT 0.1.2, gitHead 70efb0b9b50f95bcbd89dcfd42b275e0304e10cf.
+  { id: 'groovy', pkg: 'tree-sitter-groovy@0.1.2', tags: 'ours' },
   { id: 'powershell', pkg: 'tree-sitter-powershell', tags: 'ours' },
   {
     id: 'swift',
@@ -269,7 +300,37 @@ function rebuildTypescript(dir: string, work: string, only?: string): void {
     if (!grammar.includes(before)) throw new Error('TypeScript grammar patch no longer applies');
     grammar = grammar.replace(before, after);
   }
+  // Import types are primary types, so postfix [] applies without changing their expression aliases.
+  const importTypes = `        prec(-1, alias($._type_query_member_expression_in_type_annotation, $.member_expression)),
+        prec(-1, alias($._type_query_call_expression_in_type_annotation, $.call_expression)),
+`;
+  const exportSpecifier = `      export_specifier: (_, previous) => seq(
+        optional(choice('type', 'typeof')),
+        previous,
+      ),`;
+  if (
+    !grammar.includes(importTypes) ||
+    !grammar.includes(exportSpecifier) ||
+    !grammar.includes('      primary_type: $ => choice(')
+  )
+    throw new Error('TypeScript import-type/export patch no longer applies');
+  grammar = grammar
+    .replace(importTypes, '')
+    .replace(
+      '      primary_type: $ => choice(',
+      '      primary_type: $ => choice(\n' + importTypes.trimEnd()
+    );
+  grammar = grammar.replace(
+    exportSpecifier,
+    `      export_specifier: $ => seq(
+        optional(choice('type', 'typeof')),
+        field('name', choice($._module_export_name, alias('type', $.identifier))),
+        optional(seq('as', field('alias', $._module_export_name))),
+      ),`
+  );
   writeFileSync(grammarPath, grammar);
+  // Retain our type/enum declaration captures when the vendor loop copies the query.
+  copyFileSync(join(WASM_DIR, 'typescript.tags.scm'), join(dir, 'queries', 'tags.scm'));
   const tools = join(work, 'typescript-build');
   execFileSync('npm', [
     'install',
@@ -284,7 +345,7 @@ function rebuildTypescript(dir: string, work: string, only?: string): void {
   const cli = join(tools, 'node_modules', '.bin', 'tree-sitter');
   for (const dialect of ['typescript', 'tsx']) {
     if (only && only !== dialect) continue;
-    // TypeScript has no JSX; keep its existing WASM bytes unchanged.
+    // Apply the JSX scanner and attribute repairs only to TSX.
     if (dialect === 'tsx') {
       patchJsxScanner(join(dir, 'common', 'scanner.h'));
       patchJsxAttributes(join(tools, 'node_modules', 'tree-sitter-javascript', 'grammar.js'));
@@ -299,6 +360,7 @@ function rebuildTypescript(dir: string, work: string, only?: string): void {
       ['build', '--wasm', '--docker', '--output', join(dir, `tree-sitter-${dialect}.wasm`)],
       options
     );
+    chmodSync(join(dir, `tree-sitter-${dialect}.wasm`), 0o644);
   }
 }
 
@@ -413,6 +475,52 @@ ${continuation}`
   copyFileSync(join(dir, 'LICENSE'), join(WASM_DIR, 'swift.LICENSE'));
 }
 
+/** Build committed generated C without installing the dots repository or its grammar ancestors. */
+function vendorObjcpp(work: string, repository: string): string {
+  const root = join(work, 'objcpp-source');
+  mkdirSync(root);
+  const git = (args: string[]): void => {
+    execFileSync('git', args, { cwd: root });
+  };
+  git(['init', '--quiet']);
+  git(['remote', 'add', 'origin', repository]);
+  git(['config', 'remote.origin.promisor', 'true']);
+  git(['config', 'remote.origin.partialclonefilter', 'blob:none']);
+  git(['sparse-checkout', 'set', '--no-cone', '/LICENSE.md', '/packages/tree-sitter-objcpp/']);
+  git([
+    'fetch',
+    '--quiet',
+    '--depth=1',
+    '--filter=blob:none',
+    'origin',
+    '8c861a98d84c6325a0300ec88dfa334aa6ab150e',
+  ]);
+  git(['checkout', '--quiet', '--detach', 'FETCH_HEAD']);
+  const dir = join(root, 'packages', 'tree-sitter-objcpp');
+  const tools = join(work, 'objcpp-build');
+  execFileSync('npm', [
+    'install',
+    '--prefix',
+    tools,
+    '--no-audit',
+    '--no-fund',
+    '--no-package-lock',
+    'tree-sitter-cli@0.24.4',
+  ]);
+  // Upstream generated this ABI-15 parser with CLI 0.25.10; 0.24.4 builds it with emsdk 3.1.64.
+  execFileSync(
+    join(tools, 'node_modules', '.bin', 'tree-sitter'),
+    ['build', '--wasm', '--docker', '--output', join(dir, 'tree-sitter-objcpp.wasm')],
+    { cwd: dir }
+  );
+  writeFileSync(
+    join(WASM_DIR, 'objcpp.LICENSE'),
+    readFileSync(join(root, 'LICENSE.md'), 'utf8').replace(/[\u201c\u201d]/g, '"') +
+      '\nInherited C/C++ parser and scanner portions: Copyright (c) 2014 Max Brunsfeld.\nThe MIT grant and conditions above apply to these portions too.\n'
+  );
+  return dir;
+}
+
 /** Upstream package.json pins CLI 0.24.7. SQL function bodies only, not general PL/pgSQL. */
 function rebuildSql(dir: string, work: string): void {
   const grammarPath = join(dir, 'grammar.js');
@@ -473,6 +581,26 @@ function rebuildSql(dir: string, work: string): void {
 
     drop_table: $ => seq(`
   );
+  // Only the policy clauses and RLS action observed in the four fixed PostgreSQL migrations.
+  patch('        $.create_trigger,', '        $.create_trigger,\n        $.create_policy,');
+  patch(
+    '    _alter_specifications: $ => choice(',
+    `    _alter_specifications: $ => choice(
+      seq(make_keyword("enable"), $.keyword_row, $.keyword_level, $.keyword_security),`
+  );
+  patch(
+    '    create_table: $ => prec.left(',
+    `    policy_relation: $ => $.object_reference,
+    create_policy: $ => seq(
+      $.keyword_create, make_keyword("policy"), field('name', $.identifier),
+      $.keyword_on, alias($.policy_relation, $.relation),
+      optional(seq($.keyword_for, choice($.keyword_select, $.keyword_insert, $.keyword_update, $.keyword_delete))),
+      optional(seq($.keyword_to, $.identifier)),
+      optional(seq($.keyword_using, wrapped_in_parenthesis($._expression))),
+      optional(seq($.keyword_with, $.keyword_check, wrapped_in_parenthesis($._expression))),
+    ),
+    create_table: $ => prec.left(`
+  );
   // Dollar-quoted procedural code is one literal, never a parsed SQL statement list.
   patch('      $.reset_statement,', '      $.reset_statement,\n      $.do_statement,');
   patch(
@@ -481,7 +609,20 @@ function rebuildSql(dir: string, work: string): void {
 
     _cte: $ => seq(`
   );
-  patch('  conflicts: $ => [', '  conflicts: $ => [\n    [$.create_function],');
+  // Keep both parses until NOT NULL (constraint) or NOT LIKE (expression) is known.
+  // Match _expression's precedence so it cannot discard the completed default first.
+  patch(
+    '    _inner_default_expression: $ => choice(',
+    '    _inner_default_expression: $ => prec(1, choice('
+  );
+  patch(
+    'alias($.implicit_cast, $.cast),\n    ),\n\n    constraints:',
+    'alias($.implicit_cast, $.cast),\n    )),\n\n    constraints:'
+  );
+  patch(
+    '  conflicts: $ => [',
+    '  conflicts: $ => [\n    [$._expression, $._inner_default_expression],\n    [$.create_function],'
+  );
   const functionStart = grammar.indexOf('    create_function: $ => seq(');
   const functionEnd = grammar.indexOf('    _function_return:', functionStart);
   if (functionStart < 0 || functionEnd < 0) throw new Error('SQL function patch no longer applies');
@@ -490,13 +631,12 @@ function rebuildSql(dir: string, work: string): void {
   const optionsStart = original.indexOf('      repeat(');
   const optionsEnd = original.indexOf('      // ensure');
   const options = original.slice(optionsStart, optionsEnd).replace(languageOption, '');
-  // A dedicated keyword selects the opaque branch; ordinary LANGUAGE SQL keeps its AST.
   const procedural =
     original.slice(0, optionsStart) +
     options +
-    `      alias(seq($.keyword_language, alias(make_keyword("plpgsql"), $.identifier)), $.function_language),\n` +
+    '      alias($.plpgsql_function_language, $.function_language),\n' +
     options +
-    `      alias(seq($.keyword_as, alias(choice($._dollar_quoted_string, $._single_quote_string, $._double_quote_string), $.literal)), $.function_body),\n` +
+    '      alias($.opaque_function_body, $.function_body),\n' +
     options +
     '    )';
   patch(
@@ -506,7 +646,94 @@ function rebuildSql(dir: string, work: string): void {
       original.slice(original.indexOf('seq('), -1) +
       '),'
   );
+  patch(
+    '    $._dollar_quoted_string,\n  ],',
+    '    $._dollar_quoted_string,\n    $._trailing_plpgsql_body,\n  ],'
+  );
+  // Named rules retain complete body/language ranges; aliasing a sequence only names its first token.
+  patch(
+    '    function_body: $ => choice(',
+    `    opaque_function_body: $ => seq(
+      $.keyword_as,
+      alias(choice($._dollar_quoted_string, $._single_quote_string, $._double_quote_string), $.literal),
+    ),
+    plpgsql_function_language: $ => seq(
+      $.keyword_language, alias(make_keyword("plpgsql"), $.identifier),
+    ),
+    function_body: $ => choice(
+      seq(
+        $.keyword_as,
+        alias($._dollar_quoted_string_start_tag, $.dollar_quote),
+        alias($._trailing_plpgsql_body, $.literal),
+        alias($._dollar_quoted_string_end_tag, $.dollar_quote),
+      ),`
+  );
+  const languageStart = grammar.indexOf('    function_language: $ => seq(');
+  const languageEnd = grammar.indexOf('    function_volatility:', languageStart);
+  if (languageStart < 0 || languageEnd < 0) throw new Error('SQL language patch no longer applies');
+  const language = grammar.slice(languageStart, languageEnd);
+  patch(
+    language,
+    language.replace(
+      '      $.identifier',
+      `      choice(
+        $.identifier,
+        alias(token(prec(1, seq("'", make_keyword("plpgsql"), "'"))), $.identifier),
+      )`
+    )
+  );
   writeFileSync(grammarPath, grammar);
+  const scannerPath = join(dir, 'src', 'scanner.c');
+  let scanner = readFileSync(scannerPath, 'utf8');
+  const token = '  DOLLAR_QUOTED_STRING\n';
+  const start =
+    '  if (valid_symbols[DOLLAR_QUOTED_STRING_START_TAG] && state->start_tag == NULL) {';
+  if (!scanner.includes(token) || !scanner.includes(start))
+    throw new Error('SQL procedural scanner patch no longer applies');
+  scanner = scanner.replace(token, '  DOLLAR_QUOTED_STRING,\n  TRAILING_PLPGSQL_BODY\n');
+  scanner = scanner.replace(
+    start,
+    () =>
+      `  if (valid_symbols[TRAILING_PLPGSQL_BODY] && state->start_tag != NULL) {
+    bool consumed = false;
+    for (;;) {
+      if (lexer->eof(lexer)) return false;
+      if (lexer->lookahead != '$') {
+        lexer->advance(lexer, false);
+        consumed = true;
+        continue;
+      }
+      lexer->mark_end(lexer);
+      char *tag = scan_dollar_string_tag(lexer);
+      bool closing = tag != NULL && strcmp(tag, state->start_tag) == 0;
+      free(tag);
+      if (closing) break;
+      consumed = true;
+    }
+    if (!consumed) return false;
+    // Look ahead without moving the marked body end; SQL bodies keep their normal AST.
+    while (iswspace(lexer->lookahead)) lexer->advance(lexer, false);
+    const char *keyword = "language";
+    for (unsigned i = 0; keyword[i]; i++) {
+      if (towlower(lexer->lookahead) != keyword[i]) return false;
+      lexer->advance(lexer, false);
+    }
+    while (iswspace(lexer->lookahead)) lexer->advance(lexer, false);
+    bool quoted = lexer->lookahead == 39;
+    if (quoted) lexer->advance(lexer, false);
+    const char *language = "plpgsql";
+    for (unsigned i = 0; language[i]; i++) {
+      if (towlower(lexer->lookahead) != language[i]) return false;
+      lexer->advance(lexer, false);
+    }
+    if (quoted ? lexer->lookahead != 39 : (iswalnum(lexer->lookahead) || lexer->lookahead == '_' || lexer->lookahead == '$')) return false;
+    lexer->result_symbol = TRAILING_PLPGSQL_BODY;
+    return true;
+  }
+
+` + start
+  );
+  writeFileSync(scannerPath, scanner);
   const tools = join(work, 'sql-build');
   execFileSync('npm', [
     'install',
@@ -527,6 +754,188 @@ function rebuildSql(dir: string, work: string): void {
   copyFileSync(join(dir, 'LICENSE'), join(WASM_DIR, 'sql.LICENSE'));
 }
 
+/** Permit existing dotted property expressions as command-call arguments. */
+function rebuildGroovy(dir: string, work: string): void {
+  const path = join(dir, 'grammar.js');
+  let source = readFileSync(path, 'utf8');
+  const before =
+    '    _juxt_argument_list: $ => commaSep1(choice($._literal, $.map_item, $.identifier)),';
+  if (!source.includes(before)) throw new Error('Groovy argument patch no longer applies');
+  source = source.replace(before, before.replace('$.identifier)', '$.identifier, $.field_access)'));
+  const conflicts = '  conflicts: ($, original) => original.concat([';
+  if (!source.includes(conflicts)) throw new Error('Groovy conflict patch no longer applies');
+  source = source.replace(
+    conflicts,
+    conflicts +
+      `
+    [$.method_invocation, $._juxt_argument_list],
+    [$.generic_type, $._juxt_argument_list],
+    [$.primary_expression, $._unannotated_type, $._juxt_argument_list],
+    [$._unannotated_type, $._juxt_argument_list],
+    [$.primary_expression, $._juxt_argument_list],`
+  );
+  writeFileSync(path, source);
+  const tools = join(work, 'groovy-build');
+  execFileSync('npm', [
+    'install',
+    '--prefix',
+    tools,
+    '--no-audit',
+    '--no-fund',
+    '--no-package-lock',
+    'tree-sitter-cli@0.24.4',
+    'tree-sitter-java@0.23.4',
+  ]);
+  const cli = join(tools, 'node_modules', '.bin', 'tree-sitter');
+  const options = { cwd: dir, env: { ...process.env, NODE_PATH: join(tools, 'node_modules') } };
+  execFileSync(cli, ['generate'], options);
+  execFileSync(
+    cli,
+    ['build', '--wasm', '--docker', '--output', join(dir, 'tree-sitter-groovy.wasm')],
+    options
+  );
+  // Upstream publishes its MIT declaration in package.json/grammar.js, with no LICENSE file.
+  writeFileSync(
+    join(WASM_DIR, 'groovy.LICENSE'),
+    'tree-sitter-groovy 0.1.2, by Amaan Qureshi <amaanq12@gmail.com>.\n' +
+      'Upstream package.json and grammar.js declare MIT. Source: https://github.com/amaanq/tree-sitter-groovy/tree/70efb0b9b50f95bcbd89dcfd42b275e0304e10cf\n\n' +
+      'Inherited tree-sitter-java 0.23.4 (MIT):\n' +
+      readFileSync(join(tools, 'node_modules', 'tree-sitter-java', 'LICENSE'), 'utf8')
+  );
+}
+
+/** Build the official committed Nix parser without installing its native Node binding. */
+function rebuildNixOrCmake(dir: string, work: string, id: 'nix' | 'cmake'): void {
+  const tools = join(work, `${id}-build`);
+  execFileSync('npm', [
+    'install',
+    '--prefix',
+    tools,
+    '--no-audit',
+    '--no-fund',
+    '--no-package-lock',
+    'tree-sitter-cli@0.24.4',
+  ]);
+  // Build the pinned generated source; CLI 0.24.4 pins emscripten/emsdk:3.1.64.
+  execFileSync(
+    join(tools, 'node_modules', '.bin', 'tree-sitter'),
+    ['build', '--wasm', '--docker', '--output', join(dir, `tree-sitter-${id}.wasm`)],
+    { cwd: dir }
+  );
+  copyFileSync(join(dir, 'LICENSE'), join(WASM_DIR, `${id}.LICENSE`));
+}
+
+/** The published grammar JSON freezes its C ancestor; add only the two JNI modifier spellings. */
+function rebuildCpp(dir: string, work: string): void {
+  const path = join(dir, 'src', 'grammar.json');
+  const grammar = JSON.parse(readFileSync(path, 'utf8')) as {
+    rules: Record<string, { type: string; members: unknown[] }>;
+  };
+  for (const [name, value] of [
+    ['type_qualifier', 'JNIEXPORT'],
+    ['ms_call_modifier', 'JNICALL'],
+  ] as const) {
+    const rule = grammar.rules[name];
+    if (!rule || rule.type !== 'CHOICE' || !Array.isArray(rule.members))
+      throw new Error(`C++ JNI patch no longer applies: ${name}`);
+    rule.members.push({ type: 'STRING', value });
+  }
+  writeFileSync(path, JSON.stringify(grammar));
+  const tools = join(work, 'cpp-build');
+  execFileSync('npm', [
+    'install',
+    '--prefix',
+    tools,
+    '--no-audit',
+    '--no-fund',
+    '--no-package-lock',
+    'tree-sitter-cli@0.24.4',
+  ]);
+  const cli = join(tools, 'node_modules', '.bin', 'tree-sitter');
+  execFileSync(cli, ['generate', 'src/grammar.json'], { cwd: dir });
+  execFileSync(
+    cli,
+    ['build', '--wasm', '--docker', '--output', join(dir, 'tree-sitter-cpp.wasm')],
+    { cwd: dir }
+  );
+  copyFileSync(join(dir, 'LICENSE'), join(WASM_DIR, 'cpp.LICENSE'));
+}
+
+/** A radix value may use $name as well as ${name}; keep the source and expansion node intact. */
+function rebuildBash(dir: string, work: string): void {
+  const path = join(dir, 'grammar.js');
+  const grammar = readFileSync(path, 'utf8');
+  const before = 'seq(/-?(0x)?[0-9]+#/, choice($.expansion, $.command_substitution))';
+  if (!grammar.includes(before)) throw new Error('Bash radix patch no longer applies');
+  writeFileSync(
+    path,
+    grammar.replace(
+      before,
+      'seq(/-?(0x)?[0-9]+#/, choice($.simple_expansion, $.expansion, $.command_substitution))'
+    )
+  );
+  const scannerPath = join(dir, 'src', 'scanner.c');
+  const scanner = readFileSync(scannerPath, 'utf8');
+  const variableScan = `        return false;
+    }
+
+    if (valid_symbols[BARE_DOLLAR] && !in_error_recovery(valid_symbols) && scan_bare_dollar(lexer)) {`;
+  if (!scanner.includes(variableScan))
+    throw new Error('Bash expansion-word patch no longer applies');
+  const parenStart = scanner.indexOf(
+    "            if (lexer->lookahead == '(' && !(advanced_once || advance_once_space)) {"
+  );
+  const parenEnd = scanner.indexOf(
+    String.raw`            if (lexer->lookahead == '\'') {`,
+    parenStart
+  );
+  const concatParens = "lexer->lookahead == ')' || lexer->lookahead == '('";
+  if (parenStart < 0 || parenEnd <= parenStart || !scanner.includes(concatParens))
+    throw new Error('Bash literal-parenthesis patch no longer applies');
+  // The variable-name scan consumes a default's prefix but rejects | before reaching expansion_word.
+  // Inside ${...}, parentheses are word pieces around expansions, not shell groups.
+  writeFileSync(
+    scannerPath,
+    (scanner.slice(0, parenStart) + scanner.slice(parenEnd))
+      .replace(
+        variableScan,
+        "        if (valid_symbols[EXPANSION_WORD] && lexer->lookahead == '|') goto expansion_word;\n\n" +
+          variableScan
+      )
+      .replace(
+        concatParens,
+        "((lexer->lookahead == ')' || lexer->lookahead == '(') && !valid_symbols[CLOSING_BRACE])"
+      )
+  );
+  const generator = join(work, 'bash-generator');
+  execFileSync('npm', [
+    'install',
+    '--prefix',
+    generator,
+    '--no-audit',
+    '--no-fund',
+    '--no-package-lock',
+    'tree-sitter-cli@0.25.8',
+  ]);
+  execFileSync(join(generator, 'node_modules', '.bin', 'tree-sitter'), ['generate'], { cwd: dir });
+  const tools = join(work, 'bash-build');
+  execFileSync('npm', [
+    'install',
+    '--prefix',
+    tools,
+    '--no-audit',
+    '--no-fund',
+    '--no-package-lock',
+    'tree-sitter-cli@0.24.4',
+  ]);
+  // CLI 0.24.4 pins emscripten/emsdk:3.1.64 for --docker.
+  execFileSync(
+    join(tools, 'node_modules', '.bin', 'tree-sitter'),
+    ['build', '--wasm', '--docker', '--output', join(dir, 'tree-sitter-bash.wasm')],
+    { cwd: dir }
+  );
+}
+
 function vendor(): Problem[] {
   const only = process.argv.find((arg) => arg.startsWith('--only='))?.slice(7);
   if (only && !GRAMMARS.some((spec) => spec.id === only))
@@ -544,28 +953,36 @@ function vendor(): Problem[] {
       let dir = extracted.get(spec.pkg);
       if (!dir) {
         try {
-          const out = execFileSync(
-            'npm',
-            ['pack', spec.pkg, '--silent', '--pack-destination', work],
-            {
-              cwd: work,
-              encoding: 'utf8',
-            }
-          );
-          const tarball = out.trim().split('\n').pop() ?? '';
-          dir = join(work, spec.pkg.replace(/[^a-z0-9-]/gi, '_'));
-          mkdirSync(dir, { recursive: true });
-          execFileSync('tar', [
-            'xzf',
-            join(work, basename(tarball)),
-            '-C',
-            dir,
-            '--strip-components=1',
-          ]);
-          if (spec.id === 'typescript' || spec.id === 'tsx') rebuildTypescript(dir, work, only);
-          if (spec.id === 'javascript') rebuildJavascript(dir, work);
-          if (spec.id === 'swift') rebuildSwift(dir, work);
-          if (spec.id === 'sql') rebuildSql(dir, work);
+          if (spec.id === 'objcpp') {
+            dir = vendorObjcpp(work, spec.pkg);
+          } else {
+            const out = execFileSync(
+              'npm',
+              ['pack', spec.pkg, '--silent', '--pack-destination', work],
+              {
+                cwd: work,
+                encoding: 'utf8',
+              }
+            );
+            const tarball = out.trim().split('\n').pop() ?? '';
+            dir = join(work, spec.pkg.replace(/[^a-z0-9-]/gi, '_'));
+            mkdirSync(dir, { recursive: true });
+            execFileSync('tar', [
+              'xzf',
+              join(work, basename(tarball)),
+              '-C',
+              dir,
+              '--strip-components=1',
+            ]);
+            if (spec.id === 'typescript' || spec.id === 'tsx') rebuildTypescript(dir, work, only);
+            if (spec.id === 'javascript') rebuildJavascript(dir, work);
+            if (spec.id === 'swift') rebuildSwift(dir, work);
+            if (spec.id === 'sql') rebuildSql(dir, work);
+            if (spec.id === 'groovy') rebuildGroovy(dir, work);
+            if (spec.id === 'cpp') rebuildCpp(dir, work);
+            if (spec.id === 'bash') rebuildBash(dir, work);
+            if (spec.id === 'nix' || spec.id === 'cmake') rebuildNixOrCmake(dir, work, spec.id);
+          }
           extracted.set(spec.pkg, dir);
         } catch (err) {
           problems.push({
@@ -584,7 +1001,18 @@ function vendor(): Problem[] {
       } else {
         copyFileSync(wasmSrc, join(WASM_DIR, `${spec.id}.wasm`));
         if (spec.id === 'lua') copyFileSync(join(dir, 'LICENSE.md'), join(WASM_DIR, 'lua.LICENSE'));
-        if (spec.id === 'javascript' || spec.id === 'tsx')
+        if (spec.id === 'terraform')
+          copyFileSync(join(dir, 'LICENSE'), join(WASM_DIR, 'terraform.LICENSE'));
+        if (
+          spec.id === 'javascript' ||
+          spec.id === 'tsx' ||
+          spec.id === 'objcpp' ||
+          spec.id === 'groovy' ||
+          spec.id === 'cpp' ||
+          spec.id === 'bash' ||
+          spec.id === 'nix' ||
+          spec.id === 'cmake'
+        )
           chmodSync(join(WASM_DIR, `${spec.id}.wasm`), 0o644);
       }
 
@@ -629,13 +1057,13 @@ if (problems.length > 0) {
 }
 
 const sizes = GRAMMARS.map((g) => statSync(join(WASM_DIR, `${g.id}.wasm`)).size);
-const totalMB = +(sizes.reduce((a, b) => a + b, 0) / 1048576).toFixed(1);
+const totalBytes = sizes.reduce((a, b) => a + b, 0);
+const totalMB = +(totalBytes / 1048576).toFixed(1);
 console.log(
   `VENDOR_GRAMMARS_OK ${JSON.stringify({ grammars: GRAMMARS.length, totalWasmMB: totalMB })}`
 );
-// The plan's ceiling. Install size is a cost every user pays, so it fails the
-// build rather than drifting upward one grammar at a time.
-if (totalMB > 40) {
-  console.error(`VENDOR_GRAMMARS_TOO_LARGE ${totalMB}MB exceeds the 40MB ceiling`);
+// Owner-approved Objective-C++ cost: repaired bundle 43.58 MiB (43.67 with Terraform 667475e93), bounded at 45 MiB.
+if (totalBytes > 45 * 1048576) {
+  console.error(`VENDOR_GRAMMARS_TOO_LARGE ${totalMB}MB exceeds the 45MB ceiling`);
   process.exit(1);
 }

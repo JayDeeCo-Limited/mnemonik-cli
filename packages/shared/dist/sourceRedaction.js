@@ -1,6 +1,7 @@
-import { extname } from 'node:path';
+import { parseVueSource, walkVueTemplate, VUE_FIDELITY_MARKER } from './vueSource.js';
+import { basename, extname } from 'node:path';
 import { Parser } from 'web-tree-sitter';
-import { loadGrammar } from './ast/grammars.js';
+import { loadGrammar, objcppSyntaxIssue } from './ast/grammars.js';
 import { MAX_AST_PARSE_BYTES } from './ast/astChunker.js';
 import { commandLineCredentialRanges, redactCredentials } from './redactCredentials.js';
 import { redactHighEntropyTokens, redactSecretValue, scrubSecrets, SECRET_LABEL_RE, } from './secretPatterns.js';
@@ -10,60 +11,548 @@ function scrubPayload(text) {
 /** Source syntax stays executable; unsupported or incomplete input uses the conservative scrubber. */
 export async function scrubSourceSecrets(text, filePath) {
     const extension = extname(filePath).toLowerCase();
-    const language = ['.ts', '.mts', '.cts'].includes(extension)
-        ? 'typescript'
-        : extension === '.tsx'
-            ? 'tsx'
-            : ['.js', '.jsx', '.mjs', '.cjs'].includes(extension)
-                ? 'javascript'
-                : ['.py', '.pyi'].includes(extension)
-                    ? 'python'
-                    : ['.sh', '.bash', '.zsh'].includes(extension)
-                        ? 'bash'
-                        : extension === '.swift'
-                            ? 'swift'
-                            : extension === '.sql'
-                                ? 'sql'
-                                : extension === '.lua'
-                                    ? 'lua'
-                                    : extension === '.rs'
-                                        ? 'rust'
-                                        : null;
+    if (extension === '.vue')
+        return scrubVueSource(text);
+    const language = extension === '.cmake' || basename(filePath) === 'CMakeLists.txt'
+        ? 'cmake'
+        : ['.ts', '.mts', '.cts'].includes(extension)
+            ? 'typescript'
+            : extension === '.tsx'
+                ? 'tsx'
+                : ['.js', '.jsx', '.mjs', '.cjs'].includes(extension)
+                    ? 'javascript'
+                    : ['.py', '.pyi'].includes(extension)
+                        ? 'python'
+                        : ['.sh', '.bash', '.zsh'].includes(extension)
+                            ? 'bash'
+                            : extension === '.swift'
+                                ? 'swift'
+                                : extension === '.sql'
+                                    ? 'sql'
+                                    : extension === '.lua'
+                                        ? 'lua'
+                                        : extension === '.rs'
+                                            ? 'rust'
+                                            : extension === '.nix'
+                                                ? 'nix'
+                                                : extension === '.tf'
+                                                    ? 'terraform'
+                                                    : ['.m', '.mm'].includes(extension)
+                                                        ? 'objcpp'
+                                                        : extension === '.c'
+                                                            ? 'c'
+                                                            : ['.h', '.cpp', '.cc', '.cxx', '.hpp', '.hh', '.hxx'].includes(extension)
+                                                                ? 'cpp'
+                                                                : ['.groovy', '.gradle'].includes(extension)
+                                                                    ? 'groovy'
+                                                                    : ['.ps1', '.psm1'].includes(extension)
+                                                                        ? 'powershell'
+                                                                        : null;
+    const fallback = () => {
+        const clean = scrubPayload(text);
+        if (!text)
+            return clean;
+        if (language === 'powershell') {
+            const marker = '# mnemonik:powershell-source-fidelity-unavailable\n';
+            return clean.startsWith(marker) ? clean : marker + clean;
+        }
+        // A fallback may repair syntax accidentally; these graph extractors must never trust it.
+        if (language === 'cmake' || language === 'groovy') {
+            const marker = `// mnemonik:${language}-source-fidelity-unavailable`;
+            const comment = language === 'cmake' ? marker.replace('//', '#') : marker;
+            return clean.startsWith(comment) ? clean : comment + '\n' + clean;
+        }
+        const marker = language === 'nix'
+            ? '/* mnemonik:nix-source-fidelity-unavailable */'
+            : '/* mnemonik:terraform-source-fidelity-unavailable */';
+        return (language === 'terraform' || language === 'nix') && !clean.startsWith(marker)
+            ? marker + clean
+            : clean;
+    };
     if (!text || !language || Buffer.byteLength(text, 'utf8') > MAX_AST_PARSE_BYTES) {
-        return scrubPayload(text);
+        return fallback();
     }
     let parser;
     let tree = null;
     try {
         const grammar = await loadGrammar(language);
         if ('unavailable' in grammar)
-            return scrubPayload(text);
+            return fallback();
         parser = new Parser();
         parser.setLanguage(grammar.ok.language);
         tree = parser.parse(text);
         if (!tree || tree.rootNode.hasError)
-            return scrubPayload(text);
+            return fallback();
         const root = tree.rootNode;
-        const redacted = language === 'bash'
-            ? redactShellNode(root, commandLineCredentialRanges(text))
-            : language === 'swift'
-                ? redactSwiftNode(root)
-                : language === 'sql'
-                    ? redactSqlNode(root)
-                    : language === 'lua'
-                        ? redactLuaNode(root)
-                        : language === 'rust'
-                            ? redactRustNode(root)
-                            : redactNode(root);
+        if (language === 'objcpp' && objcppSyntaxIssue(root))
+            return fallback();
+        const redacted = language === 'cmake'
+            ? redactCmakeNode(root)
+            : language === 'bash'
+                ? redactShellNode(root, commandLineCredentialRanges(text))
+                : language === 'swift'
+                    ? redactSwiftNode(root)
+                    : language === 'sql'
+                        ? redactSqlNode(root)
+                        : language === 'lua'
+                            ? redactLuaNode(root)
+                            : language === 'rust'
+                                ? redactRustNode(root)
+                                : language === 'nix'
+                                    ? redactNixNode(root)
+                                    : language === 'terraform'
+                                        ? redactTerraformNode(root)
+                                        : ['objcpp', 'c', 'cpp'].includes(language)
+                                            ? redactCFamilyNode(root)
+                                            : language === 'groovy'
+                                                ? redactGroovyNode(root)
+                                                : language === 'powershell'
+                                                    ? redactPowershellNode(root)
+                                                    : redactNode(root);
         return text.slice(0, root.startIndex) + redacted + text.slice(root.endIndex);
     }
     catch {
-        return scrubPayload(text);
+        return fallback();
     }
     finally {
         tree?.delete();
         parser?.delete();
     }
+}
+/** CMake substitutions remain source expressions; only AST argument/comment payloads are scrubbed. */
+function redactCmakeNode(node, sensitive = false) {
+    const original = node.text;
+    const type = node.type;
+    const payload = (value) => sensitive && value.trim() ? redactSecretValue(value) : literalPayload(value, false);
+    if (type === 'line_comment')
+        return '#' + scrubPayload(original.slice(1));
+    if (type === 'bracket_comment' || type === 'bracket_argument') {
+        const payload = node.namedChildren.find((n) => n.type.endsWith('_content'));
+        if (!payload)
+            return original;
+        const clean = type === 'bracket_comment'
+            ? scrubPayload(payload.text)
+            : sensitive
+                ? redactSecretValue(payload.text)
+                : literalPayload(payload.text, false);
+        return (original.slice(0, payload.startIndex - node.startIndex) +
+            clean +
+            original.slice(payload.endIndex - node.startIndex));
+    }
+    if (type === 'variable_ref')
+        return original;
+    if (type === 'escape_sequence')
+        return sensitive ? redactSecretValue(original) : original;
+    if (type === 'quoted_element' || type === 'unquoted_argument') {
+        // Generator expressions have no inner AST in this grammar; withhold fidelity instead of rewriting them.
+        if (original.includes('$<'))
+            throw new Error('Opaque CMake generator expression');
+        let result = '';
+        let offset = node.startIndex;
+        for (const child of node.namedChildren) {
+            result += payload(original.slice(offset - node.startIndex, child.startIndex - node.startIndex));
+            result += redactCmakeNode(child, sensitive);
+            offset = child.endIndex;
+        }
+        result += payload(original.slice(offset - node.startIndex));
+        return type === 'unquoted_argument' && result !== original ? '"' + result + '"' : result;
+    }
+    const args = type === 'argument_list' ? node.namedChildren.filter((n) => n.type === 'argument') : [];
+    const set = node.parent?.namedChildren.find((n) => n.type === 'identifier')?.text.toLowerCase() === 'set';
+    const key = set ? args[0] : null;
+    const label = key?.firstNamedChild;
+    const literalKey = label?.type === 'unquoted_argument' && !label.namedChildCount
+        ? label.text
+        : label?.type === 'quoted_argument' && !label.firstNamedChild?.namedChildCount
+            ? label.text.slice(1, -1)
+            : null;
+    const name = literalKey?.match(/^ENV\{([^{}]+)\}$/)?.[1] ?? literalKey;
+    const labeled = name !== null && SECRET_LABEL_RE.test(name);
+    let result = '';
+    let offset = node.startIndex;
+    for (const child of node.namedChildren) {
+        result += original.slice(offset - node.startIndex, child.startIndex - node.startIndex);
+        result +=
+            child.id === key?.id || (type === 'normal_command' && child.type === 'identifier')
+                ? child.text
+                : redactCmakeNode(child, sensitive || (labeled && args.some((a) => a.id === child.id)));
+        offset = child.endIndex;
+    }
+    return result + original.slice(offset - node.startIndex);
+}
+/** PowerShell's AST separates command syntax from literal strings and interpolation nodes. */
+function redactPowershellNode(node, sensitive = false) {
+    const original = node.text;
+    const type = node.type;
+    if (type === 'comment')
+        return original.startsWith('<#')
+            ? '<#' + scrubPayload(original.slice(2, -2)) + '#>'
+            : '#' + scrubPayload(original.slice(1));
+    if (type === 'string_literal') {
+        const here = original.startsWith('@');
+        const prefix = here ? 2 : 1;
+        const expandable = node.firstNamedChild;
+        const substitutions = expandable?.type.startsWith('expandable_')
+            ? expandable.namedChildren
+            : [];
+        const payload = (text) => text
+            // Retain quote/dollar/control escapes and physical continuation boundaries verbatim.
+            .split(/(`(?:\r\n|[0abefnrtv`"'$\r\n])|''|\r\n|[\r\n])/g)
+            .map((part, index) => index % 2
+            ? part
+            : sensitive && part
+                ? redactSecretValue(part)
+                : literalPayload(part, false))
+            .join('');
+        let result = original.slice(0, prefix);
+        let offset = node.startIndex + prefix;
+        for (const child of substitutions) {
+            result += payload(original.slice(offset - node.startIndex, child.startIndex - node.startIndex));
+            result += redactPowershellNode(child); // Runtime references/subexpressions are not credential values.
+            offset = child.endIndex;
+        }
+        return (result + payload(original.slice(offset - node.startIndex, -prefix)) + original.slice(-prefix));
+    }
+    if (sensitive && type === 'generic_token')
+        return literalPayload(original, true);
+    if (sensitive && ['integer_literal', 'real_literal'].includes(type))
+        return "'" + redactSecretValue(original) + "'";
+    const assignment = type === 'assignment_expression';
+    const key = assignment || type === 'hash_entry' ? node.firstNamedChild : null;
+    const value = assignment
+        ? node.childForFieldName('value')
+        : type === 'hash_entry'
+            ? node.namedChildren[1]
+            : null;
+    let label = key;
+    while (label && label.type !== 'string_literal') {
+        if (label.type === 'element_access' || label.namedChildCount === 1)
+            label = label.firstNamedChild;
+        else
+            break;
+    }
+    if (label?.type === 'member_access')
+        label = label.lastNamedChild?.firstNamedChild ?? label.lastNamedChild;
+    const labelText = label?.type === 'string_literal' ? label.text.slice(1, -1) : label?.text;
+    const labeled = !!labelText &&
+        SECRET_LABEL_RE.test(labelText
+            .replace(/^\$\{?|}$/g, '')
+            .split(':')
+            .at(-1) ?? '');
+    const valueWrapper = sensitive &&
+        (type === 'pipeline' ||
+            type === 'pipeline_chain' ||
+            type === 'statement_list' ||
+            type === 'hash_literal_body' ||
+            type === 'expression_with_unary_operator' ||
+            (type.endsWith('_expression') &&
+                ![
+                    'sub_expression',
+                    'member_access',
+                    'invokation_expression',
+                    'script_block_expression',
+                ].includes(type)));
+    let result = '';
+    let offset = node.startIndex;
+    let argumentSensitive = false;
+    for (const child of node.namedChildren) {
+        result += original.slice(offset - node.startIndex, child.startIndex - node.startIndex);
+        if (type === 'command_elements' && child.type === 'command_parameter')
+            argumentSensitive = SECRET_LABEL_RE.test(child.text.replace(/^-|:$/g, ''));
+        const argument = type === 'command_elements' &&
+            !['command_parameter', 'command_argument_sep'].includes(child.type);
+        result += redactPowershellNode(child, valueWrapper ||
+            ((labeled || (sensitive && type === 'hash_entry')) && child.id === value?.id) ||
+            (argument && argumentSensitive));
+        if (argument)
+            argumentSensitive = false;
+        offset = child.endIndex;
+    }
+    return result + original.slice(offset - node.startIndex);
+}
+/** Nix literal payloads have spans; lambda bodies and application arguments remain runtime code. */
+function redactNixNode(node, sensitive = false) {
+    const type = node.type;
+    const original = node.text;
+    if (type === 'comment')
+        return redactNode(node);
+    if (type === 'string_fragment')
+        return sensitive ? redactSecretValue(original) : literalPayload(original, false);
+    if (type === 'escape_sequence' || type === 'dollar_escape')
+        return original;
+    if ((type === 'integer_expression' ||
+        type === 'float_expression' ||
+        (type === 'unary_expression' &&
+            ['integer_expression', 'float_expression'].includes(node.childForFieldName('argument')?.type ?? ''))) &&
+        sensitive)
+        return '"' + redactSecretValue(original) + '"';
+    if (type === 'uri_expression') {
+        const clean = literalPayload(original, sensitive);
+        return clean === original ? original : JSON.stringify(clean);
+    }
+    if (['path_expression', 'hpath_expression', 'spath_expression'].includes(type) &&
+        (sensitive || scrubPayload(original) !== original))
+        throw new Error('Nix path fidelity unavailable');
+    const key = type === 'binding' ? node.childForFieldName('attrpath') : null;
+    const name = key?.lastNamedChild ?? (type === 'formal' ? node.childForFieldName('name') : null);
+    const labeled = name?.type === 'identifier'
+        ? secretLabel(name)
+        : name?.type === 'string_expression' &&
+            !name.namedChildren.some((n) => n.type === 'interpolation')
+            ? SECRET_LABEL_RE.test(name.text.slice(1, -1))
+            : false;
+    const value = node.childForFieldName(type === 'formal' ? 'default' : 'expression');
+    let result = '';
+    let offset = node.startIndex;
+    let escapedDollar = false;
+    for (const child of node.namedChildren) {
+        result += original.slice(offset - node.startIndex, child.startIndex - node.startIndex);
+        const carry = sensitive &&
+            ([
+                'string_expression',
+                'indented_string_expression',
+                'list_expression',
+                'parenthesized_expression',
+                'attrset_expression',
+                'rec_attrset_expression',
+                'binding_set',
+            ].includes(type) ||
+                (type === 'binding' && child.id === value?.id) ||
+                (['let_expression', 'with_expression', 'assert_expression'].includes(type) &&
+                    child.id === node.childForFieldName('body')?.id) ||
+                (type === 'interpolation' && child.id === node.childForFieldName('expression')?.id) ||
+                (type === 'unary_expression' && child.id === node.childForFieldName('argument')?.id) ||
+                (type === 'if_expression' && child.id !== node.childForFieldName('condition')?.id) ||
+                (type === 'binary_expression' &&
+                    ['+', '++'].includes(node.childForFieldName('operator')?.text ?? '')) ||
+                (type === 'apply_expression' && child.id === node.childForFieldName('function')?.id) ||
+                (type === 'select_expression' && child.type !== 'attrpath'));
+        const structural = child.id === key?.id ||
+            (escapedDollar && child.type === 'string_fragment' && child.text === '$');
+        result += structural
+            ? child.text
+            : redactNixNode(child, carry || (labeled && child.id === value?.id));
+        escapedDollar = child.type === 'dollar_escape';
+        offset = child.endIndex;
+    }
+    return result + original.slice(offset - node.startIndex);
+}
+/** HCL exposes literal spans separately from interpolation/directive expressions. */
+function redactTerraformNode(node, sensitive = false) {
+    const original = node.text;
+    const type = node.type;
+    if (type === 'comment')
+        return redactNode(node);
+    // Resource labels and object keys are identifiers, even when the AST calls them strings.
+    if (type === 'block')
+        sensitive = false;
+    if (type === 'template_literal') {
+        if (!sensitive)
+            return literalPayload(original, false);
+        // Escape tokens remain literal; scrubbing must not turn $${ into an interpolation.
+        return original
+            .split(/(\\["\\nrt]|\$\$\{|%%\{|[{}])/g)
+            .map((part, index) => (index % 2 ? part : literalPayload(part, sensitive)))
+            .join('');
+    }
+    if (type === 'numeric_lit' && sensitive)
+        return '"' + redactSecretValue(original) + '"';
+    const key = type === 'attribute' ? node.firstNamedChild : node.childForFieldName('key');
+    const value = type === 'attribute' ? node.namedChildren[1] : node.childForFieldName('val');
+    const keyName = key?.type === 'expression' ? key.firstNamedChild : key;
+    const literalKey = keyName?.type === 'literal_value' ? keyName.firstNamedChild : keyName;
+    const container = type === 'attribute' ? node.parent?.parent : null;
+    const containerName = container?.namedChildren[1];
+    const secretDefault = container?.type === 'block' &&
+        ((container.firstNamedChild?.text === 'variable' && key?.text === 'default') ||
+            (container.firstNamedChild?.text === 'output' && key?.text === 'value')) &&
+        containerName?.type === 'string_lit' &&
+        SECRET_LABEL_RE.test(containerName.text.slice(1, -1));
+    const labeled = secretDefault ||
+        (literalKey?.type === 'string_lit'
+            ? SECRET_LABEL_RE.test(literalKey.text.slice(1, -1))
+            : secretLabel(literalKey ?? null));
+    let result = '';
+    let offset = node.startIndex;
+    for (const child of node.namedChildren) {
+        result += original.slice(offset - node.startIndex, child.startIndex - node.startIndex);
+        const carry = sensitive &&
+            ([
+                'expression',
+                'operation',
+                'unary_operation',
+                'binary_operation',
+                'literal_value',
+                'template_expr',
+                'string_lit',
+                'quoted_template',
+                'heredoc_template',
+                'collection_value',
+                'tuple',
+                'object',
+                'template_directive',
+            ].includes(type) ||
+                (['template_for', 'template_if'].includes(type) &&
+                    ![
+                        'template_for_start',
+                        'template_for_end',
+                        'template_if_intro',
+                        'template_else_intro',
+                        'template_if_end',
+                    ].includes(child.type)) ||
+                (type === 'conditional' && child.id !== node.firstNamedChild?.id) ||
+                (type === 'object_elem' && child.id === value?.id));
+        // Block labels and object keys are never literal values to scrub.
+        result +=
+            (type === 'block' && child.type === 'string_lit') || child.id === key?.id
+                ? child.text
+                : redactTerraformNode(child, carry || (labeled && child.id === value?.id));
+        offset = child.endIndex;
+    }
+    return result + original.slice(offset - node.startIndex);
+}
+/** Groovy's quoted strings and comments have spans; command calls remain executable syntax. */
+function redactGroovyNode(node, sensitive = false) {
+    const original = node.text;
+    const type = node.type;
+    if (type === 'line_comment')
+        return '//' + scrubPayload(original.slice(2));
+    if (type === 'block_comment')
+        return '/*' + scrubPayload(original.slice(2, -2)) + '*/';
+    const operand = type === 'unary_expression' ? node.childForFieldName('operand') : null;
+    const numeric = (kind) => kind.endsWith('_integer_literal') || kind.endsWith('_floating_point_literal');
+    if (sensitive && (numeric(type) || (operand && numeric(operand.type))))
+        return '"' + redactSecretValue(original) + '"';
+    if (type === 'character_literal' || type === 'string_literal') {
+        const delimiter = type === 'character_literal' ? "'" : node.firstChild?.text;
+        if (!delimiter)
+            throw new Error('Incomplete Groovy string');
+        // The inherited Java rule leaves Groovy GString expressions opaque, not AST substitutions.
+        if (delimiter.startsWith('"') && original.includes('$'))
+            throw new Error('Opaque Groovy GString interpolation');
+        return (delimiter +
+            literalPayload(original.slice(delimiter.length, -delimiter.length), sensitive) +
+            delimiter);
+    }
+    const key = type === 'variable_declarator'
+        ? node.childForFieldName('name')
+        : type === 'assignment_expression'
+            ? node.childForFieldName('left')
+            : type === 'map_item'
+                ? node.childForFieldName('key')
+                : null;
+    const value = node.childForFieldName(type === 'assignment_expression' ? 'right' : 'value');
+    const field = key?.childForFieldName('field') ?? key;
+    const name = field && ['character_literal', 'string_literal'].includes(field.type)
+        ? field.text.slice(1, -1)
+        : field?.text;
+    const labeled = !!name && SECRET_LABEL_RE.test(name);
+    let result = '';
+    let offset = node.startIndex;
+    for (const child of node.namedChildren) {
+        result += original.slice(offset - node.startIndex, child.startIndex - node.startIndex);
+        const carry = sensitive &&
+            (type === 'parenthesized_expression' ||
+                type === 'array_literal' ||
+                type === 'map_literal' ||
+                (type === 'map_item' && child.id === value?.id) ||
+                (type === 'method_invocation' && child.id === node.childForFieldName('object')?.id) ||
+                (type === 'field_access' && child.id === node.childForFieldName('object')?.id) ||
+                (type === 'juxt_function_call' && child.id === node.childForFieldName('name')?.id) ||
+                (type === 'binary_expression' && node.childForFieldName('operator')?.text === '+') ||
+                (type === 'ternary_expression' && child.id !== node.childForFieldName('condition')?.id));
+        result += redactGroovyNode(child, carry || (labeled && child.id === value?.id));
+        offset = child.endIndex;
+    }
+    return result + original.slice(offset - node.startIndex);
+}
+/** Keep C/Objective-C++ prefixes, raw delimiters and runtime expressions outside literal payloads. */
+function redactCFamilyNode(node, sensitive = false) {
+    const original = node.text;
+    const type = node.type;
+    if (sensitive &&
+        (type === 'number_literal' ||
+            (type === 'unary_expression' &&
+                node.childForFieldName('argument')?.type === 'number_literal')))
+        return '"' + redactSecretValue(original) + '"';
+    if (type === 'comment')
+        return original.startsWith('/*')
+            ? '/*' + scrubPayload(original.slice(2, -2)) + '*/'
+            : '//' + scrubPayload(original.slice(2));
+    // Unknown macro arguments have no literal/expression boundaries to preserve.
+    if (type === 'objc_macro_argument_text')
+        throw new Error('Opaque Objective-C++ macro arguments');
+    if (type === 'preproc_arg')
+        return scrubPayload(original);
+    if (type === 'raw_string_literal') {
+        const content = node.namedChildren.find((child) => child.type === 'raw_string_content');
+        if (!content)
+            return original;
+        return (original.slice(0, content.startIndex - node.startIndex) +
+            literalPayload(content.text, sensitive) +
+            original.slice(content.endIndex - node.startIndex));
+    }
+    if (type === 'string_literal' || type === 'char_literal') {
+        const quote = type === 'char_literal' ? "'" : '"';
+        const start = original.indexOf(quote) + 1;
+        const end = original.lastIndexOf(quote);
+        return (original.slice(0, start) +
+            literalPayload(original.slice(start, end), sensitive) +
+            original.slice(end));
+    }
+    const label = (key) => {
+        if (!key)
+            return false;
+        let current = key;
+        while (current.type.endsWith('_declarator') || current.type === 'objc_string_literal') {
+            const inner = current.childForFieldName('declarator') ??
+                current.childForFieldName('value') ??
+                current.firstNamedChild;
+            if (!inner)
+                return false;
+            current = inner;
+        }
+        const field = current.childForFieldName('field') ??
+            (current.type === 'field_designator' ? current.firstNamedChild : null) ??
+            current;
+        const content = field.namedChildren.find((child) => child.type === 'string_content');
+        return SECRET_LABEL_RE.test(content?.text ?? field.text);
+    };
+    const key = type === 'init_declarator'
+        ? node.childForFieldName('declarator')
+        : type === 'assignment_expression'
+            ? node.childForFieldName('left')
+            : type === 'objc_dictionary_entry'
+                ? node.childForFieldName('key')
+                : null;
+    const sensitiveValue = type === 'initializer_pair' ? node.childrenForFieldName('designator').some(label) : label(key);
+    const value = node.childForFieldName(type === 'assignment_expression' ? 'right' : 'value');
+    let result = '';
+    let offset = node.startIndex;
+    for (const child of node.namedChildren) {
+        result += original.slice(offset - node.startIndex, child.startIndex - node.startIndex);
+        const carry = sensitive &&
+            (type === 'objc_string_literal' ||
+                type === 'concatenated_string' ||
+                type === 'user_defined_literal' ||
+                type === 'parenthesized_expression' ||
+                type === 'initializer_list' ||
+                (type === 'unary_expression' && child.id === node.childForFieldName('argument')?.id) ||
+                (type === 'initializer_pair' && child.id === value?.id) ||
+                type === 'objc_array_literal' ||
+                type === 'objc_dictionary_literal' ||
+                (type === 'objc_dictionary_entry' && child.id === value?.id) ||
+                (type === 'objc_boxed_expression' && child.id === value?.id) ||
+                (type === 'message_expression' && child.id === node.childForFieldName('receiver')?.id) ||
+                (type === 'call_expression' && child.id === node.childForFieldName('function')?.id) ||
+                (type === 'field_expression' && child.id === node.childForFieldName('argument')?.id) ||
+                (type === 'conditional_expression' &&
+                    child.id !== node.childForFieldName('condition')?.id) ||
+                (type === 'binary_expression' && node.childForFieldName('operator')?.text === '+'));
+        result += redactCFamilyNode(child, carry || (sensitiveValue && child.id === value?.id));
+        offset = child.endIndex;
+    }
+    return result + original.slice(offset - node.startIndex);
 }
 /** Rust raw/byte prefixes belong to the delimiter, never to the credential payload. */
 function redactRustNode(node, sensitive = false, labeled = new Set()) {
@@ -603,7 +1092,11 @@ function redactNode(node, sensitive = false) {
         result += original.slice(offset - node.startIndex, child.startIndex - node.startIndex);
         // Carry labels through value wrappers, never through call arguments or conditions.
         const carry = sensitive &&
-            (node.type === 'concatenated_string' ||
+            (node.type === 'array' ||
+                node.type === 'object' ||
+                (node.type === 'pair' && child.id === value?.id) ||
+                (node.type === 'unary_expression' && child.id === node.childForFieldName('argument')?.id) ||
+                node.type === 'concatenated_string' ||
                 node.type === 'binary_operator' ||
                 node.type === 'unary_operator' ||
                 (node.type === 'call' && child.id === node.childForFieldName('function')?.id) ||
@@ -625,5 +1118,142 @@ function redactNode(node, sensitive = false) {
         offset = child.endIndex;
     }
     return result + original.slice(offset - node.startIndex);
+}
+/** Sanitize parser-owned payload spans; no SFC boundary is inferred from text matching. */
+async function scrubVueSource(text) {
+    if (!text)
+        return text;
+    const parsed = await parseVueSource(text, true);
+    const fallback = () => (text.startsWith(VUE_FIDELITY_MARKER) ? '' : VUE_FIDELITY_MARKER) + scrubPayload(text);
+    if ('reason' in parsed)
+        return fallback();
+    const { descriptor, nodeTypes: VueNodeTypes } = parsed;
+    const edits = [];
+    let faithful = true;
+    const script = descriptor.scriptSetup ?? descriptor.script;
+    // Reuse exactly the JS/TS AST literal/comment rules, with their existing credential engine.
+    const grammar = await loadGrammar(script?.lang === 'ts' ? 'typescript' : 'javascript');
+    if ('unavailable' in grammar)
+        return fallback();
+    const parser = new Parser();
+    parser.setLanguage(grammar.ok.language);
+    const syntaxPayload = (source, sensitive = false, expression = false, decoded = source) => {
+        if (decoded !== source) {
+            const clean = syntaxPayload(decoded, sensitive, expression);
+            if (clean === decoded)
+                return source;
+            faithful = false;
+            // Entity decoding has no raw literal-span proof. Keep valid HTML and withhold graph facts.
+            if (JSON.stringify(clean.match(/\r\n|\r|\n/g)) !== JSON.stringify(source.match(/\r\n|\r|\n/g)))
+                return literalPayload(source, true);
+            return clean
+                .replace(/&/g, '&amp;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;');
+        }
+        const prefix = expression ? `const ${sensitive ? 'password' : '__mnemonik_vue'} = (` : '';
+        const suffix = expression ? '\n);' : '';
+        const full = prefix + source + suffix;
+        const tree = parser.parse(full);
+        try {
+            if (!tree || tree.rootNode.hasError) {
+                const clean = sensitive ? redactSecretValue(source) : scrubPayload(source);
+                // Unsupported sensitive values cannot establish source fidelity.
+                if (!expression || sensitive || clean !== source)
+                    faithful = false;
+                return clean;
+            }
+            const clean = full.slice(0, tree.rootNode.startIndex) +
+                redactNode(tree.rootNode) +
+                full.slice(tree.rootNode.endIndex);
+            return clean.slice(prefix.length, clean.length - suffix.length);
+        }
+        finally {
+            tree?.delete();
+        }
+    };
+    const edit = (start, end, clean) => {
+        edits.push({ start, end, clean });
+    };
+    try {
+        if (script)
+            edit(script.loc.start.offset, script.loc.end.offset, syntaxPayload(script.content));
+        walkVueTemplate(parsed, (node) => {
+            if (node.type === VueNodeTypes.TEXT)
+                edit(node.loc.start.offset, node.loc.end.offset, literalPayload(node.loc.source, false));
+            if (node.type === VueNodeTypes.COMMENT)
+                edit(node.loc.start.offset, node.loc.end.offset, '<!--' + scrubPayload(node.loc.source.slice(4, -3)) + '-->');
+            if (node.type === VueNodeTypes.INTERPOLATION &&
+                node.content.type === VueNodeTypes.SIMPLE_EXPRESSION)
+                edit(node.content.loc.start.offset, node.content.loc.end.offset, syntaxPayload(node.content.loc.source, false, true, node.content.content));
+            if (node.type !== VueNodeTypes.ELEMENT)
+                return;
+            for (const prop of node.props) {
+                if (prop.type === VueNodeTypes.ATTRIBUTE && prop.value) {
+                    const raw = prop.value.loc.source;
+                    const quoted = raw.startsWith('"') || raw.startsWith("'");
+                    edit(prop.value.loc.start.offset, prop.value.loc.end.offset, quoted
+                        ? raw.slice(0, 1) +
+                            literalPayload(raw.slice(1, -1), SECRET_LABEL_RE.test(prop.name)) +
+                            raw.slice(-1)
+                        : literalPayload(raw, SECRET_LABEL_RE.test(prop.name)));
+                }
+                if (prop.type !== VueNodeTypes.DIRECTIVE)
+                    continue;
+                if (prop.exp?.type === VueNodeTypes.SIMPLE_EXPRESSION)
+                    edit(prop.exp.loc.start.offset, prop.exp.loc.end.offset, syntaxPayload(prop.exp.loc.source, prop.arg?.type === VueNodeTypes.SIMPLE_EXPRESSION &&
+                        prop.arg.isStatic &&
+                        SECRET_LABEL_RE.test(prop.arg.content), true, prop.exp.content));
+                if (prop.arg?.type === VueNodeTypes.SIMPLE_EXPRESSION && !prop.arg.isStatic)
+                    edit(prop.arg.loc.start.offset, prop.arg.loc.end.offset, syntaxPayload(prop.arg.loc.source, false, true, prop.arg.content));
+            }
+        });
+        for (const style of descriptor.styles) {
+            const clean = scrubPayload(style.content);
+            // No CSS/preprocessor AST proof is claimed. Changed opaque content blocks graph publication.
+            if (clean !== style.content)
+                faithful = false;
+            edit(style.loc.start.offset, style.loc.end.offset, clean);
+        }
+        // Descriptor gaps contain outer tags/comments, not executable script/template bodies.
+        // Policy still applies there; altered opaque boundaries cannot establish graph fidelity.
+        const blocks = [script, descriptor.template, ...descriptor.styles]
+            .filter((b) => b !== null && b !== undefined)
+            .sort((a, b) => a.loc.start.offset - b.loc.start.offset);
+        let gapStart = 0;
+        for (const block of blocks) {
+            const gap = text.slice(gapStart, block.loc.start.offset);
+            const clean = scrubPayload(gap);
+            if (clean !== gap)
+                faithful = false;
+            edit(gapStart, block.loc.start.offset, clean);
+            gapStart = block.loc.end.offset;
+        }
+        const tail = text.slice(gapStart);
+        const cleanTail = scrubPayload(tail);
+        if (cleanTail !== tail)
+            faithful = false;
+        edit(gapStart, text.length, cleanTail);
+        edits.sort((a, b) => b.start - a.start);
+        let clean = text;
+        let boundary = text.length;
+        for (const e of edits) {
+            if (e.end > boundary)
+                return fallback();
+            clean = clean.slice(0, e.start) + e.clean + clean.slice(e.end);
+            boundary = e.start;
+        }
+        if ('reason' in (await parseVueSource(clean)))
+            faithful = false;
+        return faithful || clean.startsWith(VUE_FIDELITY_MARKER) ? clean : VUE_FIDELITY_MARKER + clean;
+    }
+    catch {
+        return fallback();
+    }
+    finally {
+        parser.delete();
+    }
 }
 //# sourceMappingURL=sourceRedaction.js.map

@@ -57,7 +57,12 @@
 
 import type { Node, Query, Tree } from 'web-tree-sitter';
 import { Parser } from 'web-tree-sitter';
-import { loadGrammar, type AstLanguageId, type GrammarBinding } from './grammars.js';
+import {
+  loadGrammar,
+  objcppSyntaxIssue,
+  type AstLanguageId,
+  type GrammarBinding,
+} from './grammars.js';
 
 export interface AstChunk {
   /** Verbatim contiguous source: exactly the lines `startLine..endLine`. */
@@ -298,6 +303,10 @@ export async function chunkWithAst(
   const parseMs = performance.now() - startedAt;
 
   try {
+    if (languageId === 'objcpp') {
+      const issue = objcppSyntaxIssue(tree.rootNode);
+      if (issue) return { unsupported: 'parse_failed', detail: issue };
+    }
     const lines = content.split('\n');
     // A trailing newline TERMINATES the last line, it does not open a new one,
     // but `split` yields a phantom '' for it. Dropping it here - before

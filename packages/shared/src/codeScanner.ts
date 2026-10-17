@@ -532,6 +532,7 @@ const EXTENSION_LANGUAGES: Readonly<Record<string, string>> = {
  * preference) need the same answer without constructing a scanner.
  */
 export function languageForExtension(filePathOrExt: string): string {
+  if (isCmakeListsPath(filePathOrExt)) return 'cmake';
   // `extname` FIRST. A dotfile that carries a real extension ('.eslintrc.js',
   // '.mocharc.cjs', '.prettierrc.ts') starts with '.' and contains no '/', so
   // a bare-extension-first reading swallowed the whole name and answered
@@ -566,6 +567,9 @@ const isMigrationSqlAuthorityPath = (posixRelPath: string): boolean =>
 /** Content-only build authority, shared by scanner collection and server admission. */
 export const XCODE_AUTHORITY_PATH = /(?:^|\/)[^/]+\.xcodeproj\/project\.pbxproj$|\.xcconfig$/;
 export const isXcodeAuthorityPath = (path: string): boolean => XCODE_AUTHORITY_PATH.test(path);
+/** Exact CMake build entrypoint; ordinary .txt files remain outside collection. */
+export const CMAKE_LISTS_PATH = /(?:^|\/)CMakeLists\.txt$/;
+export const isCmakeListsPath = (path: string): boolean => CMAKE_LISTS_PATH.test(path);
 
 /**
  * Predicates for paths whose verbatim content is ALREADY shipped by
@@ -587,6 +591,7 @@ export const isXcodeAuthorityPath = (path: string): boolean => XCODE_AUTHORITY_P
 const AUTHORITY_ONLY_PATH_PREDICATES: readonly ((posixRelPath: string) => boolean)[] = [
   isMigrationSqlAuthorityPath,
   isXcodeAuthorityPath,
+  isCmakeListsPath,
 ];
 
 /**
@@ -633,6 +638,7 @@ export const AUTHORITY_FILE_MATCHERS: Array<(relPath: string) => boolean> = [
   // collection and the chunking exclusion cannot disagree.
   isMigrationSqlAuthorityPath,
   isXcodeAuthorityPath,
+  isCmakeListsPath,
 ];
 
 /**
