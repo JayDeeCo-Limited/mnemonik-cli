@@ -5,6 +5,7 @@ import { cp, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/pr
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { gzipSync } from 'node:zlib';
 import { afterAll, beforeAll, expect, it } from 'vitest';
 import { guardNpmLaunch, installBootstrap, npmSource, unpack } from '../src/runtime/bootstrap.js';
 import { RuntimeStore, hash } from '../src/runtime/store.js';
@@ -138,6 +139,73 @@ async function installFixture(name: string) {
   });
   return { prefix, state, cache, env: { ...process.env, MNEMONIK_STATE_DIR: state } };
 }
+
+// Fixed tar controls keep every header checksum valid so rejection exercises the intended guard.
+function archive(entries: Array<{ name: string; kind?: string; body?: string }>) {
+  const blocks: Buffer[] = [];
+  for (const entry of entries) {
+    const header = Buffer.alloc(512),
+      body = Buffer.from(entry.body ?? '');
+    header.write(entry.name, 0, 100, 'utf8');
+    header.write(body.length.toString(8).padStart(11, '0') + '\0', 124, 12, 'ascii');
+    header.fill(32, 148, 156);
+    header.write(entry.kind ?? '0', 156, 1, 'ascii');
+    header.write('ustar\0', 257, 6, 'ascii');
+    header.write(
+      [...header]
+        .reduce((sum, byte) => sum + byte, 0)
+        .toString(8)
+        .padStart(6, '0') + '\0 ',
+      148,
+      8,
+      'ascii'
+    );
+    blocks.push(header, body, Buffer.alloc((512 - (body.length % 512)) % 512));
+  }
+  return gzipSync(Buffer.concat([...blocks, Buffer.alloc(1024)]));
+}
+
+it('reads the genuine DefinitelyTyped root shape and the standard npm root without changing package bytes', () => {
+  const manifest = JSON.stringify({ name: '@types/estree', version: '1.0.9' });
+  const files = unpack(
+    archive([
+      { name: 'estree/', kind: '5' },
+      { name: 'estree/LICENSE', body: 'license' },
+      { name: 'estree/index.d.ts', body: 'export interface Node {}' },
+      { name: 'estree/package.json', body: manifest },
+    ])
+  );
+  expect(Object.keys(files)).toEqual(['LICENSE', 'index.d.ts', 'package.json']);
+  expect(files['package.json']).toEqual(Buffer.from(manifest));
+  expect(
+    unpack(archive([{ name: 'package/package.json', body: manifest }]))['package.json']
+  ).toEqual(Buffer.from(manifest));
+});
+
+it.each([
+  ['wrong manifest identity', [{ name: 'estree/package.json', body: '{"name":"other"}' }]],
+  ['wrong types identity', [{ name: 'estree/package.json', body: '{"name":"@types/other"}' }]],
+  ['missing manifest', [{ name: 'estree/index.d.ts' }]],
+  ['invalid manifest', [{ name: 'estree/package.json', body: '{' }]],
+  [
+    'mixed roots',
+    [{ name: 'estree/package.json', body: '{"name":"@types/estree"}' }, { name: 'package/escape' }],
+  ],
+  ['traversal', [{ name: 'package/../escape' }]],
+  ['directory traversal', [{ name: 'package/../escape', kind: '5' }]],
+  ['absolute path', [{ name: '/package/escape' }]],
+  ['symlink', [{ name: 'package/link', kind: '2' }]],
+  ['hard link', [{ name: 'package/link', kind: '1' }]],
+  ['extended header', [{ name: 'package/metadata', kind: 'x' }]],
+  ['duplicate path', [{ name: 'package/file' }, { name: 'package/file' }]],
+] satisfies Array<[string, Array<{ name: string; kind?: string; body?: string }>]>)(
+  'rejects %s archive entries',
+  (_label, entries) => {
+    expect(() => unpack(archive(entries))).toThrow(
+      expect.objectContaining({ reason: 'permission' })
+    );
+  }
+);
 
 it('every packed publishable package has no install lifecycle scripts', async () => {
   for (const name of names) {

@@ -1,9 +1,10 @@
-import { execFileSync } from 'node:child_process';
-import { generateKeyPairSync, randomBytes, sign } from 'node:crypto';
+import childProcess, { execFileSync } from 'node:child_process';
+import { syncBuiltinESMExports } from 'node:module';
+import { createHash, generateKeyPairSync, randomBytes, sign } from 'node:crypto';
 import { cp, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   hostNpmSource,
   RuntimeStore,
@@ -44,7 +45,7 @@ describe('release-pinned host closures', () => {
     fixture = await packedHosts();
   }, 30_000);
   afterAll(async () => {
-    await rm(fixture.root, { recursive: true, force: true });
+    if (fixture) await rm(fixture.root, { recursive: true, force: true });
   });
 
   it('is regenerated from the lockfile without ranges or dependency drift', async () => {
@@ -120,6 +121,23 @@ describe('release-pinned host closures', () => {
         'nanoid',
         'picocolors',
         'ignore',
+        'svelte',
+        '@jridgewell/remapping',
+        '@jridgewell/gen-mapping',
+        '@jridgewell/trace-mapping',
+        '@jridgewell/resolve-uri',
+        '@sveltejs/acorn-typescript',
+        '@types/estree',
+        'acorn',
+        'aria-query',
+        'axobject-query',
+        'clsx',
+        'devalue',
+        'esm-env',
+        'esrap',
+        'is-reference',
+        'locate-character',
+        'zimmerframe',
         'web-tree-sitter',
         'proper-lockfile',
         'graceful-fs',
@@ -153,6 +171,7 @@ describe('release-pinned host closures', () => {
     }
   }, 30_000);
 
+  // Verify the expanded real closure, including every file fsync, within a bounded 30s.
   it('installs exact packages and refuses a closure integrity mismatch before installation', async () => {
     const state = await mkdtemp(join(tmpdir(), 'host-closure-'));
     try {
@@ -174,6 +193,23 @@ describe('release-pinned host closures', () => {
         packages: fixture.pins.codex.closure,
       });
 
+      // Resolve from the installed packed closure, outside the repository's node_modules.
+      const proof = execFileSync(
+        process.execPath,
+        [
+          '--input-type=module',
+          '--eval',
+          `
+        const {parse} = await import('svelte/compiler');
+        const shared = await import('@mnemonik/shared');
+        const ast = parse('<script>function leaf() {}</script><p>hello</p>', {modern:true});
+        console.log(JSON.stringify({component:!!ast.instance, shared:typeof shared.scrubSourceSecrets}));
+      `,
+        ],
+        { cwd: installed.directory, env: { ...process.env, NODE_PATH: '' }, encoding: 'utf8' }
+      );
+      expect(JSON.parse(proof)).toEqual({ component: true, shared: 'function' });
+
       const bad = structuredClone(fixture.pins.codex);
       bad.closure[1]!.integrity = 'sha512-' + Buffer.alloc(64).toString('base64');
       const empty = join(state, 'empty');
@@ -189,7 +225,106 @@ describe('release-pinned host closures', () => {
     } finally {
       await rm(state, { recursive: true, force: true });
     }
-  }, 15_000);
+  }, 30_000);
+
+  it.each(['prepare', 'preinstall', 'install', 'postinstall', 'optionalDependencies'] as const)(
+    'accepts only inert prepare metadata and retains the %s boundary without running package scripts or npm install',
+    async (hook) => {
+      const root = await mkdtemp(join(tmpdir(), 'host-lifecycle-'));
+      const marker = join(root, 'executed');
+      const name = '@mnemonik/codex-hooks',
+        version = '1.2.3';
+      try {
+        const scripts = {
+          prepare: 'node prepare.cjs',
+          ...(hook !== 'prepare' && hook !== 'optionalDependencies'
+            ? { [hook]: 'node prepare.cjs' }
+            : {}),
+        };
+        await writeFile(
+          join(root, 'package.json'),
+          JSON.stringify({
+            name,
+            version,
+            scripts,
+            ...(hook === 'optionalDependencies'
+              ? { optionalDependencies: { other: '1.0.0' } }
+              : {}),
+          })
+        );
+        await writeFile(
+          join(root, 'prepare.cjs'),
+          `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'ran');`
+        );
+        await mkdir(join(root, 'dist'));
+        await writeFile(join(root, 'dist/hook.js'), 'throw new Error("must not execute");');
+        // Fixed synthetic control only; genuine dependency tarballs and pinned bytes stay unchanged.
+        const [packed] = JSON.parse(
+          execFileSync(
+            'npm',
+            ['pack', root, '--ignore-scripts', '--json', '--pack-destination', root],
+            { encoding: 'utf8' }
+          )
+        ) as Array<{ filename: string }>;
+        if (!packed) throw new Error('missing fixed lifecycle package');
+        const tarball = await readFile(join(root, packed.filename));
+        const integrity = 'sha512-' + createHash('sha512').update(tarball).digest('base64');
+        const pin: HostPackagePin = {
+          package: name,
+          version,
+          closure: [{ name, version, integrity }],
+        };
+        const address = `https://registry.npmjs.org/${encodeURIComponent(name)}/archive.tgz`;
+        const requests: string[] = [];
+        const fetcher: typeof fetch = async (input) => {
+          requests.push(String(input));
+          return String(input) === address
+            ? new Response(new Uint8Array(tarball))
+            : Response.json({ name, version, dist: { integrity, tarball: address } });
+        };
+        await expect(stat(marker)).rejects.toMatchObject({ code: 'ENOENT' });
+        const methods = [
+          'exec',
+          'execFile',
+          'execSync',
+          'execFileSync',
+          'spawn',
+          'spawnSync',
+          'fork',
+        ] as const;
+        const processes = methods.map((method) =>
+          vi.spyOn(childProcess, method).mockImplementation(() => {
+            throw new Error('hostNpmSource must not start a process');
+          })
+        );
+        syncBuiltinESMExports();
+        try {
+          if (hook === 'prepare') {
+            const source = await hostNpmSource('codex', pin, fetcher);
+            expect(
+              JSON.parse(source.files[`node_modules/${name}/package.json`]!.toString()).scripts
+            ).toEqual(scripts);
+            expect(source.files[`node_modules/${name}/prepare.cjs`]?.toString()).toContain(marker);
+          } else
+            await expect(hostNpmSource('codex', pin, fetcher)).rejects.toMatchObject({
+              reason: 'unsigned',
+            });
+          expect(processes.every((process) => process.mock.calls.length === 0)).toBe(true);
+          expect(requests).toEqual([
+            `https://registry.npmjs.org/${encodeURIComponent(name)}/${version}`,
+            address,
+          ]);
+          await expect(stat(marker)).rejects.toMatchObject({ code: 'ENOENT' });
+        } finally {
+          for (const process of processes) process.mockRestore();
+          syncBuiltinESMExports();
+        }
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+    10_000
+  );
 
   it('checks the hook package against its signed release entry before registry access', async () => {
     const key = signingKey();

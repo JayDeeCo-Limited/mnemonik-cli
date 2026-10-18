@@ -1,6 +1,6 @@
 {
   "name": "@mnemonik/cli",
-  "version": "0.1.162",
+  "version": "0.1.163",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/JayDeeCo-Limited/mnemonik-cli.git"
@@ -28,9 +28,9 @@
     "prepack": "node ../../scripts/host-closure.mjs"
   },
   "dependencies": {
-    "@mnemonik/credentials": "0.1.162",
-    "@mnemonik/local-setup": "0.1.162",
-    "@mnemonik/shared": "7.144.2",
+    "@mnemonik/credentials": "0.1.163",
+    "@mnemonik/local-setup": "0.1.163",
+    "@mnemonik/shared": "7.145.0",
     "smol-toml": "^1.9.0"
   },
   "devDependencies": {
@@ -44,27 +44,27 @@
     "hosts": {
       "claude-code": {
         "package": "@mnemonik/claude-code-hooks",
-        "version": "0.9.341",
+        "version": "0.9.342",
         "closure": [
           {
             "name": "@mnemonik/claude-code-hooks",
-            "version": "0.9.341",
-            "integrity": "sha512-721+uvS8HOf0p/kjAC3645ftAEiCAwlycy9Mo4aUpJ74IRIdISpR15GWJK6hZVe7Qd37P34ww/E5idxgCEhfVg=="
+            "version": "0.9.342",
+            "integrity": "sha512-N8eJ5/9qnoPex5I5Fua2CnalELz9FBg+fT4Mywc2xCi1WVK8c759F7sE+HV/qsmKgVlKbcMj3G0fX6qNkxSHfQ=="
           },
           {
             "name": "@mnemonik/credentials",
-            "version": "0.1.162",
-            "integrity": "sha512-Rh+wGjnueX6Ohwvr2L0mdoZijbAcqvkBS+hcVsL2tVd2wGekVPcWQg8slk+50hzVA8KNMbCSPV+u0IMlGtUVZw=="
+            "version": "0.1.163",
+            "integrity": "sha512-LFQVMnetdS02Y4F9JRQKXXXvEJ6phOTjJX43OLMBXZh1MhvfVRaOkMXhZ49lkbLuDfuETAeOC3g4oqR4zm8CiA=="
           },
           {
             "name": "@mnemonik/local-setup",
-            "version": "0.1.162",
-            "integrity": "sha512-t+RCb7wpk7pcxaTBVd6S6EbKD119El+T3KzGflNPeLh6iR9plKUARpKkVWb4iTVtwGAeDjONZVbeAt+1mLq96w=="
+            "version": "0.1.163",
+            "integrity": "sha512-vvgDJxi/pi/qCWaU7H/LhqNpgAhvOXFdj66feWVrmybL646/Nr0gGwMWXdu61C/jAku7aIMlc8V3TlUUoYrkQQ=="
           },
           {
             "name": "@mnemonik/shared",
-            "version": "7.144.2",
-            "integrity": "sha512-FsVUJheHFFacqYiWC7Yvfnb/LnTba7cIhntkD6Ph3xqSU36djdKGIIXTe3Qx3n2IkAqqRF5wIcwrnaKmknf7Tw=="
+            "version": "7.145.0",
+            "integrity": "sha512-XJ+aLklGa809FKJOFVsdQ+UHk6gy6HMMhiJbny4IIj2fJrt7IFh5dZbBA5w8NDAOjfIhNk40fr9qRY7f5iexBQ=="
           },
           {
             "name": "@vue/compiler-core",
@@ -155,6 +155,91 @@
             "name": "ignore",
             "version": "7.0.12",
             "integrity": "sha512-/8UvqAPU9DGTI9k4mxtf49U37Isfwr8Uts96+SBHIkFxPJnHS0Ew4f00sM4Scd8V8EjM0jUNtVDdv1kPdt35lg=="
+          },
+          {
+            "name": "svelte",
+            "version": "5.57.2",
+            "integrity": "sha512-1YiPCAXT0Ct6g1vOMmSLa0Nsc3QRMvtDF32ihgglGVrugIuIK38RyDiFNXVDhtQ81TJjSO57NdMw6DyYLqSGDQ=="
+          },
+          {
+            "name": "@jridgewell/remapping",
+            "version": "2.3.5",
+            "integrity": "sha512-LI9u/+laYG4Ds1TDKSJW2YPrIlcVYOwi2fUC6xB43lueCjgxV4lffOCZCtYFiH6TNOX+tQKXx97T4IKHbhyHEQ=="
+          },
+          {
+            "name": "@jridgewell/gen-mapping",
+            "version": "0.3.13",
+            "integrity": "sha512-2kkt/7niJ6MgEPxF0bYdQ6etZaA+fQvDcLKckhy1yIQOzaoKjBBjSj63/aLVjYE3qhRt5dvM+uUyfCg6UKCBbA=="
+          },
+          {
+            "name": "@jridgewell/trace-mapping",
+            "version": "0.3.31",
+            "integrity": "sha512-zzNR+SdQSDJzc8joaeP8QQoCQr8NuYx2dIIytl1QeBEZHJ9uW6hebsrYgbz8hJwUQao3TWCMtmfV8Nu1twOLAw=="
+          },
+          {
+            "name": "@jridgewell/resolve-uri",
+            "version": "3.1.2",
+            "integrity": "sha512-bRISgCIjP20/tbWSPWMEi54QVPRZExkuD9lJL+UIxUKtwVJA8wW1Trb1jMs1RFXo1CBTNZ/5hpC9QvmKWdopKw=="
+          },
+          {
+            "name": "@sveltejs/acorn-typescript",
+            "version": "1.0.13",
+            "integrity": "sha512-wgKggnhZVL9Bfx1OaKKTrYY9BFRk6C8UAkQNUcIv1+llzYrIqy+RZm5HPKzn0NpEBvTVhTqB4kQyllZywsRBRQ=="
+          },
+          {
+            "name": "@types/estree",
+            "version": "1.0.9",
+            "integrity": "sha512-GhdPgy1el4/ImP05X05Uw4cw2/M93BCUmnEvWZNStlCzEKME4Fkk+YpoA5OiHNQmoS7Cafb8Xa3Pya8m1Qrzeg=="
+          },
+          {
+            "name": "acorn",
+            "version": "8.19.0",
+            "integrity": "sha512-oJlA3XiRm7Cyk6qFD2Jn8ak9B7jSy0qy00ADO3+8dpT0LSjFihQYv4C02LFCSYJV3Q37xYwwRy5m+IpIiUzqWw=="
+          },
+          {
+            "name": "aria-query",
+            "version": "5.3.1",
+            "integrity": "sha512-Z/ZeOgVl7bcSYZ/u/rh0fOpvEpq//LZmdbkXyc7syVzjPAhfOa9ebsdTSjEBDU4vs5nC98Kfduj1uFo0qyET3g=="
+          },
+          {
+            "name": "axobject-query",
+            "version": "4.1.0",
+            "integrity": "sha512-qIj0G9wZbMGNLjLmg1PT6v2mE9AH2zlnADJD/2tC6E00hgmhUOfEB6greHPAfLRSufHqROIUTkw6E+M3lH0PTQ=="
+          },
+          {
+            "name": "clsx",
+            "version": "2.1.1",
+            "integrity": "sha512-eYm0QWBtUrBWZWG0d386OGAw16Z995PiOVo2B7bjWSbHedGl5e0ZWaq65kOGgUSNesEIDkB9ISbTg/JK9dhCZA=="
+          },
+          {
+            "name": "devalue",
+            "version": "5.9.4",
+            "integrity": "sha512-sPAT4pztbu6586/hrhOnMKS17IJrvg12mXiSPSS3W5qDeN2RGgvZ0diZCm31dBbnevfVmujNO3IM2wrS4Y2Rhg=="
+          },
+          {
+            "name": "esm-env",
+            "version": "1.2.2",
+            "integrity": "sha512-Epxrv+Nr/CaL4ZcFGPJIYLWFom+YeV1DqMLHJoEd9SYRxNbaFruBwfEX/kkHUJf55j2+TUbmDcmuilbP1TmXHA=="
+          },
+          {
+            "name": "esrap",
+            "version": "2.4.0",
+            "integrity": "sha512-CQPcneEHw/czj32uwQC52nYnax8H4SXt25FCM+LIwGZ49cMIxpOj3bP8wmzcI+Z0HIy5KkClaPhRLfCySzwHPA=="
+          },
+          {
+            "name": "is-reference",
+            "version": "3.0.3",
+            "integrity": "sha512-ixkJoqQvAP88E6wLydLGGqCJsrFUnqoH6HnaczB8XmDH1oaWU+xxdptvikTgaEhtZ53Ky6YXiBuUI2WXLMCwjw=="
+          },
+          {
+            "name": "locate-character",
+            "version": "3.0.0",
+            "integrity": "sha512-SW13ws7BjaeJ6p7Q6CO2nchbYEc3X3J6WrmTTDto7yMPqVSZTUyY5Tjbid+Ab8gLnATtygYtiDIJGQRRn2ZOiA=="
+          },
+          {
+            "name": "zimmerframe",
+            "version": "1.1.5",
+            "integrity": "sha512-msJxIvYDYcoNL+PJsu+7qmpDWsYmAxTY+2TNYXXF0hzBzBk0BMecOqDOG/EckUoKCuKwObfbugIl8QpqHDXeFA=="
           },
           {
             "name": "web-tree-sitter",
@@ -185,27 +270,27 @@
       },
       "codex": {
         "package": "@mnemonik/codex-hooks",
-        "version": "0.8.310",
+        "version": "0.8.311",
         "closure": [
           {
             "name": "@mnemonik/codex-hooks",
-            "version": "0.8.310",
-            "integrity": "sha512-/3lDS/YanVznMxl/iqIVcaKAezSOpyHaiYgSqTGlGtemVv6ZFgjtpimGHCpRDU336G3Y0Bkw83jtXvoHbj5xfA=="
+            "version": "0.8.311",
+            "integrity": "sha512-JLTVgJyqfljTCIGZORTieajWG1+7EOx39C4yN5dkWgexIl9fxlq59FB+bOS3dJC1kkia8lq4QE/TaBCuQcUiww=="
           },
           {
             "name": "@mnemonik/credentials",
-            "version": "0.1.162",
-            "integrity": "sha512-Rh+wGjnueX6Ohwvr2L0mdoZijbAcqvkBS+hcVsL2tVd2wGekVPcWQg8slk+50hzVA8KNMbCSPV+u0IMlGtUVZw=="
+            "version": "0.1.163",
+            "integrity": "sha512-LFQVMnetdS02Y4F9JRQKXXXvEJ6phOTjJX43OLMBXZh1MhvfVRaOkMXhZ49lkbLuDfuETAeOC3g4oqR4zm8CiA=="
           },
           {
             "name": "@mnemonik/local-setup",
-            "version": "0.1.162",
-            "integrity": "sha512-t+RCb7wpk7pcxaTBVd6S6EbKD119El+T3KzGflNPeLh6iR9plKUARpKkVWb4iTVtwGAeDjONZVbeAt+1mLq96w=="
+            "version": "0.1.163",
+            "integrity": "sha512-vvgDJxi/pi/qCWaU7H/LhqNpgAhvOXFdj66feWVrmybL646/Nr0gGwMWXdu61C/jAku7aIMlc8V3TlUUoYrkQQ=="
           },
           {
             "name": "@mnemonik/shared",
-            "version": "7.144.2",
-            "integrity": "sha512-FsVUJheHFFacqYiWC7Yvfnb/LnTba7cIhntkD6Ph3xqSU36djdKGIIXTe3Qx3n2IkAqqRF5wIcwrnaKmknf7Tw=="
+            "version": "7.145.0",
+            "integrity": "sha512-XJ+aLklGa809FKJOFVsdQ+UHk6gy6HMMhiJbny4IIj2fJrt7IFh5dZbBA5w8NDAOjfIhNk40fr9qRY7f5iexBQ=="
           },
           {
             "name": "@vue/compiler-core",
@@ -296,6 +381,91 @@
             "name": "ignore",
             "version": "7.0.12",
             "integrity": "sha512-/8UvqAPU9DGTI9k4mxtf49U37Isfwr8Uts96+SBHIkFxPJnHS0Ew4f00sM4Scd8V8EjM0jUNtVDdv1kPdt35lg=="
+          },
+          {
+            "name": "svelte",
+            "version": "5.57.2",
+            "integrity": "sha512-1YiPCAXT0Ct6g1vOMmSLa0Nsc3QRMvtDF32ihgglGVrugIuIK38RyDiFNXVDhtQ81TJjSO57NdMw6DyYLqSGDQ=="
+          },
+          {
+            "name": "@jridgewell/remapping",
+            "version": "2.3.5",
+            "integrity": "sha512-LI9u/+laYG4Ds1TDKSJW2YPrIlcVYOwi2fUC6xB43lueCjgxV4lffOCZCtYFiH6TNOX+tQKXx97T4IKHbhyHEQ=="
+          },
+          {
+            "name": "@jridgewell/gen-mapping",
+            "version": "0.3.13",
+            "integrity": "sha512-2kkt/7niJ6MgEPxF0bYdQ6etZaA+fQvDcLKckhy1yIQOzaoKjBBjSj63/aLVjYE3qhRt5dvM+uUyfCg6UKCBbA=="
+          },
+          {
+            "name": "@jridgewell/trace-mapping",
+            "version": "0.3.31",
+            "integrity": "sha512-zzNR+SdQSDJzc8joaeP8QQoCQr8NuYx2dIIytl1QeBEZHJ9uW6hebsrYgbz8hJwUQao3TWCMtmfV8Nu1twOLAw=="
+          },
+          {
+            "name": "@jridgewell/resolve-uri",
+            "version": "3.1.2",
+            "integrity": "sha512-bRISgCIjP20/tbWSPWMEi54QVPRZExkuD9lJL+UIxUKtwVJA8wW1Trb1jMs1RFXo1CBTNZ/5hpC9QvmKWdopKw=="
+          },
+          {
+            "name": "@sveltejs/acorn-typescript",
+            "version": "1.0.13",
+            "integrity": "sha512-wgKggnhZVL9Bfx1OaKKTrYY9BFRk6C8UAkQNUcIv1+llzYrIqy+RZm5HPKzn0NpEBvTVhTqB4kQyllZywsRBRQ=="
+          },
+          {
+            "name": "@types/estree",
+            "version": "1.0.9",
+            "integrity": "sha512-GhdPgy1el4/ImP05X05Uw4cw2/M93BCUmnEvWZNStlCzEKME4Fkk+YpoA5OiHNQmoS7Cafb8Xa3Pya8m1Qrzeg=="
+          },
+          {
+            "name": "acorn",
+            "version": "8.19.0",
+            "integrity": "sha512-oJlA3XiRm7Cyk6qFD2Jn8ak9B7jSy0qy00ADO3+8dpT0LSjFihQYv4C02LFCSYJV3Q37xYwwRy5m+IpIiUzqWw=="
+          },
+          {
+            "name": "aria-query",
+            "version": "5.3.1",
+            "integrity": "sha512-Z/ZeOgVl7bcSYZ/u/rh0fOpvEpq//LZmdbkXyc7syVzjPAhfOa9ebsdTSjEBDU4vs5nC98Kfduj1uFo0qyET3g=="
+          },
+          {
+            "name": "axobject-query",
+            "version": "4.1.0",
+            "integrity": "sha512-qIj0G9wZbMGNLjLmg1PT6v2mE9AH2zlnADJD/2tC6E00hgmhUOfEB6greHPAfLRSufHqROIUTkw6E+M3lH0PTQ=="
+          },
+          {
+            "name": "clsx",
+            "version": "2.1.1",
+            "integrity": "sha512-eYm0QWBtUrBWZWG0d386OGAw16Z995PiOVo2B7bjWSbHedGl5e0ZWaq65kOGgUSNesEIDkB9ISbTg/JK9dhCZA=="
+          },
+          {
+            "name": "devalue",
+            "version": "5.9.4",
+            "integrity": "sha512-sPAT4pztbu6586/hrhOnMKS17IJrvg12mXiSPSS3W5qDeN2RGgvZ0diZCm31dBbnevfVmujNO3IM2wrS4Y2Rhg=="
+          },
+          {
+            "name": "esm-env",
+            "version": "1.2.2",
+            "integrity": "sha512-Epxrv+Nr/CaL4ZcFGPJIYLWFom+YeV1DqMLHJoEd9SYRxNbaFruBwfEX/kkHUJf55j2+TUbmDcmuilbP1TmXHA=="
+          },
+          {
+            "name": "esrap",
+            "version": "2.4.0",
+            "integrity": "sha512-CQPcneEHw/czj32uwQC52nYnax8H4SXt25FCM+LIwGZ49cMIxpOj3bP8wmzcI+Z0HIy5KkClaPhRLfCySzwHPA=="
+          },
+          {
+            "name": "is-reference",
+            "version": "3.0.3",
+            "integrity": "sha512-ixkJoqQvAP88E6wLydLGGqCJsrFUnqoH6HnaczB8XmDH1oaWU+xxdptvikTgaEhtZ53Ky6YXiBuUI2WXLMCwjw=="
+          },
+          {
+            "name": "locate-character",
+            "version": "3.0.0",
+            "integrity": "sha512-SW13ws7BjaeJ6p7Q6CO2nchbYEc3X3J6WrmTTDto7yMPqVSZTUyY5Tjbid+Ab8gLnATtygYtiDIJGQRRn2ZOiA=="
+          },
+          {
+            "name": "zimmerframe",
+            "version": "1.1.5",
+            "integrity": "sha512-msJxIvYDYcoNL+PJsu+7qmpDWsYmAxTY+2TNYXXF0hzBzBk0BMecOqDOG/EckUoKCuKwObfbugIl8QpqHDXeFA=="
           },
           {
             "name": "web-tree-sitter",
@@ -326,27 +496,27 @@
       },
       "cursor": {
         "package": "@mnemonik/cursor-hooks",
-        "version": "0.7.297",
+        "version": "0.7.298",
         "closure": [
           {
             "name": "@mnemonik/cursor-hooks",
-            "version": "0.7.297",
-            "integrity": "sha512-TFU8UsCN/Dcc5h7e3zkiTZeeusAPao1viJrqD9/V5R1/J6xpQaSGBqXGjBFCwGwGdP4DnRoLplrQR0kVCJjS/A=="
+            "version": "0.7.298",
+            "integrity": "sha512-edWZhjGFbIhOoZLk53u+3kIvSOEuQXHDKv1VpAvBqcUqfd3Q1RNVE3KjQlCyc2yoduSixByeq6Qcqx7sgpxPhQ=="
           },
           {
             "name": "@mnemonik/credentials",
-            "version": "0.1.162",
-            "integrity": "sha512-Rh+wGjnueX6Ohwvr2L0mdoZijbAcqvkBS+hcVsL2tVd2wGekVPcWQg8slk+50hzVA8KNMbCSPV+u0IMlGtUVZw=="
+            "version": "0.1.163",
+            "integrity": "sha512-LFQVMnetdS02Y4F9JRQKXXXvEJ6phOTjJX43OLMBXZh1MhvfVRaOkMXhZ49lkbLuDfuETAeOC3g4oqR4zm8CiA=="
           },
           {
             "name": "@mnemonik/local-setup",
-            "version": "0.1.162",
-            "integrity": "sha512-t+RCb7wpk7pcxaTBVd6S6EbKD119El+T3KzGflNPeLh6iR9plKUARpKkVWb4iTVtwGAeDjONZVbeAt+1mLq96w=="
+            "version": "0.1.163",
+            "integrity": "sha512-vvgDJxi/pi/qCWaU7H/LhqNpgAhvOXFdj66feWVrmybL646/Nr0gGwMWXdu61C/jAku7aIMlc8V3TlUUoYrkQQ=="
           },
           {
             "name": "@mnemonik/shared",
-            "version": "7.144.2",
-            "integrity": "sha512-FsVUJheHFFacqYiWC7Yvfnb/LnTba7cIhntkD6Ph3xqSU36djdKGIIXTe3Qx3n2IkAqqRF5wIcwrnaKmknf7Tw=="
+            "version": "7.145.0",
+            "integrity": "sha512-XJ+aLklGa809FKJOFVsdQ+UHk6gy6HMMhiJbny4IIj2fJrt7IFh5dZbBA5w8NDAOjfIhNk40fr9qRY7f5iexBQ=="
           },
           {
             "name": "@vue/compiler-core",
@@ -437,6 +607,91 @@
             "name": "ignore",
             "version": "7.0.12",
             "integrity": "sha512-/8UvqAPU9DGTI9k4mxtf49U37Isfwr8Uts96+SBHIkFxPJnHS0Ew4f00sM4Scd8V8EjM0jUNtVDdv1kPdt35lg=="
+          },
+          {
+            "name": "svelte",
+            "version": "5.57.2",
+            "integrity": "sha512-1YiPCAXT0Ct6g1vOMmSLa0Nsc3QRMvtDF32ihgglGVrugIuIK38RyDiFNXVDhtQ81TJjSO57NdMw6DyYLqSGDQ=="
+          },
+          {
+            "name": "@jridgewell/remapping",
+            "version": "2.3.5",
+            "integrity": "sha512-LI9u/+laYG4Ds1TDKSJW2YPrIlcVYOwi2fUC6xB43lueCjgxV4lffOCZCtYFiH6TNOX+tQKXx97T4IKHbhyHEQ=="
+          },
+          {
+            "name": "@jridgewell/gen-mapping",
+            "version": "0.3.13",
+            "integrity": "sha512-2kkt/7niJ6MgEPxF0bYdQ6etZaA+fQvDcLKckhy1yIQOzaoKjBBjSj63/aLVjYE3qhRt5dvM+uUyfCg6UKCBbA=="
+          },
+          {
+            "name": "@jridgewell/trace-mapping",
+            "version": "0.3.31",
+            "integrity": "sha512-zzNR+SdQSDJzc8joaeP8QQoCQr8NuYx2dIIytl1QeBEZHJ9uW6hebsrYgbz8hJwUQao3TWCMtmfV8Nu1twOLAw=="
+          },
+          {
+            "name": "@jridgewell/resolve-uri",
+            "version": "3.1.2",
+            "integrity": "sha512-bRISgCIjP20/tbWSPWMEi54QVPRZExkuD9lJL+UIxUKtwVJA8wW1Trb1jMs1RFXo1CBTNZ/5hpC9QvmKWdopKw=="
+          },
+          {
+            "name": "@sveltejs/acorn-typescript",
+            "version": "1.0.13",
+            "integrity": "sha512-wgKggnhZVL9Bfx1OaKKTrYY9BFRk6C8UAkQNUcIv1+llzYrIqy+RZm5HPKzn0NpEBvTVhTqB4kQyllZywsRBRQ=="
+          },
+          {
+            "name": "@types/estree",
+            "version": "1.0.9",
+            "integrity": "sha512-GhdPgy1el4/ImP05X05Uw4cw2/M93BCUmnEvWZNStlCzEKME4Fkk+YpoA5OiHNQmoS7Cafb8Xa3Pya8m1Qrzeg=="
+          },
+          {
+            "name": "acorn",
+            "version": "8.19.0",
+            "integrity": "sha512-oJlA3XiRm7Cyk6qFD2Jn8ak9B7jSy0qy00ADO3+8dpT0LSjFihQYv4C02LFCSYJV3Q37xYwwRy5m+IpIiUzqWw=="
+          },
+          {
+            "name": "aria-query",
+            "version": "5.3.1",
+            "integrity": "sha512-Z/ZeOgVl7bcSYZ/u/rh0fOpvEpq//LZmdbkXyc7syVzjPAhfOa9ebsdTSjEBDU4vs5nC98Kfduj1uFo0qyET3g=="
+          },
+          {
+            "name": "axobject-query",
+            "version": "4.1.0",
+            "integrity": "sha512-qIj0G9wZbMGNLjLmg1PT6v2mE9AH2zlnADJD/2tC6E00hgmhUOfEB6greHPAfLRSufHqROIUTkw6E+M3lH0PTQ=="
+          },
+          {
+            "name": "clsx",
+            "version": "2.1.1",
+            "integrity": "sha512-eYm0QWBtUrBWZWG0d386OGAw16Z995PiOVo2B7bjWSbHedGl5e0ZWaq65kOGgUSNesEIDkB9ISbTg/JK9dhCZA=="
+          },
+          {
+            "name": "devalue",
+            "version": "5.9.4",
+            "integrity": "sha512-sPAT4pztbu6586/hrhOnMKS17IJrvg12mXiSPSS3W5qDeN2RGgvZ0diZCm31dBbnevfVmujNO3IM2wrS4Y2Rhg=="
+          },
+          {
+            "name": "esm-env",
+            "version": "1.2.2",
+            "integrity": "sha512-Epxrv+Nr/CaL4ZcFGPJIYLWFom+YeV1DqMLHJoEd9SYRxNbaFruBwfEX/kkHUJf55j2+TUbmDcmuilbP1TmXHA=="
+          },
+          {
+            "name": "esrap",
+            "version": "2.4.0",
+            "integrity": "sha512-CQPcneEHw/czj32uwQC52nYnax8H4SXt25FCM+LIwGZ49cMIxpOj3bP8wmzcI+Z0HIy5KkClaPhRLfCySzwHPA=="
+          },
+          {
+            "name": "is-reference",
+            "version": "3.0.3",
+            "integrity": "sha512-ixkJoqQvAP88E6wLydLGGqCJsrFUnqoH6HnaczB8XmDH1oaWU+xxdptvikTgaEhtZ53Ky6YXiBuUI2WXLMCwjw=="
+          },
+          {
+            "name": "locate-character",
+            "version": "3.0.0",
+            "integrity": "sha512-SW13ws7BjaeJ6p7Q6CO2nchbYEc3X3J6WrmTTDto7yMPqVSZTUyY5Tjbid+Ab8gLnATtygYtiDIJGQRRn2ZOiA=="
+          },
+          {
+            "name": "zimmerframe",
+            "version": "1.1.5",
+            "integrity": "sha512-msJxIvYDYcoNL+PJsu+7qmpDWsYmAxTY+2TNYXXF0hzBzBk0BMecOqDOG/EckUoKCuKwObfbugIl8QpqHDXeFA=="
           },
           {
             "name": "web-tree-sitter",

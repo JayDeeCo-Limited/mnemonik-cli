@@ -24,7 +24,7 @@ export const FIXTURE_HOST_VERSIONS = {
 export async function packedHosts() {
   const root = await mkdtemp(join(tmpdir(), 'host-packs-'));
   const packs = new Map<string, { version: string; bytes: Buffer }>();
-  for (const path of [
+  const paths = [
     ...hostOrder.map((h) => resolve('..', `${h}-hooks`)),
     resolve('../shared'),
     resolve('../credentials'),
@@ -35,6 +35,23 @@ export async function packedHosts() {
     resolve('../../node_modules/ignore'),
     resolve('../../node_modules/web-tree-sitter'),
     ...[
+      'svelte',
+      '@jridgewell/remapping',
+      '@jridgewell/gen-mapping',
+      '@jridgewell/trace-mapping',
+      '@jridgewell/resolve-uri',
+      '@sveltejs/acorn-typescript',
+      '@types/estree',
+      'acorn',
+      'aria-query',
+      'axobject-query',
+      'clsx',
+      'devalue',
+      'esm-env',
+      'esrap',
+      'is-reference',
+      'locate-character',
+      'zimmerframe',
       '@vue/compiler-core',
       '@vue/compiler-sfc',
       '@vue/compiler-dom',
@@ -53,21 +70,27 @@ export async function packedHosts() {
       'nanoid',
       'picocolors',
     ].map((name) => resolve('../../node_modules', name)),
-  ]) {
-    const pkg = JSON.parse(await readFile(join(path, 'package.json'), 'utf8')) as {
-      name: string;
-      version: string;
-    };
-    const { stdout } = await promisify(execFile)('npm', [
-      'pack',
-      path,
-      '--ignore-scripts',
-      '--json',
-      '--pack-destination',
-      root,
-    ]);
-    const filename = (JSON.parse(stdout) as Array<{ filename: string }>)[0]!.filename;
-    packs.set(pkg.name, { version: pkg.version, bytes: await readFile(join(root, filename)) });
+  ];
+  // The Svelte closure adds 17 packages; four independent packs keep this fixed fixture bounded.
+  for (let offset = 0; offset < paths.length; offset += 4) {
+    await Promise.all(
+      paths.slice(offset, offset + 4).map(async (path) => {
+        const pkg = JSON.parse(await readFile(join(path, 'package.json'), 'utf8')) as {
+          name: string;
+          version: string;
+        };
+        const { stdout } = await promisify(execFile)('npm', [
+          'pack',
+          path,
+          '--ignore-scripts',
+          '--json',
+          '--pack-destination',
+          root,
+        ]);
+        const filename = (JSON.parse(stdout) as Array<{ filename: string }>)[0]!.filename;
+        packs.set(pkg.name, { version: pkg.version, bytes: await readFile(join(root, filename)) });
+      })
+    );
   }
   const cli = JSON.parse(await readFile(resolve('../cli/package.json'), 'utf8')) as {
     mnemonik: { hosts: Record<HostArtifact, HostPackagePin> };

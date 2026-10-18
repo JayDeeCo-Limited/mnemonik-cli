@@ -13,45 +13,103 @@ export async function scrubSourceSecrets(text, filePath) {
     const extension = extname(filePath).toLowerCase();
     if (extension === '.vue')
         return scrubVueSource(text);
-    const language = extension === '.cmake' || basename(filePath) === 'CMakeLists.txt'
-        ? 'cmake'
-        : ['.ts', '.mts', '.cts'].includes(extension)
-            ? 'typescript'
-            : extension === '.tsx'
-                ? 'tsx'
-                : ['.js', '.jsx', '.mjs', '.cjs'].includes(extension)
-                    ? 'javascript'
-                    : ['.py', '.pyi'].includes(extension)
-                        ? 'python'
-                        : ['.sh', '.bash', '.zsh'].includes(extension)
-                            ? 'bash'
-                            : extension === '.swift'
-                                ? 'swift'
-                                : extension === '.sql'
-                                    ? 'sql'
-                                    : extension === '.lua'
-                                        ? 'lua'
-                                        : extension === '.rs'
-                                            ? 'rust'
-                                            : extension === '.nix'
-                                                ? 'nix'
-                                                : extension === '.tf'
-                                                    ? 'terraform'
-                                                    : ['.m', '.mm'].includes(extension)
-                                                        ? 'objcpp'
-                                                        : extension === '.c'
-                                                            ? 'c'
-                                                            : ['.h', '.cpp', '.cc', '.cxx', '.hpp', '.hh', '.hxx'].includes(extension)
-                                                                ? 'cpp'
-                                                                : ['.groovy', '.gradle'].includes(extension)
-                                                                    ? 'groovy'
-                                                                    : ['.ps1', '.psm1'].includes(extension)
-                                                                        ? 'powershell'
-                                                                        : null;
-    const fallback = () => {
-        const clean = scrubPayload(text);
+    if (extension === '.svelte')
+        return scrubSvelteSource(text);
+    const bundledLanguages = {
+        '.go': 'go',
+        '.java': 'java',
+        '.cs': 'csharp',
+        '.scala': 'scala',
+        '.sc': 'scala',
+        '.rb': 'ruby',
+        '.php': 'php',
+        '.ex': 'elixir',
+        '.exs': 'elixir',
+        '.sol': 'solidity',
+        '.kt': 'kotlin',
+        '.kts': 'kotlin',
+        '.dart': 'dart',
+        '.erl': 'erlang',
+        '.hrl': 'erlang',
+        '.hs': 'haskell',
+        '.ml': 'ocaml',
+        '.mli': 'ocaml_interface',
+        '.clj': 'clojure',
+        '.cljs': 'clojure',
+        '.cljc': 'clojure',
+        '.jl': 'julia',
+        '.pl': 'perl',
+        '.pm': 'perl',
+        '.r': 'r',
+        '.zig': 'zig',
+        '.proto': 'protobuf',
+        '.graphql': 'graphql',
+        '.gql': 'graphql',
+    };
+    const bundledLanguage = bundledLanguages[extension];
+    const language = bundledLanguage ??
+        (extension === '.cmake' || basename(filePath) === 'CMakeLists.txt'
+            ? 'cmake'
+            : ['.ts', '.mts', '.cts'].includes(extension)
+                ? 'typescript'
+                : extension === '.tsx'
+                    ? 'tsx'
+                    : ['.js', '.jsx', '.mjs', '.cjs'].includes(extension)
+                        ? 'javascript'
+                        : ['.py', '.pyi', '.bzl'].includes(extension)
+                            ? 'python'
+                            : ['.sh', '.bash', '.zsh'].includes(extension)
+                                ? 'bash'
+                                : extension === '.swift'
+                                    ? 'swift'
+                                    : extension === '.sql'
+                                        ? 'sql'
+                                        : extension === '.lua'
+                                            ? 'lua'
+                                            : extension === '.rs'
+                                                ? 'rust'
+                                                : extension === '.nix'
+                                                    ? 'nix'
+                                                    : extension === '.tf'
+                                                        ? 'terraform'
+                                                        : ['.m', '.mm'].includes(extension)
+                                                            ? 'objcpp'
+                                                            : extension === '.c'
+                                                                ? 'c'
+                                                                : ['.h', '.cpp', '.cc', '.cxx', '.hpp', '.hh', '.hxx'].includes(extension)
+                                                                    ? 'cpp'
+                                                                    : ['.groovy', '.gradle'].includes(extension)
+                                                                        ? 'groovy'
+                                                                        : ['.ps1', '.psm1'].includes(extension)
+                                                                            ? 'powershell'
+                                                                            : null);
+    const fallback = (source = text, payloadsScrubbed = false) => {
+        // A completed AST payload pass must not be reinterpreted as prose (e.g. proto field numbers).
+        const clean = payloadsScrubbed ? source : scrubPayload(source);
         if (!text)
             return clean;
+        if (bundledLanguage) {
+            const marker = `/* mnemonik:${bundledLanguage}-source-fidelity-unavailable */`;
+            const nativeMarker = {
+                erlang: `% mnemonik:${bundledLanguage}-source-fidelity-unavailable`,
+                haskell: `-- mnemonik:${bundledLanguage}-source-fidelity-unavailable`,
+                ocaml: `(* mnemonik:${bundledLanguage}-source-fidelity-unavailable *)`,
+                ocaml_interface: `(* mnemonik:${bundledLanguage}-source-fidelity-unavailable *)`,
+                clojure: `; mnemonik:${bundledLanguage}-source-fidelity-unavailable`,
+                zig: `// mnemonik:${bundledLanguage}-source-fidelity-unavailable`,
+            };
+            const comment = nativeMarker[bundledLanguage] ??
+                (['ruby', 'elixir', 'julia', 'perl', 'r', 'graphql'].includes(bundledLanguage)
+                    ? marker.replace('/* ', '# ').replace(' */', '')
+                    : bundledLanguage === 'php'
+                        ? `<?php ${marker} ?>`
+                        : marker);
+            return clean.startsWith(comment) ? clean : comment + '\n' + clean;
+        }
+        if (extension === '.bzl') {
+            const marker = '# mnemonik:starlark-source-fidelity-unavailable\n';
+            return clean.startsWith(marker) ? clean : marker + clean;
+        }
         if (language === 'powershell') {
             const marker = '# mnemonik:powershell-source-fidelity-unavailable\n';
             return clean.startsWith(marker) ? clean : marker + clean;
@@ -81,35 +139,55 @@ export async function scrubSourceSecrets(text, filePath) {
         parser = new Parser();
         parser.setLanguage(grammar.ok.language);
         tree = parser.parse(text);
-        if (!tree || tree.rootNode.hasError)
+        if (!tree)
             return fallback();
+        if (tree.rootNode.hasError) {
+            // These bindings have no prose-style credential '=' label. Recover AST-proven payloads;
+            // opaque ERROR spans are scrubbed conservatively and always remain unavailable.
+            return bundledLanguage && ['clojure', 'r', 'protobuf', 'graphql'].includes(bundledLanguage)
+                ? fallback(redactBundledNode(tree.rootNode, bundledLanguage, true), true)
+                : fallback();
+        }
         const root = tree.rootNode;
         if (language === 'objcpp' && objcppSyntaxIssue(root))
             return fallback();
-        const redacted = language === 'cmake'
-            ? redactCmakeNode(root)
-            : language === 'bash'
-                ? redactShellNode(root, commandLineCredentialRanges(text))
-                : language === 'swift'
-                    ? redactSwiftNode(root)
-                    : language === 'sql'
-                        ? redactSqlNode(root)
-                        : language === 'lua'
-                            ? redactLuaNode(root)
-                            : language === 'rust'
-                                ? redactRustNode(root)
-                                : language === 'nix'
-                                    ? redactNixNode(root)
-                                    : language === 'terraform'
-                                        ? redactTerraformNode(root)
-                                        : ['objcpp', 'c', 'cpp'].includes(language)
-                                            ? redactCFamilyNode(root)
-                                            : language === 'groovy'
-                                                ? redactGroovyNode(root)
-                                                : language === 'powershell'
-                                                    ? redactPowershellNode(root)
-                                                    : redactNode(root);
-        return text.slice(0, root.startIndex) + redacted + text.slice(root.endIndex);
+        const redacted = bundledLanguage
+            ? redactBundledNode(root, bundledLanguage)
+            : language === 'cmake'
+                ? redactCmakeNode(root)
+                : language === 'bash'
+                    ? redactShellNode(root, commandLineCredentialRanges(text))
+                    : language === 'swift'
+                        ? redactSwiftNode(root)
+                        : language === 'sql'
+                            ? redactSqlNode(root)
+                            : language === 'lua'
+                                ? redactLuaNode(root)
+                                : language === 'rust'
+                                    ? redactRustNode(root)
+                                    : language === 'nix'
+                                        ? redactNixNode(root)
+                                        : language === 'terraform'
+                                            ? redactTerraformNode(root)
+                                            : ['objcpp', 'c', 'cpp'].includes(language)
+                                                ? redactCFamilyNode(root)
+                                                : language === 'groovy'
+                                                    ? redactGroovyNode(root)
+                                                    : language === 'powershell'
+                                                        ? redactPowershellNode(root)
+                                                        : redactNode(root);
+        const clean = text.slice(0, root.startIndex) + redacted + text.slice(root.endIndex);
+        if (bundledLanguage && clean !== text) {
+            const proof = parser.parse(clean);
+            try {
+                if (!proof || proof.rootNode.hasError)
+                    return fallback(clean);
+            }
+            finally {
+                proof?.delete();
+            }
+        }
+        return clean;
     }
     catch {
         return fallback();
@@ -118,6 +196,453 @@ export async function scrubSourceSecrets(text, filePath) {
         tree?.delete();
         parser?.delete();
     }
+}
+/** Bundled L1 grammars expose literal payloads separately from executable expressions. */
+function redactBundledNode(root, language, incomplete = false) {
+    const labeled = new Set();
+    const heredocs = [];
+    const label = (node) => {
+        if (!node)
+            return false;
+        if (language === 'julia' && node.type === 'typed_expression')
+            return label(node.firstNamedChild);
+        if (language === 'perl' && node.type === 'variable_declaration')
+            return label(node.childForFieldName('variable'));
+        if (language === 'perl' && node.type === 'scalar')
+            return label(node.firstNamedChild);
+        if (language === 'kotlin' &&
+            ['navigation_expression', 'directly_assignable_expression'].includes(node.type)) {
+            const last = node.lastNamedChild;
+            return label(last?.type === 'navigation_suffix' ? last.firstNamedChild : node.firstNamedChild);
+        }
+        if (language === 'dart' && node.type === 'assignable_expression') {
+            const last = node.lastNamedChild;
+            return label(last?.type === 'unconditional_assignable_selector'
+                ? last.firstNamedChild
+                : node.firstNamedChild);
+        }
+        if ([
+            'expression',
+            'literal_element',
+            'variable_name',
+            'assignable_expression',
+            'directly_assignable_expression',
+        ].includes(node.type))
+            return label(node.firstNamedChild);
+        const field = node.childForFieldName('field') ??
+            node.childForFieldName('member') ??
+            node.childForFieldName('property') ??
+            node.childForFieldName('name') ??
+            node;
+        return SECRET_LABEL_RE.test(field.text
+            .trim()
+            .replace(/^[$@]+|["':]+$/g, '')
+            .replace(/^["']/, ''));
+    };
+    const mark = (key, value) => {
+        if (!key || !value)
+            return;
+        if (label(key))
+            labeled.add(value.id);
+        else if (key.type === 'tuple_pattern' && value.type === 'tuple_expression')
+            key.namedChildren.forEach((part, i) => mark(part, value.namedChildren[i] ?? null));
+    };
+    const payload = (text, sensitive) => scrubPayload(text)
+        .split(/(\r\n|[\r\n])/)
+        .map((part, i) => i % 2
+        ? part
+        : part.replace(/^(\s*)([\s\S]*?)(\s*)$/, (_match, lead, body, tail) => lead + literalPayload(body, sensitive) + tail))
+        .join('');
+    const visit = (node, sensitive = false) => {
+        sensitive ||= labeled.has(node.id);
+        const original = node.text;
+        const type = node.type;
+        if (incomplete && type === 'ERROR')
+            return redactSecretValue(original);
+        if ([
+            'comment',
+            'line_comment',
+            'block_comment',
+            'documentation_comment',
+            'multiline_comment',
+        ].includes(type)) {
+            if (language === 'clojure') {
+                if (original.startsWith(';'))
+                    return ';' + scrubPayload(original.slice(1));
+                if (original.startsWith('#!'))
+                    return '#!' + scrubPayload(original.slice(2));
+                // Reader-discard and (comment ...) contain forms, not line-comment payloads.
+                let clean = '';
+                let offset = node.startIndex;
+                for (const child of node.namedChildren) {
+                    clean +=
+                        original.slice(offset - node.startIndex, child.startIndex - node.startIndex) +
+                            visit(child);
+                    offset = child.endIndex;
+                }
+                return clean + original.slice(offset - node.startIndex);
+            }
+            if (language === 'erlang')
+                return '%' + scrubPayload(original.slice(1));
+            if (language === 'haskell')
+                return original.startsWith('{-')
+                    ? '{-' + scrubPayload(original.slice(2, -2)) + '-}'
+                    : '--' + scrubPayload(original.slice(2));
+            if (language === 'ocaml' || language === 'ocaml_interface')
+                return '(*' + scrubPayload(original.slice(2, -2)) + '*)';
+            if (original.startsWith('#'))
+                return '#' + scrubPayload(original.slice(1));
+            return original.startsWith('/*')
+                ? '/*' + scrubPayload(original.slice(2, -2)) + '*/'
+                : '//' + scrubPayload(original.slice(2));
+        }
+        if (['erlang', 'haskell', 'ocaml', 'ocaml_interface', 'clojure'].includes(language) &&
+            ['char', 'character'].includes(type)) {
+            if (sensitive || scrubPayload(original) !== original)
+                throw new Error('Restricted literal payload');
+            return original;
+        }
+        if ((language === 'ocaml' || language === 'ocaml_interface') && type === 'quoted_string') {
+            const opening = /^\{([a-z_]*)\|/.exec(original);
+            const closing = opening ? '|' + opening[1] + '}' : '';
+            if (!opening || !original.endsWith(closing))
+                throw new Error('Opaque quoted literal boundary');
+            return (opening[0] +
+                payload(original.slice(opening[0].length, -closing.length), sensitive) +
+                closing);
+        }
+        if (language === 'perl' && type === 'interpolated_string_literal') {
+            const content = node.childForFieldName('content');
+            return content
+                ? original.slice(0, content.startIndex - node.startIndex) +
+                    visit(content, sensitive) +
+                    original.slice(content.endIndex - node.startIndex)
+                : original;
+        }
+        if (language === 'perl' && type === 'string_content') {
+            let clean = '';
+            let offset = node.startIndex;
+            for (const child of node.namedChildren.filter((c) => !['escape_sequence', 'escaped_delimiter'].includes(c.type))) {
+                clean +=
+                    payload(original.slice(offset - node.startIndex, child.startIndex - node.startIndex), sensitive) + visit(child);
+                offset = child.endIndex;
+            }
+            return clean + payload(original.slice(offset - node.startIndex), sensitive);
+        }
+        if (type === 'heredoc_beginning') {
+            heredocs.push(sensitive);
+            return original;
+        }
+        if (language === 'ruby' && type === 'heredoc_body')
+            sensitive = heredocs.shift() ?? false;
+        if (type === 'hex_string_literal')
+            return sensitive
+                ? original.replace(/(["'])([0-9a-fA-F_\s]*)\1/g, (_match, quote, body) => quote + body.replace(/[0-9a-fA-F_]/g, '') + quote)
+                : original;
+        // shortcut: restricted character/symbol literals use fallback; add native placeholders if needed.
+        if (['character_literal', 'rune_literal', 'simple_symbol', 'atom'].includes(type)) {
+            if (sensitive || scrubPayload(original) !== original)
+                throw new Error('Restricted literal payload');
+            return original;
+        }
+        if (sensitive &&
+            /^(?:int|float|imaginary|integer|real|decimal_integer|hex_integer|octal_integer|binary_integer|decimal_floating_point|hex_floating_point|number)(?:_literal)?$/.test(type))
+            return '"' + redactSecretValue(original) + '"';
+        const string = [
+            'string',
+            'interpreted_string_literal',
+            'raw_string_literal',
+            'verbatim_string_literal',
+            'encapsed_string',
+            'unicode_string_literal',
+            'string_value',
+            'interpolated_string',
+            'sigil',
+        ].includes(type) ||
+            (type === 'string_literal' && language !== 'solidity');
+        if (string) {
+            const first = node.firstChild;
+            const last = node.lastChild;
+            const quotedStart = node.childForFieldName('quoted_start') ??
+                (language === 'r' ? node.childForFieldName('open') : null);
+            const quotedEnd = node.childForFieldName('quoted_end') ??
+                (language === 'r' ? node.childForFieldName('close') : null);
+            const opening = quotedStart ?? first;
+            const closing = quotedEnd ?? last;
+            const match = /^(?:r|@|unicode)?("{3,}|'{3,}|"|'|`)/.exec(original);
+            const start = quotedStart
+                ? quotedStart.endIndex
+                : opening && /^(?:%[qQwWiIxrs]?[^\w\s]|["'`]+)$/.test(opening.text)
+                    ? opening.endIndex
+                    : match
+                        ? node.startIndex + match[0].length
+                        : null;
+            const end = quotedEnd
+                ? quotedEnd.startIndex
+                : match?.[1]
+                    ? node.endIndex - match[1].length
+                    : closing && closing.id !== opening?.id
+                        ? closing.startIndex
+                        : null;
+            if (start === null || end === null || end < start)
+                throw new Error('Opaque literal boundary');
+            const substitutions = node.children.filter((child) => child.startIndex >= start &&
+                child.endIndex <= end &&
+                ![
+                    'string_content',
+                    'content',
+                    'string_fragment',
+                    'multiline_string_fragment',
+                    'raw_string_content',
+                    'raw_string_literal_content',
+                    'interpreted_string_literal_content',
+                    'string_literal_content',
+                    'quoted_content',
+                    'escape_sequence',
+                ].includes(child.type));
+            let result = original.slice(0, start - node.startIndex);
+            let offset = start;
+            for (const child of substitutions) {
+                result += payload(original.slice(offset - node.startIndex, child.startIndex - node.startIndex), sensitive);
+                result += visit(child); // Runtime interpolation never inherits credential sensitivity.
+                offset = child.endIndex;
+            }
+            return (result +
+                payload(original.slice(offset - node.startIndex, end - node.startIndex), sensitive) +
+                original.slice(end - node.startIndex));
+        }
+        if (['string_content', 'heredoc_content', 'quoted_content', 'nowdoc_body'].includes(type))
+            return payload(original, sensitive);
+        if (language === 'julia' && type === 'assignment')
+            mark(node.firstNamedChild, node.lastNamedChild);
+        if (language === 'r' && type === 'binary_operator') {
+            const op = node.childForFieldName('operator')?.text;
+            if (['<-', '<<-', '=', ':='].includes(op ?? ''))
+                mark(node.childForFieldName('lhs'), node.childForFieldName('rhs'));
+            if (['->', '->>'].includes(op ?? ''))
+                mark(node.childForFieldName('rhs'), node.childForFieldName('lhs'));
+        }
+        if (language === 'r' && ['parameter', 'argument'].includes(type))
+            mark(node.childForFieldName('name'), node.childForFieldName('default') ?? node.childForFieldName('value'));
+        if (language === 'zig' && ['assignment_statement', 'field_declaration'].includes(type))
+            mark(node.childForFieldName('name'), node.childForFieldName('expression') ?? node.childForFieldName('default'));
+        if (language === 'protobuf' && type === 'field') {
+            const name = node.namedChildren.find((c) => c.type === 'identifier');
+            for (const option of node.namedChildren.find((c) => c.type === 'field_options')
+                ?.namedChildren ?? []) {
+                if (option.type !== 'field_option' ||
+                    option.namedChildren.find((c) => c.type === 'identifier')?.text !== 'default')
+                    continue;
+                const constant = option.namedChildren.find((c) => c.type === 'constant');
+                mark(name ?? null, constant?.namedChildren.find((c) => c.type === 'string') ?? null);
+            }
+        }
+        if (language === 'graphql' && type === 'object_field')
+            mark(node.namedChildren.find((c) => c.type === 'name') ?? null, node.namedChildren.find((c) => c.type === 'value') ?? null);
+        if (language === 'graphql' &&
+            ['input_value_definition', 'variable_definition'].includes(type)) {
+            const name = type === 'input_value_definition'
+                ? node.namedChildren.find((c) => c.type === 'name')
+                : node.namedChildren.find((c) => c.type === 'variable')?.firstNamedChild;
+            const value = node.namedChildren.find((c) => c.type === 'default_value')?.firstNamedChild;
+            mark(name ?? null, value ?? null);
+        }
+        if (language === 'erlang' && type === 'match_expr')
+            mark(node.childForFieldName('lhs'), node.childForFieldName('rhs'));
+        if (language === 'haskell' && type === 'bind') {
+            const name = node.childForFieldName('name');
+            mark(name, node.childForFieldName('expression'));
+            for (const match of node.childrenForFieldName('match'))
+                mark(name, match.childForFieldName('expression'));
+        }
+        if ((language === 'ocaml' || language === 'ocaml_interface') && type === 'let_binding')
+            mark(node.childForFieldName('pattern'), node.childForFieldName('body'));
+        if (language === 'clojure' && type === 'list') {
+            const forms = node.namedChildren.filter((c) => c.type !== 'comment');
+            if (forms[0]?.type === 'symbol' &&
+                forms[0].text === 'def' &&
+                forms[1]?.type === 'symbol' &&
+                forms.length >= 3)
+                mark(forms[1], forms.at(-1) ?? null);
+            if (forms[0]?.type === 'symbol' && forms[0].text === 'let' && forms[1]?.type === 'vector') {
+                const bindings = forms[1].namedChildren.filter((c) => c.type !== 'comment');
+                for (let i = 0; i + 1 < bindings.length; i += 2)
+                    mark(bindings[i] ?? null, bindings[i + 1] ?? null);
+            }
+        }
+        if (language === 'kotlin' && type === 'assignment')
+            mark(node.firstNamedChild, node.lastNamedChild);
+        if (language === 'dart' && type === 'assignment_expression_without_cascade')
+            mark(node.childForFieldName('left'), node.childForFieldName('right'));
+        if (language === 'kotlin' && type === 'property_declaration') {
+            const key = node.namedChildren.find((c) => c.type === 'variable_declaration')?.firstNamedChild;
+            const equals = node.children.findIndex((c) => c.type === '=');
+            if (equals >= 0)
+                mark(key ?? null, node.children[equals + 1] ?? null);
+        }
+        if (language === 'dart' &&
+            [
+                'initialized_variable_definition',
+                'initialized_identifier',
+                'static_final_declaration',
+            ].includes(type)) {
+            const equals = node.children.findIndex((c) => c.type === '=');
+            if (equals >= 0)
+                mark(node.childForFieldName('name') ?? node.firstNamedChild, node.children[equals + 1] ?? null);
+        }
+        // These grammars place defaults beside the parameter rather than inside it.
+        if ((language === 'kotlin' && type === 'function_value_parameters') ||
+            (language === 'dart' && type === 'optional_formal_parameters')) {
+            node.children.forEach((child, i, children) => {
+                if (!['=', ':'].includes(child.type))
+                    return;
+                const parameter = children[i - 1];
+                mark(parameter?.childForFieldName('name') ?? parameter?.firstNamedChild ?? null, children[i + 1] ?? null);
+            });
+        }
+        if (language === 'dart' && type === 'named_argument')
+            mark(node.firstNamedChild?.firstNamedChild ?? null, node.lastNamedChild);
+        if (language === 'kotlin' &&
+            type === 'value_argument' &&
+            node.children.some((c) => c.type === '='))
+            mark(node.firstNamedChild, node.lastNamedChild);
+        if (type === 'var_spec' || type === 'const_spec') {
+            const names = node.childrenForFieldName('name');
+            const values = node.childForFieldName('value')?.namedChildren ?? [];
+            names.forEach((name, i) => mark(name, values[i] ?? null));
+        }
+        else if (language === 'go' &&
+            ['short_var_declaration', 'assignment_statement'].includes(type)) {
+            const names = node.childForFieldName('left')?.namedChildren ?? [];
+            const values = node.childForFieldName('right')?.namedChildren ?? [];
+            names.forEach((name, i) => mark(name, values[i] ?? null));
+        }
+        else if (type === 'variable_declarator') {
+            mark(node.childForFieldName('name'), node.childForFieldName('value') ?? node.namedChildren[1] ?? null);
+        }
+        else if (language === 'php' && type === 'property_element') {
+            mark(node.childForFieldName('name'), node.childForFieldName('default_value'));
+        }
+        else if (language === 'csharp' && type === 'property_declaration') {
+            mark(node.childForFieldName('name'), node.childForFieldName('value'));
+        }
+        else if (['val_definition', 'var_definition'].includes(type)) {
+            mark(node.childForFieldName('pattern'), node.childForFieldName('value'));
+        }
+        else if (['assignment', 'assignment_expression', 'operator_assignment'].includes(type) ||
+            (language === 'elixir' &&
+                type === 'binary_operator' &&
+                node.childForFieldName('operator')?.text === '=')) {
+            mark(node.childForFieldName('left'), node.childForFieldName('right'));
+        }
+        else if (['pair', 'keyed_element'].includes(type)) {
+            mark(node.childForFieldName('key'), node.childForFieldName('value'));
+        }
+        else if (language === 'php' &&
+            type === 'array_element_initializer' &&
+            node.children.some((c) => c.type === '=>')) {
+            mark(node.namedChildren[0] ?? null, node.namedChildren[1] ?? null);
+        }
+        else if (type === 'state_variable_declaration') {
+            mark(node.childForFieldName('name'), node.childForFieldName('value'));
+        }
+        else if (language === 'solidity' && type === 'variable_declaration_statement') {
+            mark(node.namedChildren
+                .find((c) => c.type === 'variable_declaration')
+                ?.childForFieldName('name') ?? null, node.childForFieldName('value'));
+        }
+        if ([
+            'parameter',
+            'optional_parameter',
+            'simple_parameter',
+            'class_parameter',
+            'named_argument',
+        ].includes(type)) {
+            const equals = node.children.findIndex((child) => child.type === '=');
+            if (equals >= 0)
+                mark(node.childForFieldName('name') ?? node.firstNamedChild, node.children[equals + 1] ?? null);
+        }
+        let result = '';
+        let offset = node.startIndex;
+        for (const child of node.namedChildren) {
+            result += original.slice(offset - node.startIndex, child.startIndex - node.startIndex);
+            const carry = sensitive &&
+                (((type !== 'list' || language !== 'clojure') &&
+                    [
+                        'expression',
+                        'expression_list',
+                        'literal_element',
+                        'literal_value',
+                        'array',
+                        'array_creation_expression',
+                        'hash',
+                        'list',
+                        'keywords',
+                        'tuple_expression',
+                        'initializer_expression',
+                        'collection_expression',
+                        'parenthesized_expression',
+                        'unary_expression',
+                        'interpolated_string_expression',
+                        'string_literal',
+                        'heredoc',
+                        'heredoc_body',
+                        'nowdoc',
+                        'regex',
+                        'quoted_atom',
+                        'delimited_symbol',
+                    ].includes(type)) ||
+                    (language === 'clojure' && ['vector', 'hash_map', 'set'].includes(type)) ||
+                    (language === 'erlang' && type === 'binary' && child.type === 'bin_element') ||
+                    (language === 'erlang' &&
+                        type === 'bin_element' &&
+                        child.id === node.childForFieldName('element')?.id) ||
+                    (language === 'haskell' &&
+                        type === 'conditional' &&
+                        [node.childForFieldName('then')?.id, node.childForFieldName('else')?.id].includes(child.id)) ||
+                    (['ocaml', 'ocaml_interface'].includes(language) &&
+                        ((type === 'if_expression' && ['then_clause', 'else_clause'].includes(child.type)) ||
+                            (['then_clause', 'else_clause'].includes(type) &&
+                                child.id === node.childForFieldName('expression')?.id))) ||
+                    (language === 'haskell' && type === 'literal') ||
+                    (language === 'graphql' &&
+                        ['value', 'list_value', 'object_value', 'object_field'].includes(type)) ||
+                    (['kotlin', 'dart'].includes(language) &&
+                        [
+                            'collection_literal',
+                            'list_literal',
+                            'set_or_map_literal',
+                            'additive_expression',
+                            'if_null_expression',
+                            'elvis_expression',
+                        ].includes(type)) ||
+                    (type === 'composite_literal' && child.id === node.childForFieldName('body')?.id) ||
+                    (type === 'array_element_initializer' && child.id === node.lastNamedChild?.id) ||
+                    (['binary_expression', 'binary_operator'].includes(type) &&
+                        ['+', '.', '<>', '||', '??'].includes(node.childForFieldName('operator')?.text ?? '')) ||
+                    (['conditional_expression', 'ternary_expression'].includes(type) &&
+                        child.id !== node.childForFieldName('condition')?.id) ||
+                    (['pair', 'keyed_element'].includes(type) &&
+                        child.id === node.childForFieldName('value')?.id) ||
+                    ([
+                        'method_invocation',
+                        'member_access_expression',
+                        'field_expression',
+                        'field_access',
+                        'member_expression',
+                    ].includes(type) &&
+                        child.id === node.childForFieldName('object')?.id) ||
+                    (['invocation_expression', 'call_expression', 'call'].includes(type) &&
+                        [
+                            node.childForFieldName('function')?.id,
+                            node.childForFieldName('receiver')?.id,
+                        ].includes(child.id)));
+            result += visit(child, carry);
+            offset = child.endIndex;
+        }
+        return result + original.slice(offset - node.startIndex);
+    };
+    return visit(root);
 }
 /** CMake substitutions remain source expressions; only AST argument/comment payloads are scrubbed. */
 function redactCmakeNode(node, sensitive = false) {
@@ -733,7 +1258,9 @@ function sqlSecretLabel(node) {
         return sqlSecretLabel(node.childForFieldName('name') ?? node.firstNamedChild);
     // This dialect-neutral grammar sometimes calls PostgreSQL quoted identifiers literals.
     if (node.type === 'identifier' || (node.type === 'literal' && node.text.startsWith('"')))
-        return SECRET_LABEL_RE.test(node.text.replace(/^"|"$/g, '').replaceAll('""', '"'));
+        return SECRET_LABEL_RE.test(node.text.startsWith('`')
+            ? node.text.slice(1, -1).replaceAll('``', '`')
+            : node.text.replace(/^"|"$/g, '').replaceAll('""', '"'));
     return false;
 }
 function redactSqlNode(node, sensitive = false) {
@@ -777,6 +1304,13 @@ function redactSqlNode(node, sensitive = false) {
     const columnLabel = node.type === 'column_definition' && sqlSecretLabel(node.childForFieldName('name'));
     const argumentLabel = node.type === 'function_argument' &&
         sqlSecretLabel(node.namedChildren.find((child) => child.type === 'identifier') ?? null);
+    const argumentDefaultMarker = argumentLabel
+        ? node.children.find((child) => ['keyword_default', '='].includes(child.type))
+        : undefined;
+    const argumentDefaultValue = argumentDefaultMarker
+        ? node.namedChildren.find((child) => child.startIndex >= argumentDefaultMarker.endIndex &&
+            !['comment', 'marginalia'].includes(child.type))
+        : undefined;
     const aliasLabel = node.type === 'term' && sqlSecretLabel(node.childForFieldName('alias'));
     const insert = node.type === 'list' && node.parent?.type === 'insert' ? node.parent : null;
     const columns = insert?.namedChildren.find((child) => child.type === 'list');
@@ -802,7 +1336,7 @@ function redactSqlNode(node, sensitive = false) {
             (labeled && child.id === right?.id) ||
             (node.type === 'binary_expression' && sqlSecretLabel(right) && child.id === left?.id) ||
             (columnLabel && previous?.type === 'keyword_default') ||
-            (argumentLabel && child.type === 'literal') ||
+            child.id === argumentDefaultValue?.id ||
             (aliasLabel && child.id === node.childForFieldName('value')?.id) ||
             child.id === node.childForFieldName('password')?.id ||
             sqlSecretLabel(columnValues[index] ?? null));
@@ -1254,6 +1788,151 @@ async function scrubVueSource(text) {
     }
     finally {
         parser.delete();
+    }
+}
+/** Official component offsets delimit payloads; existing JS/TS rules handle script expressions. */
+async function scrubSvelteSource(text) {
+    const marker = '<!-- mnemonik:svelte-source-fidelity-unavailable -->\n';
+    const fallback = () => (text.startsWith(marker) ? '' : marker) + scrubPayload(text);
+    if (!text)
+        return text;
+    if (text.includes('mnemonik:svelte-source-fidelity-unavailable'))
+        return fallback();
+    if (Buffer.byteLength(text, 'utf8') > MAX_AST_PARSE_BYTES)
+        return fallback();
+    let parser;
+    try {
+        const deadline = performance.now() + 4_000;
+        const { parse } = await import('svelte/compiler');
+        const ast = parse(text, { modern: true });
+        const edits = [];
+        let faithful = true;
+        parser = new Parser();
+        const js = await loadGrammar('javascript');
+        const ts = await loadGrammar('typescript');
+        if ('unavailable' in js || 'unavailable' in ts)
+            return fallback();
+        parser.setLanguage(js.ok.language);
+        const activeParser = parser;
+        const syntax = (source, expression = false, sensitive = false) => {
+            const prefix = expression ? `const ${sensitive ? 'password' : '__mnemonik_svelte'} = (` : '';
+            const suffix = expression ? '\n);' : '';
+            const full = prefix + source + suffix;
+            const tree = activeParser.parse(full, null, {
+                progressCallback: () => performance.now() > deadline,
+            });
+            try {
+                if (!tree || tree.rootNode.hasError || tree.rootNode.descendantCount > 200_000) {
+                    faithful = false;
+                    return sensitive ? literalPayload(source, true) : scrubPayload(source);
+                }
+                const clean = full.slice(0, tree.rootNode.startIndex) +
+                    redactNode(tree.rootNode) +
+                    full.slice(tree.rootNode.endIndex);
+                return clean.slice(prefix.length, clean.length - suffix.length);
+            }
+            finally {
+                tree?.delete();
+            }
+        };
+        const edit = (start, end, clean) => {
+            if (typeof start !== 'number' ||
+                typeof end !== 'number' ||
+                start < 0 ||
+                end < start ||
+                end > text.length)
+                throw new Error('Component offsets unavailable');
+            edits.push({ start, end, clean: clean(text.slice(start, end)) });
+        };
+        let templateTs = false;
+        for (const script of [ast.module, ast.instance]) {
+            if (!script)
+                continue;
+            const lang = script.attributes.find((a) => a.name === 'lang');
+            const language = !lang
+                ? 'js'
+                : Array.isArray(lang.value) && lang.value.length === 1 && lang.value[0]?.type === 'Text'
+                    ? lang.value[0].data
+                    : null;
+            if (!['js', 'ts'].includes(language ?? '') || script.attributes.some((a) => a.name === 'src'))
+                return fallback();
+            parser.setLanguage(language === 'ts' ? ts.ok.language : js.ok.language);
+            const offsets = script.content;
+            edit(offsets.start, offsets.end, (raw) => syntax(raw));
+            if (script === ast.instance)
+                templateTs = language === 'ts';
+        }
+        parser.setLanguage(templateTs ? ts.ok.language : js.ok.language);
+        const pending = [
+            { value: ast.fragment, sensitive: false },
+        ];
+        let count = 0;
+        while (pending.length) {
+            if (++count > 200_000 || performance.now() > deadline)
+                return fallback();
+            const entry = pending.pop();
+            if (!entry || !entry.value || typeof entry.value !== 'object')
+                continue;
+            if (Array.isArray(entry.value)) {
+                for (const value of entry.value)
+                    pending.push({ value, sensitive: entry.sensitive });
+                continue;
+            }
+            const node = entry.value;
+            const type = typeof node.type === 'string' ? node.type : '';
+            if (type === 'Text') {
+                edit(node.start, node.end, (raw) => literalPayload(raw, entry.sensitive));
+                continue;
+            }
+            if (type === 'Comment') {
+                edit(node.start, node.end, (raw) => '<!--' + scrubPayload(raw.slice(4, -3)) + '-->');
+                continue;
+            }
+            if (/Expression$/.test(type) ||
+                ['Identifier', 'Literal', 'TemplateLiteral', 'VariableDeclaration'].includes(type)) {
+                edit(node.start, node.end, (raw) => syntax(raw, type !== 'VariableDeclaration', entry.sensitive));
+                continue;
+            }
+            const sensitive = entry.sensitive ||
+                (type === 'Attribute' && typeof node.name === 'string' && SECRET_LABEL_RE.test(node.name));
+            for (const [key, value] of Object.entries(node))
+                if (key !== 'parent' && value && typeof value === 'object')
+                    pending.push({ value, sensitive });
+        }
+        if (ast.css)
+            edit(ast.css.start, ast.css.end, (raw) => {
+                const clean = scrubPayload(raw);
+                if (clean !== raw)
+                    faithful = false;
+                return clean;
+            });
+        // Unparsed tags and boundaries cannot establish fidelity if policy changes them.
+        edits.sort((a, b) => a.start - b.start);
+        let offset = 0;
+        let clean = '';
+        for (const e of edits) {
+            if (e.start < offset)
+                return fallback();
+            const gap = text.slice(offset, e.start);
+            const cleanGap = scrubPayload(gap);
+            if (gap !== cleanGap)
+                faithful = false;
+            clean += cleanGap + e.clean;
+            offset = e.end;
+        }
+        const tail = text.slice(offset);
+        const cleanTail = scrubPayload(tail);
+        if (tail !== cleanTail)
+            faithful = false;
+        clean += cleanTail;
+        parse(clean, { modern: true });
+        return faithful ? clean : marker + clean;
+    }
+    catch {
+        return fallback();
+    }
+    finally {
+        parser?.delete();
     }
 }
 //# sourceMappingURL=sourceRedaction.js.map

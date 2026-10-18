@@ -306,7 +306,8 @@ export async function hostNpmSource(
     if (
       pkg.name !== name ||
       pkg.version !== version ||
-      ['preinstall', 'install', 'postinstall', 'prepare'].some((k) => pkg.scripts?.[k]) ||
+      // Registry tarballs are copied, never installed by npm; prepare metadata is inert here.
+      ['preinstall', 'install', 'postinstall'].some((k) => pkg.scripts?.[k]) ||
       Object.keys(pkg.optionalDependencies ?? {}).length
     )
       throw new RuntimeError('unsigned');

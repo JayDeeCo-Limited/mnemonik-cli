@@ -8,7 +8,7 @@
  * - it is quietly worse chunks, forever, with nothing in the logs. A caller that
  * gets `unavailable` can fall back to the heuristic chunker AND say why.
  *
- * Artifacts are vendored, not installed: `packages/shared/wasm/<id>.wasm` plus
+ * Artifacts are vendored, not installed: `packages/shared/wasm/<id>.wasm.gz` plus
  * the `<id>.tags.scm` tag queries, committed and published inside
  * `@mnemonik/shared` (see `scripts/vendor-grammars.ts` for how they get there
  * and why `npm pack` rather than devDependencies). A user's install therefore
@@ -17,9 +17,9 @@
  *
  * Two reports answer "what can this install do" and they are NOT
  * interchangeable. `astArtifactReport` stats the vendored files and costs
- * nothing; `astCapabilityReport` instantiates all 18 grammars, which costs ~690
- * ms and ~75 MB of RSS that is never returned because web-tree-sitter exposes no
- * `Language.delete`. Startup and per-file paths use the first; the second is for
+ * nothing; `astCapabilityReport` instantiates every grammar. The original
+ * 18-grammar set cost ~690 ms and ~75 MB of RSS that was never returned because
+ * web-tree-sitter exposes no `Language.delete`. Startup uses the first; the second is for
  * a diagnostic a human asked for. Grammars themselves load lazily, one per
  * language, on the first file that needs one.
  *
@@ -30,7 +30,7 @@
  * expression is correct for both the TS sources and the shipped build.
  */
 import { Language, Query, type Node } from 'web-tree-sitter';
-declare const AST_LANGUAGE_ID_LIST: readonly ['typescript', 'tsx', 'javascript', 'python', 'go', 'java', 'c', 'cpp', 'objcpp', 'csharp', 'ruby', 'php', 'rust', 'scala', 'elixir', 'solidity', 'bash', 'groovy', 'powershell', 'swift', 'sql', 'lua', 'terraform', 'nix', 'cmake'];
+declare const AST_LANGUAGE_ID_LIST: readonly ['typescript', 'tsx', 'javascript', 'python', 'go', 'java', 'c', 'cpp', 'objcpp', 'csharp', 'ruby', 'php', 'rust', 'scala', 'elixir', 'solidity', 'bash', 'groovy', 'powershell', 'swift', 'sql', 'lua', 'terraform', 'nix', 'cmake', 'kotlin', 'dart', 'erlang', 'haskell', 'ocaml', 'ocaml_interface', 'clojure', 'julia', 'perl', 'r', 'zig', 'protobuf', 'graphql'];
 /** A language this build can AST-parse. Exactly the vendored set, no aspirations. */
 export type AstLanguageId = (typeof AST_LANGUAGE_ID_LIST)[number];
 /** The vendored set as a runtime value, for capability reporting and tests. */
@@ -152,7 +152,7 @@ export declare function astArtifactReport(artifactDir?: string): {
  *
  * NOT free, and the cost is memory rather than only latency: measured on this
  * checkout, ~690 ms and ~75 MB of RSS that is never given back. web-tree-sitter
- * 0.26.11 exposes no `Language.delete` (see `attemptLoad`), so all 18 grammars
+ * 0.26.11 exposes no `Language.delete` (see `attemptLoad`), so all vendored grammars
  * stay resident for the life of the process - including the fifteen a given repo
  * has no files for. Caching makes the second call free; it does not make the
  * first one cheap.

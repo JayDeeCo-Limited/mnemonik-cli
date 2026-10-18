@@ -77,6 +77,7 @@ export async function guardNpmLaunch(entry) {
 export function unpack(tarball) {
     const tar = gunzipSync(tarball, { maxOutputLength: 256 * 1024 * 1024 });
     const files = Object.create(null);
+    let root;
     for (let offset = 0; offset + 512 <= tar.length;) {
         const header = tar.subarray(offset, offset + 512);
         if (header.every((byte) => byte === 0))
@@ -94,15 +95,34 @@ export function unpack(tarball) {
             throw new RuntimeError('digest_mismatch');
         const name = (field(345, 155) ? field(345, 155) + '/' : '') + field(0, 100);
         const kind = field(156, 1);
-        if (!name.startsWith('package/') || !['', '0', '5'].includes(kind))
+        root ??= name.slice(0, name.indexOf('/'));
+        if (!/^[a-z0-9][a-z0-9._-]*$/.test(root) ||
+            !name.startsWith(root + '/') ||
+            !['', '0', '5'].includes(kind))
             throw new RuntimeError('permission');
+        const relative = name.slice(root.length + 1);
+        const key = relative ? safePath(kind === '5' ? relative.replace(/\/$/, '') : relative) : null;
         if (kind !== '5') {
-            const key = safePath(name.slice(8));
+            if (!key)
+                throw new RuntimeError('permission');
             if (Object.hasOwn(files, key))
                 throw new RuntimeError('permission');
             files[key] = tar.subarray(offset + 512, offset + 512 + size);
         }
         offset += 512 + Math.ceil(size / 512) * 512;
+    }
+    // DefinitelyTyped registry tarballs use their unscoped name (e.g. estree/), not package/.
+    // Bind that one archive root to its manifest; callers still verify the exact pinned identity.
+    if (root && root !== 'package') {
+        let name;
+        try {
+            name = JSON.parse(files['package.json']?.toString() ?? '{}').name;
+        }
+        catch {
+            throw new RuntimeError('permission');
+        }
+        if (name !== '@types/' + root)
+            throw new RuntimeError('permission');
     }
     return files;
 }

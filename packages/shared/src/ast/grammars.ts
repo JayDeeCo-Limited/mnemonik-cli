@@ -8,7 +8,7 @@
  * - it is quietly worse chunks, forever, with nothing in the logs. A caller that
  * gets `unavailable` can fall back to the heuristic chunker AND say why.
  *
- * Artifacts are vendored, not installed: `packages/shared/wasm/<id>.wasm` plus
+ * Artifacts are vendored, not installed: `packages/shared/wasm/<id>.wasm.gz` plus
  * the `<id>.tags.scm` tag queries, committed and published inside
  * `@mnemonik/shared` (see `scripts/vendor-grammars.ts` for how they get there
  * and why `npm pack` rather than devDependencies). A user's install therefore
@@ -17,9 +17,9 @@
  *
  * Two reports answer "what can this install do" and they are NOT
  * interchangeable. `astArtifactReport` stats the vendored files and costs
- * nothing; `astCapabilityReport` instantiates all 18 grammars, which costs ~690
- * ms and ~75 MB of RSS that is never returned because web-tree-sitter exposes no
- * `Language.delete`. Startup and per-file paths use the first; the second is for
+ * nothing; `astCapabilityReport` instantiates every grammar. The original
+ * 18-grammar set cost ~690 ms and ~75 MB of RSS that was never returned because
+ * web-tree-sitter exposes no `Language.delete`. Startup uses the first; the second is for
  * a diagnostic a human asked for. Grammars themselves load lazily, one per
  * language, on the first file that needs one.
  *
@@ -33,6 +33,7 @@
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { dirname, extname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { gunzipSync } from 'node:zlib';
 import { Language, Parser, Query, type Node } from 'web-tree-sitter';
 import { warn } from '../logger.js';
 
@@ -62,6 +63,19 @@ const AST_LANGUAGE_ID_LIST = [
   'terraform',
   'nix',
   'cmake',
+  'kotlin',
+  'dart',
+  'erlang',
+  'haskell',
+  'ocaml',
+  'ocaml_interface',
+  'clojure',
+  'julia',
+  'perl',
+  'r',
+  'zig',
+  'protobuf',
+  'graphql',
 ] as const;
 
 /** A language this build can AST-parse. Exactly the vendored set, no aspirations. */
@@ -137,6 +151,19 @@ export const QUERY_CHAIN: Readonly<Record<AstLanguageId, readonly AstLanguageId[
   terraform: ['terraform'],
   nix: ['nix'],
   cmake: ['cmake'],
+  kotlin: ['kotlin'],
+  dart: ['dart'],
+  erlang: ['erlang'],
+  haskell: ['haskell'],
+  ocaml: ['ocaml'],
+  ocaml_interface: ['ocaml_interface'],
+  clojure: ['clojure'],
+  julia: ['julia'],
+  perl: ['perl'],
+  r: ['r'],
+  zig: ['zig'],
+  protobuf: ['protobuf'],
+  graphql: ['graphql'],
 };
 
 /**
@@ -151,6 +178,7 @@ const EXTENSION_GRAMMARS: Readonly<Record<string, AstLanguageId>> = {
   '.tsx': 'tsx',
   '.m': 'objcpp',
   '.mm': 'objcpp',
+  '.mli': 'ocaml_interface',
 };
 
 /** Upstream permits a bodyless else for highlighting across preprocessor boundaries. */
@@ -180,9 +208,8 @@ export function objcppSyntaxIssue(root: Node): string | null {
  *
  * Absences are deliberate answers, not gaps. `markdown` is missing because
  * headers already are a document's semantic unit and 10,483 production chunks
- * depend on `chunkMarkdown` keeping them; `kotlin`, `dart` and friends
- * are missing because no loadable grammar is vendored yet. Both resolve to
- * `null` and the heuristic chunker takes over.
+ * depend on `chunkMarkdown` keeping them; `svelte` is absent because component
+ * parsing belongs to its adapter. Both resolve to `null` here.
  */
 const LANGUAGE_GRAMMARS: Readonly<Record<string, AstLanguageId>> = {
   typescript: 'typescript',
@@ -208,6 +235,20 @@ const LANGUAGE_GRAMMARS: Readonly<Record<string, AstLanguageId>> = {
   terraform: 'terraform',
   nix: 'nix',
   cmake: 'cmake',
+  kotlin: 'kotlin',
+  dart: 'dart',
+  erlang: 'erlang',
+  haskell: 'haskell',
+  ocaml: 'ocaml',
+  clojure: 'clojure',
+  julia: 'julia',
+  perl: 'perl',
+  r: 'r',
+  zig: 'zig',
+  protobuf: 'protobuf',
+  graphql: 'graphql',
+  // Syntax reuse only: Starlark load/binding semantics belong to its own graph adapter.
+  starlark: 'python',
 };
 
 /** A loaded grammar plus its compiled query. Compiled once, reused per file. */
@@ -357,7 +398,7 @@ type ArtifactResolution =
   | { unavailable: 'wasm_missing' | 'tags_query_missing'; detail: string };
 
 function resolveArtifacts(id: AstLanguageId, artifactDir: string): ArtifactResolution {
-  const wasmPath = join(artifactDir, `${grammarArtifactBasename(id)}.wasm`);
+  const wasmPath = join(artifactDir, `${grammarArtifactBasename(id)}.wasm.gz`);
   if (!isNonEmptyFile(wasmPath)) {
     return { unavailable: 'wasm_missing', detail: `missing or empty grammar artifact ${wasmPath}` };
   }
@@ -401,7 +442,7 @@ async function attemptLoad(id: AstLanguageId, artifactDir: string): Promise<Gram
   let language: Language;
   try {
     await initParser();
-    language = await Language.load(wasmPath);
+    language = await Language.load(gunzipSync(readFileSync(wasmPath)));
   } catch (err) {
     // Presence is not loadability: tree-sitter-dart ships a 741 KB .wasm that
     // Language.load rejects because the artifact predates the current wasm ABI.
@@ -503,7 +544,7 @@ export function astArtifactReport(artifactDir: string = WASM_DIR): {
  *
  * NOT free, and the cost is memory rather than only latency: measured on this
  * checkout, ~690 ms and ~75 MB of RSS that is never given back. web-tree-sitter
- * 0.26.11 exposes no `Language.delete` (see `attemptLoad`), so all 18 grammars
+ * 0.26.11 exposes no `Language.delete` (see `attemptLoad`), so all vendored grammars
  * stay resident for the life of the process - including the fifteen a given repo
  * has no files for. Caching makes the second call free; it does not make the
  * first one cheap.
