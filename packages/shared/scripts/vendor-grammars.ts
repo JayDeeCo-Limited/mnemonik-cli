@@ -383,7 +383,7 @@ function rebuildTypescript(dir: string, work: string, only?: string): void {
     ],
     [
       "          field('type_arguments', optional($.type_arguments)),\n          field('arguments', $.arguments),",
-      "          field('type_arguments', optional($.type_arguments)),\n          field('arguments', choice($.arguments, $.template_string)),",
+      "          field('type_arguments', optional($.type_arguments)),\n          field('arguments', choice($.arguments, alias($._tagged_template_string, $.template_string))),",
     ],
     [
       "      type_parameter: $ => seq(\n        optional('const'),\n        field('name', $._type_identifier),",
@@ -441,6 +441,10 @@ function rebuildTypescript(dir: string, work: string, only?: string): void {
         optional(seq('as', field('alias', $._module_export_name))),
       ),`
   );
+  grammar = grammar.replaceAll(
+    "field('arguments', $.template_string)",
+    "field('arguments', alias($._tagged_template_string, $.template_string))"
+  );
   writeFileSync(grammarPath, grammar);
   const scannerPath = join(dir, 'common', 'scanner.h');
   let scanner = readFileSync(scannerPath, 'utf8');
@@ -481,6 +485,8 @@ function rebuildTypescript(dir: string, work: string, only?: string): void {
     'tree-sitter-javascript@0.23.1',
   ]);
   const cli = join(tools, 'node_modules', '.bin', 'tree-sitter');
+  // CLI 0.24 mis-emits the complementary character class; spell out raw characters.
+  patchTaggedTemplates(join(tools, 'node_modules', 'tree-sitter-javascript', 'grammar.js'), false);
   for (const dialect of ['typescript', 'tsx']) {
     if (only && !only.split(',').includes(dialect)) continue;
     // Apply the JSX scanner and attribute repairs only to TSX.
@@ -500,6 +506,34 @@ function rebuildTypescript(dir: string, work: string, only?: string): void {
     );
     chmodSync(join(dir, `tree-sitter-${dialect}.wasm`), 0o644);
   }
+}
+
+/** Tagged templates retain invalid escape spellings as raw text; ordinary literals stay strict. */
+function patchTaggedTemplates(grammarPath: string, complementaryClass = true): void {
+  let grammar = readFileSync(grammarPath, 'utf8');
+  const argument = "field('arguments', $.template_string)";
+  const template = '    template_string: $ => seq(';
+  if (!grammar.includes(argument) || !grammar.includes(template))
+    throw new Error('Tagged-template escape patch no longer applies');
+  const tagged = [
+    '    _tagged_template_string: $ => seq(',
+    "      '`',",
+    '      repeat(choice(',
+    '        alias($._template_chars, $.string_fragment),',
+    '        $.escape_sequence,',
+    complementaryClass
+      ? "        alias(token.immediate(prec(1, seq('\\\\', /[\\s\\S]/))), $.escape_sequence),"
+      : "        alias(token.immediate(prec(1, seq('\\\\', choice(/./, /[\\r\\n\\u2028\\u2029]/)))), $.escape_sequence),",
+    '        $.template_substitution,',
+    '      )),',
+    "      '`',",
+    '    ),',
+    '',
+  ].join('\n');
+  grammar = grammar
+    .replaceAll(argument, "field('arguments', alias($._tagged_template_string, $.template_string))")
+    .replace(template, tagged + template);
+  writeFileSync(grammarPath, grammar);
 }
 
 /** Upstream f8637eb: preserve entity boundaries while accepting bare JSX ampersands. */
@@ -532,6 +566,7 @@ function patchJsxAttributes(grammarPath: string): void {
 
 /** 0.25.0's reserved-word DSL needs generator 0.25.8; keep the existing WASM build tool. */
 function rebuildJavascript(dir: string, work: string): void {
+  patchTaggedTemplates(join(dir, 'grammar.js'));
   patchJsxScanner(join(dir, 'src', 'scanner.c'));
   patchJsxAttributes(join(dir, 'grammar.js'));
   const generator = join(work, 'javascript-generator');
