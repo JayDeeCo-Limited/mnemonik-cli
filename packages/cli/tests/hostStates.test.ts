@@ -1207,7 +1207,8 @@ describe('host state matrix', () => {
     const f = await fixture();
     await runHosts('install', targets(f, 'hooks'), f.deps);
     f.deps.source = async (host) => bump(packed.sources[host]);
-    f.deps.now = Date.now;
+    let elapsedClock = 0;
+    f.deps.now = () => ++elapsedClock;
     // Update reports its own readiness like repair does. A signed-out machine
     // must still finish, upload nothing and never be asked to sign in.
     const getCliBearer = vi.fn(async () => ({
