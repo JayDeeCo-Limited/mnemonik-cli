@@ -3,7 +3,8 @@ import { promisify } from 'node:util';
 import { createHash } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { createRequire } from 'node:module';
+import { dirname, join, resolve } from 'node:path';
 import { hostOrder } from '../../src/install/adapters.js';
 import {
   hostNpmSource,
@@ -34,6 +35,12 @@ export async function packedHosts() {
     ),
     resolve('../../node_modules/ignore'),
     resolve('../../node_modules/web-tree-sitter'),
+    // npm may hoist PostCSS; resolve it from the compiler that uses it.
+    dirname(
+      createRequire(resolve('../../node_modules/@vue/compiler-sfc/package.json')).resolve(
+        'postcss/package.json'
+      )
+    ),
     ...[
       'svelte',
       '@jridgewell/remapping',
@@ -66,7 +73,6 @@ export async function packedHosts() {
       'source-map-js',
       'magic-string',
       '@jridgewell/sourcemap-codec',
-      '@vue/compiler-sfc/node_modules/postcss',
       'nanoid',
       'picocolors',
     ].map((name) => resolve('../../node_modules', name)),
