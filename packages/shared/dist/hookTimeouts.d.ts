@@ -137,6 +137,18 @@ export declare const HOOK_REQUEST_ID_HEADER = "x-mnemonik-hook-request-id";
  * has already given up.
  */
 export declare const HOOK_BUDGET_HEADER = "x-mnemonik-hook-budget-ms";
+/**
+ * Sent on every hook request: the hook runtime that sent it and its version,
+ * as `<runtime>/<version>` (for example `claude-code/0.9.50`). The server
+ * refuses hook runtimes older than a minimum it is configured with and tells
+ * the agent how to update (src/server/hookVersionFloor.ts), instead of the
+ * old runtime failing open and recall stopping silently.
+ */
+export declare const HOOK_VERSION_HEADER = "x-mnemonik-hook-version";
+/** `init` with the hook-version header added; the caller's headers are kept. */
+export declare function withHookVersion<T extends {
+    headers?: unknown;
+}>(init: T, runtime: string, version: string): T;
 /** Statuses that mean the request did not reach, or was not served by, the application. */
 export declare function isRetryableHookStatus(status: number): boolean;
 /** Timeouts and connection failures. A parse error or a bug in the caller is not transient. */
