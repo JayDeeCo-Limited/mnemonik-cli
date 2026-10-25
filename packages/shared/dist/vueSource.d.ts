@@ -7,6 +7,8 @@ export type VueTemplateNode = TemplateRoot | TemplateRoot['children'][number];
 type ParsedVueSource = {
     descriptor: SFCDescriptor;
     nodeTypes: typeof import('@vue/compiler-core').NodeTypes;
+    /** Set on the sanitation path only; the template walk throws past it. */
+    templateNodeLimit?: number;
 };
 export declare function parseVueSource(source: string, forSanitation?: boolean): Promise<ParsedVueSource | {
     reason: string;
