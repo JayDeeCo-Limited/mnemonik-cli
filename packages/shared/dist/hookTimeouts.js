@@ -95,4 +95,101 @@ export function withHookTimeout(ms) {
     const timer = setTimeout(() => ac.abort(), ms);
     return { signal: ac.signal, cleanup: () => clearTimeout(timer) };
 }
+/**
+ * One second attempt on the main hook call (POST /api/v1/hooks/injections).
+ *
+ * Why it exists: on 24 October 2026 about a third of one machine's hook calls
+ * were lost for 50 minutes to a stall between Cloudflare and one load-balancer
+ * node. The server had accepted those requests and was waiting for a body that
+ * never finished arriving. A second request opens a new connection and
+ * normally lands on a healthy path. The call is idempotent by design (the
+ * injection bus dedups on the server), so repeating it is safe.
+ *
+ * Shape: the whole call, both attempts included, still ends inside `budgetMs`,
+ * so the budget every hook event is checked against (tests/HookEventBudgets
+ * .test.ts) and the host's kill limit do not move. The first attempt gets
+ * HOOK_FIRST_ATTEMPT_SHARE of the budget; the second gets whatever is left.
+ * A first attempt that fails fast leaves the second nearly the whole budget.
+ *
+ * What is retried: a timeout, a connection error, and the gateway statuses
+ * that mean the request never reached the application (408, 502, 503, 504 and
+ * Cloudflare's 52x). Nothing else is: a 4xx or a 500 repeats exactly, and a
+ * response that arrives is final.
+ *
+ * Nothing is queued or stored on the client. A call that fails twice is dropped,
+ * as before. The server keeps an answer for 15 s so the second attempt can have
+ * it when the first attempt gave up on an answer that was already decided.
+ */
+export const HOOK_FIRST_ATTEMPT_SHARE = 0.65;
+/** Below this much budget left, a second attempt cannot complete a round trip. */
+export const HOOK_SECOND_ATTEMPT_MIN_MS = 300;
+/** Sent on every attempt so the server can count how many calls needed a second one. */
+export const HOOK_ATTEMPT_HEADER = 'x-mnemonik-hook-attempt';
+/**
+ * Sent on both attempts with the same value. The server keeps the first
+ * attempt's answer for a few seconds under this id and hands it to the second
+ * attempt, so an answer decided after the first attempt gave up is delivered
+ * rather than lost, and nothing is counted twice (src/server/hookReplay.ts).
+ */
+export const HOOK_REQUEST_ID_HEADER = 'x-mnemonik-hook-request-id';
+/**
+ * Sent on every attempt: how many milliseconds this attempt may still take.
+ * The server never waits for a first attempt's answer longer than this less a
+ * margin for the return trip, so it does not hold a request for a client that
+ * has already given up.
+ */
+export const HOOK_BUDGET_HEADER = 'x-mnemonik-hook-budget-ms';
+/** Statuses that mean the request did not reach, or was not served by, the application. */
+export function isRetryableHookStatus(status) {
+    return (status === 408 ||
+        status === 502 ||
+        status === 503 ||
+        status === 504 ||
+        (status >= 520 && status <= 527) ||
+        status === 530);
+}
+/** Timeouts and connection failures. A parse error or a bug in the caller is not transient. */
+export function isTransientHookFetchError(error) {
+    if (!(error instanceof Error))
+        return false;
+    if (error.name === 'AbortError' || error.name === 'TimeoutError')
+        return true;
+    // undici reports a connection failure as TypeError('fetch failed') and a body
+    // cut off mid-transfer as TypeError('terminated'). Any other TypeError is a bug.
+    return (error instanceof TypeError &&
+        (error.message === 'fetch failed' || error.message === 'terminated'));
+}
+/**
+ * Run `attempt` and, when it ends in a transient failure, run it once more
+ * inside the rest of `budgetMs`. Returns the value of the attempt that
+ * finished, or null when neither did. `attempt` returns `{ done: false }` for
+ * a retryable response and throws for a transport failure; anything else it
+ * returns is final.
+ */
+export async function withSecondAttempt(budgetMs, attempt, clock = Date.now) {
+    const startedAt = clock();
+    const requestId = globalThis.crypto.randomUUID();
+    const run = async (attemptNumber, timeoutMs) => {
+        const { signal, cleanup } = withHookTimeout(timeoutMs);
+        try {
+            return await attempt(signal, attemptNumber, requestId, timeoutMs);
+        }
+        catch (error) {
+            if (!isTransientHookFetchError(error))
+                throw error;
+            return { done: false };
+        }
+        finally {
+            cleanup();
+        }
+    };
+    const first = await run(1, Math.floor(budgetMs * HOOK_FIRST_ATTEMPT_SHARE));
+    if (first.done)
+        return first.value;
+    const remainingMs = budgetMs - (clock() - startedAt);
+    if (remainingMs < HOOK_SECOND_ATTEMPT_MIN_MS)
+        return null;
+    const second = await run(2, Math.floor(remainingMs));
+    return second.done ? second.value : null;
+}
 //# sourceMappingURL=hookTimeouts.js.map
