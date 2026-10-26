@@ -1,6 +1,6 @@
 {
   "name": "@mnemonik/shared",
-  "version": "7.154.2",
+  "version": "7.154.3",
   "description": "Shared constants and utilities for Mnemonik packages",
   "repository": {
     "type": "git",
@@ -45,7 +45,7 @@
     }
   },
   "scripts": {
-    "test": "tsx --test --test-concurrency=2 tests/repositoryFingerprint.test.ts tests/projectIdentity.test.ts tests/nearestProjectIdentity.test.ts tests/readiness.test.ts tests/scannerDisclosure.test.ts tests/hookRuntime.test.ts tests/grantHost.test.ts tests/hookTrace.test.ts tests/gateOutbox.test.ts",
+    "test": "tsx --test --test-concurrency=2 tests/repositoryFingerprint.test.ts tests/projectIdentity.test.ts tests/nearestProjectIdentity.test.ts tests/readiness.test.ts tests/scannerDisclosure.test.ts tests/hookRuntime.test.ts tests/grantHost.test.ts tests/hookTrace.test.ts tests/gateOutbox.test.ts tests/runtimeVerify.test.ts",
     "build": "node ../../node_modules/@typescript/native/bin/tsc",
     "typecheck": "node ../../node_modules/@typescript/native/bin/tsc --noEmit -p tsconfig.test.json",
     "prepublishOnly": "npm run build"

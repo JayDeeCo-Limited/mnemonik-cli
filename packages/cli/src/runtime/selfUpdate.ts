@@ -84,10 +84,36 @@ export function cliUpdateLine(result: Awaited<ReturnType<typeof updateCli>>): st
   return humanReason(result.reason ?? 'update_failed');
 }
 
+const HINT_TIMEOUT_MS = 2500;
+const HINT_CACHE_MS = 3_600_000;
+
+/**
+ * The latest published CLI version, for the status hint only (update reads and
+ * verifies the release itself). It reads `dist-tags.latest` from npm's compact
+ * install metadata, which npm's CDN serves in under 0.1 s; the `/latest`
+ * document is built per request and took 3 to 5 s after a publish (26 Oct
+ * 2026), longer than the hint may wait.
+ */
+export async function latestCliVersion(
+  fetcher: typeof fetch = fetch,
+  timeoutMs = HINT_TIMEOUT_MS
+): Promise<string> {
+  const response = await fetcher(registry.slice(0, -1), {
+    headers: { Accept: 'application/vnd.npm.install-v1+json' },
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+  if (!response.ok) throw new RuntimeError('registry_unavailable');
+  const value = (await response.json()) as { name?: unknown; 'dist-tags'?: { latest?: unknown } };
+  const latest = value['dist-tags']?.latest;
+  if (value.name !== '@mnemonik/cli' || !validVersion(latest)) throw new RuntimeError('unsigned');
+  return latest;
+}
+
 /** Status alone caches successes and failures; update always reads the release afresh. */
 export async function cliUpdateHint(
   store: RuntimeStore,
-  current: string
+  current: string,
+  options: { fetcher?: typeof fetch } = {}
 ): Promise<string | undefined> {
   const path = join(store.state, 'cli-update-check.json');
   const devReleaseSource = process.env.MNEMONIK_DEV_RELEASE_DIR ?? '';
@@ -101,14 +127,11 @@ export async function cliUpdateHint(
   if (
     !cached ||
     cached.devReleaseSource !== devReleaseSource ||
-    !(Date.now() - cached.checkedAt >= 0 && Date.now() - cached.checkedAt < 3_600_000)
+    !(Date.now() - cached.checkedAt >= 0 && Date.now() - cached.checkedAt < HINT_CACHE_MS)
   ) {
     cached = { checkedAt: Date.now(), devReleaseSource };
     try {
-      const signal = AbortSignal.timeout(2500);
-      cached.version = (
-        await metadata('latest', (url, options) => fetch(url, { ...options, signal }))
-      ).version;
+      cached.version = await latestCliVersion(options.fetcher ?? fetch);
     } catch {
       /* Offline status stays quiet. */
     }

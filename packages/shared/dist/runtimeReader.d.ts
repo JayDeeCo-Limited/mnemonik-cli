@@ -58,6 +58,13 @@ export interface Verified {
 }
 export declare const missing: (e: unknown) => boolean;
 export declare const versionName: (v: string) => string;
+/**
+ * Filesystem operations one runtime verification keeps in flight. Each file
+ * costs a few round trips (lstat, open, read, close); awaited one at a time, a
+ * 2,000-file hook runtime took 6.6 s to verify (26 Oct 2026). Every check is
+ * still made, for every file.
+ */
+export declare const VERIFY_CONCURRENCY = 16;
 /** Only stdlib and the accepted bootstrap's signer adapter may load before verifyRuntime returns. */
 export declare class RuntimeReader {
     readonly run?: Execute | undefined;
@@ -86,10 +93,16 @@ export declare class RuntimeReader {
     private invalidateAudit;
     private audit;
     private auditPending;
-    inspect(path: string, directory?: boolean, allowMissing?: boolean, replacing?: boolean): Promise<void>;
+    /**
+     * `proven` (one verification's own set, POSIX only) holds directories this
+     * verification has already inspected in full: their components are not
+     * inspected again for every file beneath them, and directories proven here
+     * are added to it.
+     */
+    inspect(path: string, directory?: boolean, allowMissing?: boolean, replacing?: boolean, proven?: Set<string>): Promise<void>;
     /** Call only after an owned atomic replacement: its parent ctime is our own write. */
     recordReplacement(path: string): Promise<void>;
-    bytes(path: string): Promise<Buffer>;
+    bytes(path: string, proven?: Set<string>): Promise<Buffer>;
     /** An owned inheritable ACL update can change every cached descendant's ctime. */
     protected recordAclWrite(path: string): Promise<void>;
     protected pointer(artifact: Artifact): Promise<Pointer | undefined>;

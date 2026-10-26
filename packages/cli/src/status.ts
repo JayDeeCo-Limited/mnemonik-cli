@@ -263,6 +263,12 @@ export interface CollectStatusInput extends ReadProjectStatusInput {
   grants?: unknown;
   preflight: PreflightResult;
   installationConditions?: readonly ReadinessCondition[];
+  /**
+   * Conditions still being read (status's local and Codex trust checks),
+   * appended after `installationConditions` and awaited only where the
+   * document needs them, so the project's server status is asked meanwhile.
+   */
+  pendingInstallationConditions?: Promise<readonly ReadinessCondition[]>;
   scannerStatus?: () => Promise<ScannerPickerResult>;
   projectHookConditions?: readonly ReadinessCondition[];
   configuredHosts?: readonly string[];
@@ -683,6 +689,10 @@ export async function collectStatusDocument(input: CollectStatusInput): Promise<
 > {
   const statusStateDir =
     input.stateDir ?? stateDirectory(process.platform, process.env, input.home);
+  // The project's own status (which asks the server) depends on nothing read
+  // below, so it starts first; a failure surfaces where it is awaited.
+  const projectStatusRead = input.preflight.project.root ? readProjectStatus(input) : undefined;
+  projectStatusRead?.catch(() => undefined);
   let scannerStatus = await input.scannerStatus?.();
   let scannerHeartbeat: StatusDocumentInput['scannerHeartbeat'];
   let scannerReason: ReadinessCondition | undefined;
@@ -830,6 +840,7 @@ export async function collectStatusDocument(input: CollectStatusInput): Promise<
   }
   const installationConditions: ReadinessCondition[] = [
     ...(input.installationConditions ?? []),
+    ...((await input.pendingInstallationConditions) ?? []),
     ...(scannerReason ? [scannerReason] : []),
     ...(scannerFailing ? [scannerFailing] : []),
     ...(input.preflight.status === 'ready'
@@ -903,7 +914,7 @@ export async function collectStatusDocument(input: CollectStatusInput): Promise<
   const details = { ...input.details };
   // A plain folder holding no project file has no project to report. A repository,
   // or a folder the scanner watches, still has one even before it is connected.
-  const resolved = input.preflight.project.root ? await readProjectStatus(input) : undefined;
+  const resolved = projectStatusRead ? await projectStatusRead : undefined;
   const candidate =
     !!resolved &&
     (resolved.identity !== 'absent' ||

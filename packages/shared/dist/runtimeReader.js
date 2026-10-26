@@ -26,6 +26,61 @@ export const versionName = (v) => {
         throw new RuntimeError('permission');
     return v;
 };
+/**
+ * Filesystem operations one runtime verification keeps in flight. Each file
+ * costs a few round trips (lstat, open, read, close); awaited one at a time, a
+ * 2,000-file hook runtime took 6.6 s to verify (26 Oct 2026). Every check is
+ * still made, for every file.
+ */
+export const VERIFY_CONCURRENCY = 16;
+/** Runs `work` with at most `limit` calls in flight; nested calls must not share a limiter. */
+function limiter(limit) {
+    let active = 0;
+    const waiting = [];
+    return async (work) => {
+        if (active >= limit)
+            await new Promise((release) => waiting.push(release));
+        active += 1;
+        try {
+            return await work();
+        }
+        finally {
+            active -= 1;
+            waiting.shift()?.();
+        }
+    };
+}
+/**
+ * A runtime file's bytes, read from the file that was opened: it must be a
+ * regular file (not followed through a link), this user's, with exactly the
+ * mode its manifest entry implies. POSIX only.
+ */
+async function ownedFileBytes(path, mode) {
+    const fd = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW).catch((error) => {
+        // O_NOFOLLOW refuses a link with ELOOP: a link is not an owned file.
+        throw error.code === 'ELOOP'
+            ? new RuntimeError('permission')
+            : error;
+    });
+    try {
+        const stat = await fd.stat();
+        if (!stat.isFile() || stat.uid !== process.getuid?.() || (stat.mode & 0o777) !== mode)
+            throw new RuntimeError('permission');
+        return await fd.readFile();
+    }
+    finally {
+        await fd.close();
+    }
+}
+/**
+ * Waits for every promise, then throws the first rejection in order: nothing a
+ * failed verification started is still running when it reports.
+ */
+async function settleAll(work) {
+    const failed = (await Promise.allSettled(work)).find((result) => result.status === 'rejected');
+    if (failed)
+        throw failed.reason;
+}
 const statIdentity = (stat) => [stat.dev, stat.ino, stat.mode, stat.uid, stat.size, stat.mtimeMs, stat.ctimeMs].join(':');
 /** Only stdlib and the accepted bootstrap's signer adapter may load before verifyRuntime returns. */
 export class RuntimeReader {
@@ -157,12 +212,25 @@ export class RuntimeReader {
                 : 'acl_unavailable');
         }
     }
-    async inspect(path, directory = false, allowMissing = false, replacing = false) {
+    /**
+     * `proven` (one verification's own set, POSIX only) holds directories this
+     * verification has already inspected in full: their components are not
+     * inspected again for every file beneath them, and directories proven here
+     * are added to it.
+     */
+    async inspect(path, directory = false, allowMissing = false, replacing = false, proven) {
         const absolute = this.guardedPath(path);
         const windowsPaths = [];
-        let part = parse(absolute).root;
-        for (const name of absolute.slice(part.length).split(sep)) {
+        const remembered = process.platform === 'win32' ? undefined : proven;
+        const checkedDirectories = [];
+        // Directories proven by this verification are skipped; when the parent is
+        // proven, so is every directory above it.
+        const parent = dirname(absolute);
+        let part = remembered?.has(parent) ? parent : parse(absolute).root;
+        for (const name of absolute.slice(part.length).split(sep).filter(Boolean)) {
             part = join(part, name);
+            if (part !== absolute && remembered?.has(part))
+                continue;
             const stat = await lstat(part).catch((e) => {
                 if (allowMissing && missing(e))
                     return null;
@@ -212,7 +280,12 @@ export class RuntimeReader {
             }
             else if (stat.uid !== process.getuid?.() || (stat.mode & 0o077) !== 0)
                 throw new RuntimeError('permission');
+            if (stat.isDirectory())
+                checkedDirectories.push(part);
         }
+        if (remembered)
+            for (const checked of checkedDirectories)
+                remembered.add(checked);
         await this.audit(windowsPaths);
         for (const part of windowsPaths) {
             const verdict = this.windowsAudit.get(part)?.verdict;
@@ -235,8 +308,8 @@ export class RuntimeReader {
         this.windowsAudit.delete(absolute);
         this.windowsStats.delete(absolute);
     }
-    async bytes(path) {
-        await this.inspect(path);
+    async bytes(path, proven) {
+        await this.inspect(path, false, false, false, proven);
         const fd = await open(path, constants.O_RDONLY | (process.platform === 'win32' ? 0 : constants.O_NOFOLLOW));
         try {
             return await fd.readFile();
@@ -327,42 +400,58 @@ export class RuntimeReader {
             throw new RuntimeError('unsigned');
         if (process.platform === 'win32')
             await this.audit(Object.keys(m.files).map((name) => join(directory, safePath(name))));
+        // Every directory and file is inspected (type, owner, private mode) and
+        // every file is read and hashed, as before; up to VERIFY_CONCURRENCY at a
+        // time, and each directory's own components only once.
         const actual = [];
+        const proven = new Set();
+        // Windows keeps one at a time: its ACL audit shares caches across calls.
+        const limit = limiter(process.platform === 'win32' ? 1 : VERIFY_CONCURRENCY);
         const walk = async (dir, prefix = '') => {
-            await this.inspect(dir, true);
-            for (const name of await readdir(dir)) {
-                const key = prefix + name;
-                if (!prefix && name === 'manifest.json')
-                    continue;
-                const path = join(dir, name);
-                if ((await lstat(path)).isDirectory())
+            const entries = await limit(async () => {
+                await this.inspect(dir, true, false, false, proven);
+                return readdir(dir, { withFileTypes: true });
+            });
+            await settleAll(entries.map(async (entry) => {
+                const key = prefix + entry.name;
+                if (!prefix && entry.name === 'manifest.json')
+                    return;
+                const path = join(dir, entry.name);
+                if (entry.isDirectory())
                     await walk(path, key + '/');
                 else {
-                    await this.inspect(path);
+                    // POSIX: a link or anything else that is not a regular file is
+                    // refused here, and every listed file's type, owner and exact mode
+                    // are checked on the file itself when it is read below. Windows
+                    // inspects each file for its ACL audit.
+                    if (process.platform === 'win32')
+                        await limit(() => this.inspect(path, false, false, false, proven));
+                    else if (!entry.isFile())
+                        throw new RuntimeError('permission');
                     actual.push(key);
                 }
-            }
+            }));
         };
         await walk(directory);
         if (actual.sort().join('\n') !== Object.keys(m.files).sort().join('\n'))
             throw new RuntimeError('digest_mismatch');
-        let total = 0;
-        for (const [name, expected] of Object.entries(m.files)) {
+        for (const expected of Object.values(m.files))
             if (!expected ||
                 !/^[a-f0-9]{64}$/.test(expected.sha256) ||
                 !Number.isSafeInteger(expected.size) ||
                 expected.size < 0 ||
                 typeof expected.executable !== 'boolean')
                 throw new RuntimeError('digest_mismatch');
+        let total = 0;
+        await settleAll(Object.entries(m.files).map(([name, expected]) => limit(async () => {
             const path = join(directory, safePath(name));
-            const contents = await this.bytes(path);
+            const contents = process.platform === 'win32'
+                ? await this.bytes(path, proven)
+                : await ownedFileBytes(path, expected.executable ? 0o700 : 0o600);
             if (hash(contents) !== expected.sha256 || contents.length !== expected.size)
                 throw new RuntimeError('digest_mismatch');
-            if (process.platform !== 'win32' &&
-                ((await lstat(path)).mode & 0o777) !== (expected.executable ? 0o700 : 0o600))
-                throw new RuntimeError('permission');
             total += contents.length;
-        }
+        })));
         if (total !== m.totalSize)
             throw new RuntimeError('digest_mismatch');
         if (m.signer) {

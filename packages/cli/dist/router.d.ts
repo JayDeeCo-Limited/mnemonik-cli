@@ -60,6 +60,8 @@ export interface CliDependencies {
     interruptedProjectSetup?: boolean;
     installSession?: InstallSessionTransport;
     grantFetch?: typeof fetch;
+    /** The npm registry, for the status update hint. */
+    registryFetch?: typeof fetch;
     editorLogin?: EditorLoginOverrides;
     cliAuth?: {
         signIn(): Promise<unknown>;

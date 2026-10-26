@@ -683,6 +683,8 @@ export interface CliDependencies {
   interruptedProjectSetup?: boolean;
   installSession?: InstallSessionTransport;
   grantFetch?: typeof fetch;
+  /** The npm registry, for the status update hint. */
+  registryFetch?: typeof fetch;
   editorLogin?: EditorLoginOverrides;
   cliAuth?: {
     signIn(): Promise<unknown>;
@@ -1773,12 +1775,18 @@ async function collectCurrentInstallation(
     deps.hostManagement?.stateDir ??
     deps.installStateDir ??
     stateDirectory(process.platform, process.env, deps.home);
-  const localConditions = deps.projectHookConditions
-    ? []
-    : [
-        ...(await localInstallationConditions(deps.home ?? homedir(), hostStateDir, deps.launcher)),
+  // The installed CLI's own runtime is verified alongside everything else.
+  const installedCliRuntime = new RuntimeStore(hostStateDir)
+    .verifyRuntime('cli')
+    .catch(() => undefined);
+  // Read while the status document is collected; it is awaited only where the
+  // document needs it, after the project's own status has been asked for.
+  const localConditions: Promise<readonly ReadinessCondition[]> = deps.projectHookConditions
+    ? Promise.resolve([])
+    : Promise.all([
+        localInstallationConditions(deps.home ?? homedir(), hostStateDir, deps.launcher),
         // Installed Codex hooks that Codex has not trusted cannot run.
-        ...(await (
+        (
           deps.codexTrustConditions ??
           (() =>
             codexTrustConditions({
@@ -1786,8 +1794,9 @@ async function collectCurrentInstallation(
               env: deps.hostManagement?.env,
               imports: deps.hostManagement?.imports,
             }))
-        )()),
-      ];
+        )(),
+      ]).then((lists) => lists.flat());
+  localConditions.catch(() => undefined);
   const document = await collectStatusDocument({
     preflight: result,
     cwd: deps.cwd ?? process.cwd(),
@@ -1805,7 +1814,8 @@ async function collectCurrentInstallation(
     getCliBearer: deps.getCliBearer,
     transport: deps.projectTransport,
     scannerStatus: deps.scannerStatus,
-    installationConditions: [...(deps.installationConditions ?? []), ...localConditions],
+    installationConditions: deps.installationConditions ?? [],
+    pendingInstallationConditions: localConditions,
     projectHookConditions: deps.projectHookConditions ?? [],
     configuredHosts: deps.configuredHosts ?? deps.install?.input.hosts,
     details: deps.statusDetails,
@@ -1822,9 +1832,7 @@ async function collectCurrentInstallation(
       : {}),
   });
   const versions = await readInstallVersions(hostStateDir, document.scanner?.version ?? undefined);
-  const installedCli = await new RuntimeStore(hostStateDir)
-    .verifyRuntime('cli')
-    .catch(() => undefined);
+  const installedCli = await installedCliRuntime;
   if (installedCli) versions.cli = installedCli.reference.version;
   return { ...document, versions };
 }
@@ -2539,11 +2547,6 @@ export async function runCli(args: string[], deps: CliDependencies = {}): Promis
     const invalid = allowed(parsed, []);
     if (invalid || subcommand)
       return invalid ? flagError(output, parsed, invalid) : usageError(['status']);
-    const document = await collectCurrentInstallation(
-      deps,
-      output,
-      parsed.flags.has('json') ? undefined : (line) => output.line(line)
-    );
     // Each separately authorized part on this computer: every installed coding
     // tool's MCP connection (the server's record and the tool's own store) and
     // hooks, the scanner, and the CLI. One line each; none is ever dropped.
@@ -2552,15 +2555,39 @@ export async function runCli(args: string[], deps: CliDependencies = {}): Promis
       deps.installStateDir ??
       stateDirectory(process.platform, process.env, deps.home);
     const editors = await installedCodingTools(deps.home ?? homedir(), stateDir);
-    const evidence = await authorizationEvidence(
+    const version = await packageVersion();
+    const store = new RuntimeStore(
+      deps.installStateDir ?? stateDirectory(process.platform, process.env, deps.home)
+    );
+    // The installation, the server's record of this machine's authorizations
+    // and the update hint do not depend on one another, so they are read at the
+    // same time. Each probe is already bounded and says "unknown" rather than
+    // wait: the grants and the hint 2.5 s, project requests 5 s, git 2 s. Only
+    // the readiness upload below needs the finished document.
+    const documentRead = collectCurrentInstallation(
       deps,
       output,
-      editors
-        .map((editor) => editor.host)
-        .filter((host): host is (typeof hostOrder)[number] =>
-          hostOrder.includes(host as (typeof hostOrder)[number])
-        )
+      parsed.flags.has('json') ? undefined : (line) => output.line(line)
     );
+    // The readiness upload needs only the document, so it starts as soon as
+    // the document is known; what it found is said at the end, as before.
+    const reportSent = documentRead.then((document) =>
+      reportCurrentInstallation(deps, output, document)
+    );
+    reportSent.catch(() => undefined);
+    const [document, evidence, hint] = await Promise.all([
+      documentRead,
+      authorizationEvidence(
+        deps,
+        output,
+        editors
+          .map((editor) => editor.host)
+          .filter((host): host is (typeof hostOrder)[number] =>
+            hostOrder.includes(host as (typeof hostOrder)[number])
+          )
+      ),
+      cliUpdateHint(store, version, { fetcher: deps.registryFetch }),
+    ]);
     const tools = codingToolStatuses(
       editors,
       document.conditions ?? [],
@@ -2581,10 +2608,6 @@ export async function runCli(args: string[], deps: CliDependencies = {}): Promis
       scanner,
       cli: evidence.cli,
     });
-    const version = await packageVersion();
-    const store = new RuntimeStore(
-      deps.installStateDir ?? stateDirectory(process.platform, process.env, deps.home)
-    );
     if (!parsed.flags.has('json')) {
       renderStatusSummaries(shown, output, { agent: !personPresent(parsed, deps) });
       for (const entry of authorizations)
@@ -2593,7 +2616,6 @@ export async function runCli(args: string[], deps: CliDependencies = {}): Promis
         else output.line(entry.line);
       await renderRefusals(refusalStateDir(deps), output);
     }
-    const hint = await cliUpdateHint(store, version);
     if (parsed.flags.has('json'))
       output.json({
         ...shown,
@@ -2608,7 +2630,7 @@ export async function runCli(args: string[], deps: CliDependencies = {}): Promis
     else if (hint) output.line(hint);
     // The console reads authorizations live, so the machine report keeps only
     // what this machine itself showed: a line stored there would go stale.
-    const reported = await reportCurrentInstallation(deps, output, document);
+    const reported = await reportSent;
     if (reported === 'signed_out' && !parsed.flags.has('json'))
       output.line(REPORT_NOT_SENT.sentence);
     else if (typeof reported === 'object' && !parsed.flags.has('json'))

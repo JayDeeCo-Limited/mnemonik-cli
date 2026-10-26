@@ -69,6 +69,12 @@ export interface CollectStatusInput extends ReadProjectStatusInput {
     grants?: unknown;
     preflight: PreflightResult;
     installationConditions?: readonly ReadinessCondition[];
+    /**
+     * Conditions still being read (status's local and Codex trust checks),
+     * appended after `installationConditions` and awaited only where the
+     * document needs them, so the project's server status is asked meanwhile.
+     */
+    pendingInstallationConditions?: Promise<readonly ReadinessCondition[]>;
     scannerStatus?: () => Promise<ScannerPickerResult>;
     projectHookConditions?: readonly ReadinessCondition[];
     configuredHosts?: readonly string[];

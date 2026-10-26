@@ -10,7 +10,7 @@ import packageJson from '../package.json' with { type: 'json' };
 import { ensureLauncher } from '../src/launcher.js';
 import { runCli } from '../src/router.js';
 import { installBootstrap } from '../src/runtime/bootstrap.js';
-import { cliUpdateHint, updateCli } from '../src/runtime/selfUpdate.js';
+import { cliUpdateHint, latestCliVersion, updateCli } from '../src/runtime/selfUpdate.js';
 import { npmReleaseSource } from '../src/runtime/releaseSource.js';
 import * as releaseSources from '../src/runtime/releaseSource.js';
 import { RuntimeStore, hash, type RuntimeSource } from '../src/runtime/store.js';
@@ -207,7 +207,16 @@ const scannerDownloads: typeof fetch = async (url, options) => {
   return registry(url, options);
 };
 let latest: string, corrupt: boolean;
+const COMPACT_METADATA_URL = 'https://registry.npmjs.org/%40mnemonik%2Fcli';
+const compactMetadata = (version: string) =>
+  Response.json({
+    name: '@mnemonik/cli',
+    modified: '2026-10-26T00:40:52.560Z',
+    'dist-tags': { latest: version },
+    versions: { [version]: { name: '@mnemonik/cli', version } },
+  });
 const registry = vi.fn<typeof fetch>(async (url) => {
+  if (String(url) === COMPACT_METADATA_URL) return compactMetadata(latest);
   if (String(url).endsWith('/release-manifest.json'))
     return new Response(JSON.stringify(releaseManifest(latest)));
   if (String(url).endsWith('/release-manifest.json.minisig')) {
@@ -922,6 +931,86 @@ it('status bounds a stalled registry to 2.5 seconds and caches the failure quiet
   expect(result.text).not.toContain('is available');
   expect((await status()).code).toBe(result.code);
   expect(registry).toHaveBeenCalledTimes(1);
+});
+it('reads the latest version from the compact install metadata', async () => {
+  const fetcher = vi.fn<typeof fetch>(async () => compactMetadata('7.154.1'));
+  expect(await latestCliVersion(fetcher)).toBe('7.154.1');
+  const [url, init] = fetcher.mock.calls[0]!;
+  expect(String(url)).toBe(COMPACT_METADATA_URL);
+  expect(new Headers(init?.headers).get('accept')).toBe('application/vnd.npm.install-v1+json');
+  expect(init?.signal).toBeInstanceOf(AbortSignal);
+});
+it.each([
+  ['another package', { name: '@mnemonik/scanner', 'dist-tags': { latest: '9.9.9' } }, 200],
+  ['no latest tag', { name: '@mnemonik/cli', 'dist-tags': {} }, 200],
+  ['a malformed version', { name: '@mnemonik/cli', 'dist-tags': { latest: 'next' } }, 200],
+  ['a registry error', { error: 'not found' }, 404],
+])('refuses compact metadata naming %s', async (_case, body, statusCode) => {
+  await expect(
+    latestCliVersion(async () => Response.json(body, { status: statusCode }))
+  ).rejects.toThrow();
+});
+it('stays silent when the registry cannot be reached, and caches that for the hour', async () => {
+  const offline = vi.fn<typeof fetch>(async () => {
+    throw new TypeError('fetch failed');
+  });
+  expect(await cliUpdateHint(store, '1.0.0', { fetcher: offline })).toBeUndefined();
+  expect(await cliUpdateHint(store, '1.0.0', { fetcher: offline })).toBeUndefined();
+  expect(offline).toHaveBeenCalledTimes(1);
+  expect(registry).not.toHaveBeenCalled();
+});
+it('gives up on a registry that does not answer within 2.5 seconds', async () => {
+  const stalled = vi.fn<typeof fetch>(
+    (_url, init) =>
+      new Promise((_resolve, reject) =>
+        init!.signal!.addEventListener('abort', () => reject(init!.signal!.reason), { once: true })
+      )
+  );
+  const started = performance.now();
+  expect(await latestCliVersion(stalled, 50).catch(() => 'silent')).toBe('silent');
+  expect(performance.now() - started).toBeLessThan(1000);
+  const hintStarted = performance.now();
+  expect(await cliUpdateHint(store, '1.0.0', { fetcher: stalled })).toBeUndefined();
+  expect(performance.now() - hintStarted).toBeLessThan(3000);
+});
+it('writes the hint cache into the state directory and honours it for an hour', async () => {
+  const fetcher = vi.fn<typeof fetch>(async () => compactMetadata('1.1.0'));
+  expect(await cliUpdateHint(store, '1.0.0', { fetcher })).toBe(
+    'CLI 1.1.0 is available; run mnemonik update.'
+  );
+  const cached = JSON.parse(await readFile(join(state, 'cli-update-check.json'), 'utf8'));
+  expect(cached).toMatchObject({ version: '1.1.0', devReleaseSource: '' });
+  expect(await cliUpdateHint(store, '1.0.0', { fetcher })).toBe(
+    'CLI 1.1.0 is available; run mnemonik update.'
+  );
+  expect(fetcher).toHaveBeenCalledTimes(1);
+  await writeFile(
+    join(state, 'cli-update-check.json'),
+    JSON.stringify({ ...cached, checkedAt: Date.now() - 3_600_001 })
+  );
+  await cliUpdateHint(store, '1.0.0', { fetcher });
+  expect(fetcher).toHaveBeenCalledTimes(2);
+});
+it('status takes the registry from its dependencies', async () => {
+  const registryFetch = vi.fn<typeof fetch>(async () => compactMetadata('1.1.0'));
+  let text = '';
+  await runCli(['status'], {
+    installStateDir: state,
+    home: state,
+    cwd: state,
+    stdout: { write: (value: string) => void (text += value) },
+    configuredHosts: [],
+    installationConditions: [],
+    registryFetch,
+    preflight: {
+      resolveIdentity: async () => ({ kind: 'git_unavailable', detail: 'fixture' }),
+      pathExists: async () => false,
+      fetch: async () => Response.json({}),
+    },
+  });
+  expect(text).toContain('CLI 1.1.0 is available; run mnemonik update.');
+  expect(registryFetch).toHaveBeenCalledTimes(1);
+  expect(registry).not.toHaveBeenCalled();
 });
 it('uses the dev release index, records its source, and makes no registry calls', async () => {
   const directory = join(state, 'release');

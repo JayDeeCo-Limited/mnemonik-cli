@@ -591,7 +591,7 @@ it('keeps the same verdict and words when the network cannot be reached', async 
     reached.filter(
       (path) => path !== '/api/v1/installations/current/readiness' && path !== '/api/v1/auth/grants'
     )
-  ).toEqual(['/%40mnemonik%2Fcli/latest']);
+  ).toEqual(['/%40mnemonik%2Fcli']); // the update hint's compact npm metadata
   // A reachable network reaches exactly the same verdict, word for word.
   vi.stubGlobal('fetch', async () => Response.json({}));
   const online = await machine.invoke('status', {
@@ -1584,4 +1584,71 @@ describe('attention pairs name the right next step', () => {
       'Run mnemonik install again from a terminal with permission to create tasks.',
     ]);
   });
+});
+
+describe('status speed: independent probes run at the same time, each bounded', () => {
+  const signedIn: Partial<CliDependencies> = {
+    cliAuth: {
+      signIn: async () => undefined,
+      getCliBearer: async () => 'access-token',
+      logout: async () => undefined,
+    },
+  };
+  const until = async (seen: () => boolean, ms: number) => {
+    const deadline = Date.now() + ms;
+    while (!seen() && Date.now() < deadline) await new Promise((r) => setTimeout(r, 5));
+    return seen();
+  };
+  const hang = (init?: Parameters<typeof fetch>[1]) =>
+    new Promise<Response>((_resolve, reject) =>
+      init?.signal?.addEventListener('abort', () => reject(init.signal!.reason), { once: true })
+    );
+
+  it('asks the server and npm while the installation is still being read', async () => {
+    const machine = await claudeCodeOnly();
+    const started: string[] = [];
+    let overlapped = false;
+    const result = await machine.invoke('status', {
+      ...signedIn,
+      grantFetch: async (input) => {
+        const path = new URL(String(input)).pathname;
+        started.push(path);
+        return path === '/api/v1/auth/grants'
+          ? Response.json({ account: 'owner', grants: [] })
+          : Response.json({ status: 'recorded' });
+      },
+      registryFetch: async () => {
+        started.push('npm');
+        return Response.json({ name: '@mnemonik/cli', 'dist-tags': { latest: '0.0.1' } });
+      },
+      // Codex's trust check (part of reading the installation) holds until
+      // the server and npm have been asked: read one after the other, they
+      // would not be, and the check would give up after three seconds.
+      codexTrustConditions: async () => {
+        overlapped = await until(
+          () => started.includes('/api/v1/auth/grants') && started.includes('npm'),
+          3000
+        );
+        return [];
+      },
+    });
+    expect(result.text).toContain('Mnemonik is installed and working.');
+    expect(overlapped).toBe(true);
+  }, 15_000);
+
+  it('a server and a registry that never answer cost one bounded wait, not one per probe', async () => {
+    const machine = await claudeCodeOnly();
+    const started = performance.now();
+    const result = await machine.invoke('status', {
+      ...signedIn,
+      grantFetch: async (_input, init) => hang(init),
+      registryFetch: async (_input, init) => hang(init),
+    });
+    const elapsed = performance.now() - started;
+    // The grants, the update hint and the readiness upload each wait at most
+    // 2.5 s and now wait together: 7.5 s one after the other.
+    expect(elapsed).toBeLessThan(5000);
+    // Nothing that could not be checked is claimed.
+    expect(result.text).not.toContain('is available; run mnemonik update');
+  }, 20_000);
 });
