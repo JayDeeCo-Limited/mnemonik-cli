@@ -71,4 +71,5 @@ export * from './runtimeSigners.js';
 export * from './projectSetupHandoff.js';
 export * from './hookConversation.js';
 export * from './hookTrace.js';
+export * from './gateOutbox.js';
 //# sourceMappingURL=hookRuntime.d.ts.map

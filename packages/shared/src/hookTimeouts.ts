@@ -1,3 +1,5 @@
+import diagnosticsChannel from 'node:diagnostics_channel';
+
 /**
  * Hook dispatcher HTTP timeout budgets + AbortSignal helper.
  *
@@ -108,51 +110,63 @@ export function withHookTimeout(ms: number): { signal: AbortSignal; cleanup: () 
 }
 
 /**
- * One second attempt on the main hook call (POST /api/v1/hooks/injections).
+ * The main hook call (POST /api/v1/hooks/injections) is hedged: when the first
+ * request has not answered by HOOK_HEDGE_SHARE of the budget, a second request
+ * starts beside it on a fresh connection, and whichever answers first is used.
  *
- * Why it exists: on 24 October 2026 about a third of one machine's hook calls
- * were lost for 50 minutes to a stall between Cloudflare and one load-balancer
- * node. The server had accepted those requests and was waiting for a body that
- * never finished arriving. A second request opens a new connection and
- * normally lands on a healthy path. The call is idempotent by design (the
- * injection bus dedups on the server), so repeating it is safe.
+ * Why a second request at all: on 24 October 2026 about a third of one
+ * machine's hook calls were lost for 50 minutes to a stall between Cloudflare
+ * and one load-balancer node. The server had accepted those requests and was
+ * waiting for a body that never finished arriving. A second request opens a new
+ * connection and normally lands on a healthy path.
  *
- * Shape: the whole call, both attempts included, still ends inside `budgetMs`,
- * so the budget every hook event is checked against (tests/HookEventBudgets
- * .test.ts) and the host's kill limit do not move. The first attempt gets
- * HOOK_FIRST_ATTEMPT_SHARE of the budget; the second gets whatever is left.
- * A first attempt that fails fast leaves the second nearly the whole budget.
+ * Why it is a hedge and not a retry: v7.149.0 abandoned the first request at
+ * 65% of the budget and then retried. Every hook process opens its own
+ * connection (DNS, TCP and TLS from the user's machine to Cloudflare), and the
+ * credential is read before the request leaves, so on 25 October that first
+ * request had often been on the wire for only a few hundred milliseconds when
+ * it was abandoned. Answers that were merely slow were thrown away, half the
+ * calls on the owner's machine needed two requests, about 8% lost both, and the
+ * load balancer counted each abandoned request as a client close (ELB 460). A
+ * hedge never abandons an answer that is on its way: the first request keeps
+ * running to the end of the budget.
  *
- * What is retried: a timeout, a connection error, and the gateway statuses
- * that mean the request never reached the application (408, 502, 503, 504 and
- * Cloudflare's 52x). Nothing else is: a 4xx or a 500 repeats exactly, and a
- * response that arrives is final.
+ * Both requests share one deadline, `budgetMs` from the call, so the budget
+ * every hook event is checked against (tests/HookEventBudgets.test.ts) and the
+ * host's kill limit do not move. A first request that fails fast (a connection
+ * error or a gateway status) starts the second at once instead of at the hedge
+ * point.
  *
- * Nothing is queued or stored on the client. A call that fails twice is dropped,
- * as before. The server keeps an answer for 15 s so the second attempt can have
- * it when the first attempt gave up on an answer that was already decided.
+ * What counts as an answer: any response other than a gateway status (408, 502,
+ * 503, 504, Cloudflare's 52x) and other than the server's "the first request is
+ * still working" reply (HOOK_REPLAY_HEADER: pending). A 4xx or a 500 is an
+ * answer (null to the caller): repeating it would repeat the failure.
+ *
+ * The server de-duplicates the two requests by HOOK_REQUEST_ID_HEADER
+ * (src/server/hookReplay.ts): the second request is handed the first one's
+ * answer, or waits for it, and nothing is counted twice. Nothing is queued or
+ * stored on the client; a call with no answer by the deadline is dropped.
  */
-export const HOOK_FIRST_ATTEMPT_SHARE = 0.65;
+export const HOOK_HEDGE_SHARE = 0.65;
 
-/** Below this much budget left, a second attempt cannot complete a round trip. */
+/** Below this much budget left, a second request cannot complete a round trip. */
 export const HOOK_SECOND_ATTEMPT_MIN_MS = 300;
 
-/** Sent on every attempt so the server can count how many calls needed a second one. */
+/** Sent on every request: 1 for the first, 2 for the hedge. */
 export const HOOK_ATTEMPT_HEADER = 'x-mnemonik-hook-attempt';
 
 /**
- * Sent on both attempts with the same value. The server keeps the first
- * attempt's answer for a few seconds under this id and hands it to the second
- * attempt, so an answer decided after the first attempt gave up is delivered
- * rather than lost, and nothing is counted twice (src/server/hookReplay.ts).
+ * Sent on both requests with the same value. The server keeps the first
+ * request's answer for a few seconds under this id and hands it to the second,
+ * so an answer decided by one request is delivered through either, and nothing
+ * is counted twice (src/server/hookReplay.ts).
  */
 export const HOOK_REQUEST_ID_HEADER = 'x-mnemonik-hook-request-id';
 
 /**
- * Sent on every attempt: how many milliseconds this attempt may still take.
- * The server never waits for a first attempt's answer longer than this less a
- * margin for the return trip, so it does not hold a request for a client that
- * has already given up.
+ * Sent on every request: how many milliseconds the caller will still wait. The
+ * server fits its own work inside this less the return trip, so it never
+ * decides an answer the client will not be there to receive.
  */
 export const HOOK_BUDGET_HEADER = 'x-mnemonik-hook-budget-ms';
 
@@ -171,9 +185,73 @@ export function withHookVersion<T extends { headers?: unknown }>(
   runtime: string,
   version: string
 ): T {
-  const headers = new Headers(init.headers as ConstructorParameters<typeof Headers>[0]);
+  const raw = init.headers;
+  if (raw && typeof raw === 'object' && !(raw instanceof Headers) && !Array.isArray(raw)) {
+    // A plain record is copied with its property descriptors, not its values:
+    // the hedged hook client's budget header is a getter read when the
+    // request is sent, after the credential is read (hedgedHookRequest).
+    const headers = Object.defineProperties({}, Object.getOwnPropertyDescriptors(raw)) as Record<
+      string,
+      string
+    >;
+    for (const name of Object.keys(headers)) {
+      if (name.toLowerCase() === HOOK_VERSION_HEADER) delete headers[name];
+    }
+    headers[HOOK_VERSION_HEADER] = `${runtime}/${version}`;
+    return { ...init, headers };
+  }
+  const headers = new Headers(raw as ConstructorParameters<typeof Headers>[0]);
   headers.set(HOOK_VERSION_HEADER, `${runtime}/${version}`);
   return { ...init, headers: Object.fromEntries(headers.entries()) };
+}
+
+/**
+ * Sent on every request by a hedging client (hedgedHookRequest). Its budget
+ * header is what the whole call still has; clients v7.149 to v7.151 sent the
+ * first attempt's own 1.3 s cut-off instead, so a server that sees no marker
+ * assumes the whole-call 2 s budget rather than trusting that header.
+ */
+export const HOOK_HEDGED_HEADER = 'x-mnemonik-hook-hedged';
+
+/**
+ * Sent on the second request only: what had become of the first when the second
+ * left. `pending; sent=812` (still waiting, its body finished sending 812 ms
+ * earlier), `pending; sent=none` (it had not finished sending, so the client
+ * itself was slow), `gateway; sent=<ms>` (the edge answered 502/503/504/52x) or
+ * `transport; sent=<ms>` (the connection failed). The server uses it to count
+ * requests the network lost on the way in, which is what the edge alarm reads
+ * (src/server/hookReplay.ts, hookEdgeMetrics.ts).
+ */
+export const HOOK_FIRST_ATTEMPT_HEADER = 'x-mnemonik-hook-first-attempt';
+
+/**
+ * Set by the server on a reply that is not an answer: the request found the
+ * other request of the same call still working on it and could not wait any
+ * longer. The client keeps waiting for the other request.
+ */
+export const HOOK_REPLAY_HEADER = 'x-mnemonik-hook-replay';
+export const HOOK_REPLAY_PENDING = 'pending';
+
+export type HookFirstAttemptState = 'pending' | 'gateway' | 'transport';
+
+export interface HookFirstAttempt {
+  state: HookFirstAttemptState;
+  /** Milliseconds since the first request finished sending its body; null when it had not. */
+  sentAgoMs: number | null;
+}
+
+export function formatHookFirstAttempt(first: HookFirstAttempt): string {
+  return `${first.state}; sent=${first.sentAgoMs === null ? 'none' : Math.max(0, Math.round(first.sentAgoMs))}`;
+}
+
+export function parseHookFirstAttempt(value: unknown): HookFirstAttempt | null {
+  if (typeof value !== 'string') return null;
+  const match = /^(pending|gateway|transport); sent=(none|\d{1,6})$/.exec(value.trim());
+  if (!match) return null;
+  return {
+    state: match[1] as HookFirstAttemptState,
+    sentAgoMs: match[2] === 'none' ? null : Number(match[2]),
+  };
 }
 
 /** Statuses that mean the request did not reach, or was not served by, the application. */
@@ -200,44 +278,157 @@ export function isTransientHookFetchError(error: unknown): boolean {
   );
 }
 
-export type HookAttemptResult<T> = { done: true; value: T } | { done: false };
+/**
+ * When the first request finished sending its body, read from Node's fetch
+ * (undici) diagnostics channels. Matched by the request id header, so other
+ * requests the process makes at the same time are ignored. Reports null when
+ * the channels are unavailable or the body never finished sending; nothing
+ * depends on it except the HOOK_FIRST_ATTEMPT_HEADER the server counts.
+ */
+function watchFirstRequestSent(
+  requestId: string,
+  clock: () => number
+): { sentAt(): number | null; stop(): void } {
+  let sentAt: number | null = null;
+  let request: object | null = null;
+  const onCreate = (message: unknown): void => {
+    const candidate = (message as { request?: { headers?: unknown } } | null)?.request;
+    if (request || !candidate) return;
+    if (String(candidate.headers ?? '').includes(requestId)) request = candidate;
+  };
+  const onBodySent = (message: unknown): void => {
+    if (sentAt === null && request && (message as { request?: object })?.request === request) {
+      sentAt = clock();
+    }
+  };
+  try {
+    diagnosticsChannel.subscribe('undici:request:create', onCreate);
+    diagnosticsChannel.subscribe('undici:request:bodySent', onBodySent);
+  } catch {
+    return { sentAt: () => null, stop: () => undefined };
+  }
+  return {
+    sentAt: () => sentAt,
+    stop: () => {
+      try {
+        diagnosticsChannel.unsubscribe('undici:request:create', onCreate);
+        diagnosticsChannel.unsubscribe('undici:request:bodySent', onBodySent);
+      } catch {
+        // Nothing to undo.
+      }
+    },
+  };
+}
+
+type HookAttemptOutcome<T> =
+  { final: true; value: T | null } | { final: false; kind: 'gateway' | 'transport' | 'pending' };
 
 /**
- * Run `attempt` and, when it ends in a transient failure, run it once more
- * inside the rest of `budgetMs`. Returns the value of the attempt that
- * finished, or null when neither did. `attempt` returns `{ done: false }` for
- * a retryable response and throws for a transport failure; anything else it
- * returns is final.
+ * Send one hook call as up to two hedged requests inside `budgetMs` (see
+ * HOOK_HEDGE_SHARE). `send` performs one request with the headers and signal it
+ * is given; `parse` reads an answer. Returns the first answer, null when no
+ * request answered in time or the answer was an error status, and rejects only
+ * when `send` or `parse` fails in a way that is not a transport failure.
  */
-export async function withSecondAttempt<T>(
+export function hedgedHookRequest<T>(
   budgetMs: number,
-  attempt: (
-    signal: AbortSignal,
-    attemptNumber: 1 | 2,
-    requestId: string,
-    budgetMs: number
-  ) => Promise<HookAttemptResult<T>>,
+  send: (headers: Record<string, string>, signal: AbortSignal) => Promise<Response>,
+  parse: (response: Response) => Promise<T>,
   clock: () => number = Date.now
 ): Promise<T | null> {
   const startedAt = clock();
+  const deadline = startedAt + budgetMs;
   const requestId = globalThis.crypto.randomUUID();
-  const run = async (attemptNumber: 1 | 2, timeoutMs: number): Promise<HookAttemptResult<T>> => {
-    const { signal, cleanup } = withHookTimeout(timeoutMs);
-    try {
-      return await attempt(signal, attemptNumber, requestId, timeoutMs);
-    } catch (error) {
-      if (!isTransientHookFetchError(error)) throw error;
-      return { done: false };
-    } finally {
-      cleanup();
-    }
-  };
+  const sent = watchFirstRequestSent(requestId, clock);
+  const controllers: AbortController[] = [];
 
-  const first = await run(1, Math.floor(budgetMs * HOOK_FIRST_ATTEMPT_SHARE));
-  if (first.done) return first.value;
+  return new Promise<T | null>((resolve, reject) => {
+    let settled = false;
+    let running = 0;
+    let secondStarted = false;
+    let firstFailure: 'gateway' | 'transport' | null = null;
+    let hedgeTimer: ReturnType<typeof setTimeout> | undefined;
 
-  const remainingMs = budgetMs - (clock() - startedAt);
-  if (remainingMs < HOOK_SECOND_ATTEMPT_MIN_MS) return null;
-  const second = await run(2, Math.floor(remainingMs));
-  return second.done ? second.value : null;
+    const finish = (value: T | null, error?: unknown, winner?: AbortController): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(deadlineTimer);
+      clearTimeout(hedgeTimer);
+      sent.stop();
+      // Cancel whatever is still in flight; the request that answered is done.
+      for (const controller of controllers) if (controller !== winner) controller.abort();
+      if (error !== undefined) reject(error);
+      else resolve(value);
+    };
+    const deadlineTimer = setTimeout(() => finish(null), budgetMs);
+
+    const startSecond = (): boolean => {
+      if (settled || secondStarted) return secondStarted;
+      if (deadline - clock() < HOOK_SECOND_ATTEMPT_MIN_MS) return false;
+      secondStarted = true;
+      clearTimeout(hedgeTimer);
+      launch(2);
+      return true;
+    };
+
+    const launch = (attemptNumber: 1 | 2): void => {
+      const controller = new AbortController();
+      controllers.push(controller);
+      const now = clock();
+      const headers: Record<string, string> = {
+        [HOOK_ATTEMPT_HEADER]: String(attemptNumber),
+        [HOOK_REQUEST_ID_HEADER]: requestId,
+        [HOOK_HEDGED_HEADER]: '1',
+      };
+      // Read when the request is actually built (after the credential read or
+      // rotation and the conversation lock), not when the attempt starts, so
+      // the server's deadline does not include time already spent here.
+      Object.defineProperty(headers, HOOK_BUDGET_HEADER, {
+        enumerable: true,
+        get: () => String(Math.max(0, Math.floor(deadline - clock()))),
+      });
+      if (attemptNumber === 2) {
+        const sentAt = sent.sentAt();
+        headers[HOOK_FIRST_ATTEMPT_HEADER] = formatHookFirstAttempt({
+          state: firstFailure ?? 'pending',
+          sentAgoMs: sentAt === null ? null : now - sentAt,
+        });
+      }
+      running += 1;
+      void (async () => {
+        let outcome: HookAttemptOutcome<T>;
+        try {
+          const response = await send(headers, controller.signal);
+          if (isRetryableHookStatus(response.status)) outcome = { final: false, kind: 'gateway' };
+          else if (response.headers.get(HOOK_REPLAY_HEADER) === HOOK_REPLAY_PENDING)
+            outcome = { final: false, kind: 'pending' };
+          else if (!response.ok) outcome = { final: true, value: null };
+          else outcome = { final: true, value: await parse(response) };
+        } catch (error) {
+          if (!settled && !isTransientHookFetchError(error)) {
+            running -= 1;
+            finish(null, error);
+            return;
+          }
+          outcome = { final: false, kind: 'transport' };
+        }
+        running -= 1;
+        if (settled) return;
+        if (outcome.final) {
+          finish(outcome.value, undefined, controller);
+          return;
+        }
+        // Not an answer. The first request's failure starts the second at once;
+        // with no request left running there is no answer to wait for.
+        if (attemptNumber === 1) {
+          if (outcome.kind !== 'pending') firstFailure = outcome.kind;
+          startSecond();
+        }
+        if (running === 0) finish(null);
+      })();
+    };
+
+    launch(1);
+    hedgeTimer = setTimeout(startSecond, Math.floor(budgetMs * HOOK_HEDGE_SHARE));
+  });
 }

@@ -3,6 +3,7 @@ import { constants } from 'node:fs';
 import { lstat, mkdir, open, rename, rm, utimes } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { withFileLock } from './settingsIo.js';
+import { HOOK_REQUEST_ID_HEADER } from './hookTimeouts.js';
 import { ensureWindowsPrivateDirectorySync } from './runtimeSigners.js';
 const RETENTION_MS = 24 * 60 * 60 * 1000;
 export const CONVERSATION_STATE_FILE = 'conversation.json';
@@ -13,6 +14,15 @@ function boundedHandle(value) {
 export class HookConversation {
     input;
     conversationId;
+    /**
+     * The hook call (x-mnemonik-hook-request-id) whose acquiring request holds
+     * the conversation lock in this process. Its hedged second request
+     * (hedgedHookRequest) is the same call: waiting for the lock would hold it
+     * until the first request finished, which is exactly what the hedge exists
+     * to route around. The server hands both requests the same answer, so the
+     * second may save the handle without the lock.
+     */
+    lockHeldFor;
     scope;
     constructor(input) {
         this.input = input;
@@ -144,7 +154,23 @@ export class HookConversation {
                 await this.save(this.conversationId);
             return response;
         };
-        const response = acquisition ? await this.locked(send) : await send();
+        const callId = hookCallId(init.headers);
+        let response;
+        if (!acquisition || (callId !== undefined && this.lockHeldFor === callId)) {
+            response = await send();
+        }
+        else {
+            response = await this.locked(async () => {
+                this.lockHeldFor = callId;
+                try {
+                    return await send();
+                }
+                finally {
+                    if (this.lockHeldFor === callId)
+                        this.lockHeldFor = undefined;
+                }
+            });
+        }
         // The server refused the cached handle (a signing-secret rotation, say).
         // Forget it so the next acquiring event mints a fresh one; this request
         // is never resent, and a handle another event acquired meanwhile stays.
@@ -225,6 +251,14 @@ export function conversationMarker() {
 }
 export async function adoptHookConversation(result) {
     await active?.adopt(result);
+}
+function hookCallId(headers) {
+    try {
+        return new Headers(headers).get(HOOK_REQUEST_ID_HEADER) ?? undefined;
+    }
+    catch {
+        return undefined;
+    }
 }
 export function withHookConversation(url, init, post) {
     return active ? active.request(url, init, post) : post(init);

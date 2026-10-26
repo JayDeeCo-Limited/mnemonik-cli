@@ -12,6 +12,15 @@ export interface HookConversationInput {
 export declare class HookConversation {
     private readonly input;
     private conversationId?;
+    /**
+     * The hook call (x-mnemonik-hook-request-id) whose acquiring request holds
+     * the conversation lock in this process. Its hedged second request
+     * (hedgedHookRequest) is the same call: waiting for the lock would hold it
+     * until the first request finished, which is exactly what the hedge exists
+     * to route around. The server hands both requests the same answer, so the
+     * second may save the handle without the lock.
+     */
+    private lockHeldFor?;
     private readonly scope;
     constructor(input: HookConversationInput);
     get id(): string | undefined;
