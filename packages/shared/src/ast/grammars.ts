@@ -31,11 +31,13 @@
  */
 
 import { existsSync, readFileSync, statSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { dirname, extname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { gunzipSync } from 'node:zlib';
 import { Language, Parser, Query, type Node } from 'web-tree-sitter';
 import { warn } from '../logger.js';
+import { inVerifiedRuntime, RuntimeAssetError, verifyRuntimeAsset } from '../runtimeAssets.js';
 
 const AST_LANGUAGE_ID_LIST = [
   'typescript',
@@ -264,7 +266,9 @@ export type GrammarUnavailableReason =
   | 'wasm_missing'
   | 'wasm_load_failed'
   | 'tags_query_missing'
-  | 'query_compile_failed';
+  | 'query_compile_failed'
+  /** In the packaged scanner: the artifact differs from the embedded one. */
+  | 'asset_integrity';
 
 export type GrammarLoad =
   { ok: GrammarBinding } | { unavailable: GrammarUnavailableReason; detail: string };
@@ -317,8 +321,24 @@ let parserInit: Promise<void> | null = null;
  * WebAssembly runtime here; calling it per file would dominate the scan.
  */
 function initParser(): Promise<void> {
-  parserInit ??= Parser.init();
+  parserInit ??= Parser.init(
+    // In the packaged scanner, hand web-tree-sitter its runtime WebAssembly,
+    // checked against the embedded asset, rather than let it read the file
+    // from the extracted runtime itself (runtimeAssets.ts).
+    inVerifiedRuntime() ? { wasmBinary: verifiedParserRuntime() } : undefined
+  );
   return parserInit;
+}
+
+function verifiedParserRuntime(): ArrayBuffer {
+  const path = join(
+    dirname(createRequire(import.meta.url).resolve('web-tree-sitter')),
+    'web-tree-sitter.wasm'
+  );
+  const bytes = readFileSync(path);
+  verifyRuntimeAsset(path, bytes);
+  // Copied out of the checked buffer, which nothing else holds.
+  return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
 }
 
 /**
@@ -395,7 +415,7 @@ async function loadUncached(id: AstLanguageId, artifactDir: string): Promise<Gra
  */
 type ArtifactResolution =
   | { wasmPath: string; source: string }
-  | { unavailable: 'wasm_missing' | 'tags_query_missing'; detail: string };
+  | { unavailable: 'wasm_missing' | 'tags_query_missing' | 'asset_integrity'; detail: string };
 
 function resolveArtifacts(id: AstLanguageId, artifactDir: string): ArtifactResolution {
   const wasmPath = join(artifactDir, `${grammarArtifactBasename(id)}.wasm.gz`);
@@ -414,14 +434,21 @@ function resolveArtifacts(id: AstLanguageId, artifactDir: string): ArtifactResol
         detail: `${id} needs the query chain [${QUERY_CHAIN[id].join(', ')}] but ${tagsPath} is missing or empty`,
       };
     }
+    let bytes: Buffer;
     try {
-      source += `${readFileSync(tagsPath, 'utf8')}\n`;
+      bytes = readFileSync(tagsPath);
     } catch (err) {
       return {
         unavailable: 'tags_query_missing',
         detail: `${id}: could not read ${tagsPath}: ${describe(err)}`,
       };
     }
+    try {
+      verifyRuntimeAsset(tagsPath, bytes);
+    } catch (err) {
+      return { unavailable: 'asset_integrity', detail: describe(err) };
+    }
+    source += `${bytes.toString('utf8')}\n`;
   }
 
   return { wasmPath, source };
@@ -439,10 +466,28 @@ async function attemptLoad(id: AstLanguageId, artifactDir: string): Promise<Gram
   if ('unavailable' in artifacts) return artifacts;
   const { wasmPath, source } = artifacts;
 
+  let compressed: Buffer;
+  try {
+    compressed = readFileSync(wasmPath);
+  } catch (err) {
+    return { unavailable: 'wasm_missing', detail: `could not read ${wasmPath}: ${describe(err)}` };
+  }
+  try {
+    // The buffer checked is the buffer loaded (runtimeAssets.ts).
+    verifyRuntimeAsset(wasmPath, compressed);
+  } catch (err) {
+    return { unavailable: 'asset_integrity', detail: describe(err) };
+  }
   let language: Language;
   try {
     await initParser();
-    language = await Language.load(gunzipSync(readFileSync(wasmPath)));
+  } catch (err) {
+    if (err instanceof RuntimeAssetError)
+      return { unavailable: 'asset_integrity', detail: describe(err) };
+    throw err;
+  }
+  try {
+    language = await Language.load(gunzipSync(compressed));
   } catch (err) {
     // Presence is not loadability: tree-sitter-dart ships a 741 KB .wasm that
     // Language.load rejects because the artifact predates the current wasm ABI.
@@ -513,14 +558,14 @@ export function astArtifactReport(artifactDir: string = WASM_DIR): {
   loaded: AstLanguageId[];
   missing: Array<{
     id: AstLanguageId;
-    reason: 'wasm_missing' | 'tags_query_missing';
+    reason: 'wasm_missing' | 'tags_query_missing' | 'asset_integrity';
     detail: string;
   }>;
 } {
   const vendored: AstLanguageId[] = [];
   const missing: Array<{
     id: AstLanguageId;
-    reason: 'wasm_missing' | 'tags_query_missing';
+    reason: 'wasm_missing' | 'tags_query_missing' | 'asset_integrity';
     detail: string;
   }> = [];
 

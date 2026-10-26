@@ -38,6 +38,7 @@ import {
   writeSync,
 } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { open as openAsync, stat as statAsync } from 'node:fs/promises';
 import { mnemonikStateDirectory } from './protectedPaths.js';
 import { ensureWindowsPrivateDirectorySync } from './runtimeSigners.js';
 import { scrubSecrets } from './secretPatterns.js';
@@ -585,4 +586,146 @@ export function startHookTrace(options: HookTraceOptions): HookTrace {
   process.once('exit', (code) => trace.finish(typeof code === 'number' ? code : 0));
   trace.open();
   return trace;
+}
+
+/** The trace window a hook reports its recent misses over. */
+export const HOOK_MISS_WINDOW_MS = 30 * 60 * 1000;
+/**
+ * How much of the trace file's end is read for that summary, asynchronously
+ * and once per hook process (it used to read 256 KB synchronously on every
+ * call). About a hundred hook runs: the recent ones are what the count is for.
+ */
+const HOOK_MISS_TAIL_BYTES = 64 * 1024;
+/** Sent on the main hook call: `<missed>/<total>` server calls over the window. */
+export const HOOK_MISSES_HEADER = 'x-mnemonik-hook-misses';
+
+/**
+ * How many of this host's recent calls to the server did not get an answer
+ * in time: a timeout, a connection error, a gateway or server error, a call
+ * still pending at exit, or a whole run the editor killed at its own hook
+ * timeout. Each of these is silent where it happens (the hook fails open, by
+ * design), so the main hook call carries the count to the server, and
+ * machine health tells the agent when a machine is losing memory this way
+ * (limits audit #2-#3: the hook budget chain fails silently).
+ *
+ * Reads only the end of the trace file, and never throws.
+ */
+export async function summarizeRecentHookCalls(
+  host: HookTraceHost,
+  options: { stateDir?: string; now?: number; windowMs?: number } = {}
+): Promise<{ missed: number; total: number }> {
+  // With the recorder off there is no file, which reads as nothing to report.
+  const empty = { missed: 0, total: 0 };
+  const now = options.now ?? Date.now();
+  const since = now - (options.windowMs ?? HOOK_MISS_WINDOW_MS);
+  let text: string;
+  try {
+    const file = hookTraceFile(host, options.stateDir);
+    const size = (await statAsync(file)).size;
+    const handle = await openAsync(file, 'r');
+    try {
+      const length = Math.min(size, HOOK_MISS_TAIL_BYTES);
+      const buffer = Buffer.alloc(length);
+      await handle.read(buffer, 0, length, size - length);
+      text = buffer.toString('utf8');
+    } finally {
+      await handle.close();
+    }
+  } catch {
+    return empty;
+  }
+  const started = new Map<string, number>();
+  const ended = new Set<string>();
+  let missed = 0;
+  let total = 0;
+  for (const line of text.split('\n')) {
+    let record: HookTraceRecord;
+    try {
+      record = JSON.parse(line) as HookTraceRecord;
+    } catch {
+      continue; // the first line of the tail is usually cut
+    }
+    const at = Date.parse(record.ts);
+    if (!(at >= since)) continue;
+    if (record.phase === 'start') started.set(record.id, at);
+    else if (record.phase === 'end') {
+      ended.add(record.id);
+      // One logical call per path in a run: a hedged request's aborted
+      // loser, or a first attempt whose retry was answered, is not a miss.
+      // Only a call none of whose requests got an answer is.
+      const answeredByPath = new Map<string, boolean>();
+      for (const call of record.calls ?? []) {
+        const status = call.status ?? 0;
+        const answered =
+          call.error === undefined &&
+          call.pending !== true &&
+          status > 0 &&
+          status < 500 &&
+          status !== 408 &&
+          status !== 429;
+        answeredByPath.set(call.path, (answeredByPath.get(call.path) ?? false) || answered);
+      }
+      for (const answered of answeredByPath.values()) {
+        total++;
+        if (!answered) missed++;
+      }
+    }
+  }
+  // A run with a start and no end was ended by the editor at its timeout.
+  for (const [id, at] of started) {
+    if (ended.has(id) || now - at < 60_000) continue;
+    total++;
+    missed++;
+  }
+  return { missed, total };
+}
+
+const summaries = new Map<
+  string,
+  { read: Promise<Record<string, string>>; value?: Record<string, string> }
+>();
+
+function summaryFor(
+  host: HookTraceHost,
+  options: { stateDir?: string; now?: number }
+): { read: Promise<Record<string, string>>; value?: Record<string, string> } {
+  const key = `${host}\0${options.stateDir ?? ''}\0${options.now ?? ''}`;
+  const cached = summaries.get(key);
+  if (cached) return cached;
+  const entry: { read: Promise<Record<string, string>>; value?: Record<string, string> } = {
+    read: Promise.resolve({}),
+  };
+  entry.read = summarizeRecentHookCalls(host, options).then(
+    ({ missed, total }): Record<string, string> => {
+      const value: Record<string, string> =
+        total > 0 ? { [HOOK_MISSES_HEADER]: `${missed}/${total}` } : {};
+      entry.value = value;
+      return value;
+    }
+  );
+  summaries.set(key, entry);
+  return entry;
+}
+
+/**
+ * The header the main hook call carries, or none when nothing was called
+ * recently. Read once per hook process, without blocking it.
+ */
+export function hookMissesHeaders(
+  host: HookTraceHost,
+  options: { stateDir?: string; now?: number } = {}
+): Promise<Record<string, string>> {
+  return summaryFor(host, options).read;
+}
+
+/**
+ * The header if the read has finished, else none, and never a wait: the
+ * count only feeds machine health, so it must never delay a hook request
+ * (the hook starts the read when it loads, so it is normally ready).
+ */
+export function hookMissesHeadersIfReady(
+  host: HookTraceHost,
+  options: { stateDir?: string; now?: number } = {}
+): Record<string, string> {
+  return summaryFor(host, options).value ?? {};
 }

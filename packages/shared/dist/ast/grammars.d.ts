@@ -69,7 +69,9 @@ export interface GrammarBinding {
     query: Query;
 }
 /** Why a grammar is not usable, always with a human-readable detail. */
-export type GrammarUnavailableReason = 'not_covered' | 'wasm_missing' | 'wasm_load_failed' | 'tags_query_missing' | 'query_compile_failed';
+export type GrammarUnavailableReason = 'not_covered' | 'wasm_missing' | 'wasm_load_failed' | 'tags_query_missing' | 'query_compile_failed'
+/** In the packaged scanner: the artifact differs from the embedded one. */
+ | 'asset_integrity';
 export type GrammarLoad = {
     ok: GrammarBinding;
 } | {
@@ -140,7 +142,7 @@ export declare function astArtifactReport(artifactDir?: string): {
     loaded: AstLanguageId[];
     missing: Array<{
         id: AstLanguageId;
-        reason: 'wasm_missing' | 'tags_query_missing';
+        reason: 'wasm_missing' | 'tags_query_missing' | 'asset_integrity';
         detail: string;
     }>;
 };

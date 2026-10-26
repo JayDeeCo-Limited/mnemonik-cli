@@ -1,8 +1,21 @@
 /**
  * Code Scanner - Parse and chunk source files for embedding
  */
-import { type Stats } from 'fs';
-import { type IndexExclusionReason } from './indexClassifier.js';
+import { FileSelector, type FileSelectionOptions, type IndexExcludedFile } from './fileSelection.js';
+export { FileSelector, DEFAULT_IGNORE_PATTERNS, fileOp, statTuple, BUILT_IN_IGNORE_DIRS, isSecretFile, DEFAULT_INCLUDE_EXTENSIONS, isCursorRulePath, languageForExtension, XCODE_AUTHORITY_PATH, isXcodeAuthorityPath, CMAKE_LISTS_PATH, isCmakeListsPath, isAuthorityOnlyPath, AUTHORITY_FILE_MATCHERS, FIXTURE_PATH_RE, isFixturePath, makeIgnoreMatcher, isGitBoundary, isProjectBoundary, rootProjectId, isLinkedWorktreeCheckout, type FileSelectionOptions, type FileStatTuple, type IndexRuleFiles, type IndexExcludedFile, } from './fileSelection.js';
+/**
+ * The version of the scanner's file hash: the SHA-256 of the scrubbed text
+ * (`scrubSourceSecrets` over the file with NULs removed) and the content soft
+ * default judged on it. The daemon caches that hash per file (size, mtime,
+ * ctime, inode), so a restart or a release does not re-read and re-scrub every
+ * file. Bump this number whenever redaction or the content soft defaults change
+ * what they produce: every machine then re-reads and re-scrubs every file once,
+ * which is exactly what a redaction fix needs. Do NOT bump it for a release that
+ * leaves both unchanged; a needless bump costs every user a full re-read.
+ * tests/ScrubVersion.test.ts pins the scrubber's output on a fixture next to
+ * this number, so a scrubber change that forgets the bump fails there.
+ */
+export declare const SCRUB_VERSION = 1;
 /**
  * The one file-size ceiling in Mnemonik. A file at or below this is scanned,
  * chunked, AND pushed verbatim; a file above it is uniformly outside the
@@ -52,11 +65,10 @@ export interface CodeChunk {
         piece?: number;
     };
 }
-export interface ScanOptions {
+/** CodeScanner's options: the file selection's (fileSelection.ts) and its chunking. */
+export interface ScanOptions extends FileSelectionOptions {
     maxChunkSize?: number;
     minChunkSize?: number;
-    ignorePatterns?: string[];
-    includeExtensions?: string[];
     /**
      * Byte ceiling above which a file is chunked heuristically instead of parsed.
      * Defaults to `MAX_AST_PARSE_BYTES`; exposed so a caller (and the routing
@@ -64,175 +76,7 @@ export interface ScanOptions {
      * mock.
      */
     maxAstParseBytes?: number;
-    /** Additional protected paths for isolated homes/tests; defaults can only be extended. */
-    protectedPaths?: readonly string[];
 }
-/** The rule-file lines one directory contributed to a walk. */
-export interface IndexRuleFiles {
-    /** .gitignore + .mnemonikignore lines, unioned, in read order. */
-    ignore: string[];
-    /** .gitattributes lines, in read order. */
-    attributes: string[];
-}
-/**
- * A file a walk declined to index because a soft default excluded it.
- * `stage: 'content'` means the file was read and its content decided.
- */
-export interface IndexExcludedFile {
-    /** Root-relative POSIX path, spelled as a chunk's `filePath`. */
-    path: string;
-    reason: IndexExclusionReason;
-    rule: string;
-    stage: 'path' | 'content';
-}
-/**
- * Directory basenames the scanner never indexes, across every ecosystem -
- * generated output, package-manager/build caches, and vendored deps. SINGLE
- * SOURCE OF TRUTH: the scanner package's discovery + watch walks import this
- * (`packages/scanner/src/{discovery,watcher}.ts`) and `src/core/utils.ts`
- * derives from it, so every ignore surface agrees instead of drifting (the
- * pre-2026-07 state had four divergent copies). Add only UNAMBIGUOUS names -
- * a project's own `.gitignore` / `.mnemonikignore` covers the ambiguous,
- * project-specific cases (`vendor/`, custom dirs) hierarchically.
- */
-export declare const BUILT_IN_IGNORE_DIRS: readonly string[];
-/**
- * True when `relPath` names a file whose contents are credentials. Applied
- * by `shouldIgnore` (every walker: directory scan, explicit file lists, and
- * the authority-file walk) and by `makeIgnoreMatcher` (server-side backstop
- * for older or misbehaving daemons). Accepts OS-native or POSIX separators.
- */
-export declare function isSecretFile(relPath: string): boolean;
-/**
- * Every file type the scanner will chunk, by extension. Matched
- * case-INSENSITIVELY (see `isIncludedExtension`), so lowercase spellings here
- * also cover `.R`, `.SQL`, `.PS1` and the uppercase `.C`/`.H` of older trees.
- *
- * Exported because this list IS the product's language coverage: a project
- * written in something absent from it indexes zero code, and `code_search`
- * reports that as "no indexed matches" rather than "I do not read this
- * language" - invisible to the developer and to us. Coverage is a separate
- * dial from parse quality: a language with no structured extractor falls
- * through to `chunkRaw`, which is what Go, Java and C already get in
- * production, and crude chunks beat no chunks by an enormous margin.
- *
- * Data formats (`.json`, `.yaml`, `.toml`, `.lock`) are deliberately absent:
- * the ones that carry meaning are already collected verbatim by
- * `AUTHORITY_FILE_MATCHERS`, and blanket-indexing the extension would pull in
- * lockfiles and generated output. `.tfvars` is absent for a different reason -
- * `terraform.tfvars` is a conventional home for provider credentials and
- * `isSecretFile` now excludes it outright.
- */
-export declare const DEFAULT_INCLUDE_EXTENSIONS: readonly string[];
-/**
- * Cursor's rule files: `.cursorrules`, and any `.mdc` under `.cursor/rules/`.
- * Cursor is a launch host, so these are instruction files, the same class as
- * CLAUDE.md and AGENTS.md. Neither spelling can come in through
- * `DEFAULT_INCLUDE_EXTENSIONS`: `.cursorrules` has no extension (`extname`
- * answers ''), and `.mdc` is not a format this scanner reads anywhere else. So
- * both are admitted by path at the chunking gate (`isChunkable`) and chunked as
- * Markdown. They are not `.md` paths, so their whole-file content lands in
- * project_source_content.
- *
- * Matched at any depth, because Cursor also reads nested `.cursor/rules`
- * directories in a monorepo. Case-sensitive, as Cursor spells them. Accepts
- * OS-native or POSIX separators.
- */
-export declare function isCursorRulePath(relPath: string): boolean;
-/**
- * Language string for a file path or a bare extension, `'unknown'` when the
- * extension is unmapped. A free function rather than a method because callers
- * that never scan anything (AST grammar resolution, server-side symbol
- * preference) need the same answer without constructing a scanner.
- */
-export declare function languageForExtension(filePathOrExt: string): string;
-/** Content-only build authority, shared by scanner collection and server admission. */
-export declare const XCODE_AUTHORITY_PATH: RegExp;
-export declare const isXcodeAuthorityPath: (path: string) => boolean;
-/** Exact CMake build entrypoint; ordinary .txt files remain outside collection. */
-export declare const CMAKE_LISTS_PATH: RegExp;
-export declare const isCmakeListsPath: (path: string) => boolean;
-/**
- * True when `relPath` is collected verbatim as authority content and must not
- * also be chunked. Accepts OS-native or POSIX separators.
- */
-export declare function isAuthorityOnlyPath(relPath: string): boolean;
-/**
- * Matchers for authority manifest / config / CI files whose verbatim content
- * is collected by `collectAuthorityFiles` and pushed to the server for
- * doc-truth Fingerprint parsing. Operates on relative, forward-slash paths.
- */
-export declare const AUTHORITY_FILE_MATCHERS: Array<(relPath: string) => boolean>;
-/**
- * Segment-anchored match for `tests/fixtures/` - matches at the path root or
- * immediately after a `/`. Indexing no longer uses it (the fixture rule is the
- * soft default in indexClassifier.ts, which a project can override); it stays
- * for query-time hygiene over rows indexed before that rule existed
- * (`MemoryManager.searchCodePointers`).
- */
-export declare const FIXTURE_PATH_RE: RegExp;
-export declare function isFixturePath(path: string): boolean;
-/**
- * Server-side ignore matcher for defense-in-depth path dropping on /scan/push,
- * /scan/reconcile, and file_push. Combines the universal BUILT_IN_IGNORE_DIRS
- * (segment-exact) with a project's uploaded .gitignore/.mnemonikignore patterns
- * (gitignore syntax via the `ignore` package). Built once per request and reused
- * across all pushed paths (root-relative, forward-slash). This does NOT replace
- * the daemon's precise hierarchical walk - it backstops it so a buggy, stale, or
- * malicious client cannot index a path the project ignores, making .mnemonikignore
- * a hard guarantee rather than best-effort.
- */
-export declare function makeIgnoreMatcher(extraPatterns?: readonly string[]): (relPath: string) => boolean;
-/**
- * True when `dirPath` is the root of a DIFFERENT repository than the one
- * being scanned: it carries its own `.git` entry. A `.git` FILE marks a
- * linked git worktree (wherever the user keeps them) or a submodule
- * checkout; a `.git` DIRECTORY marks a nested clone. Files under such a
- * boundary belong to that repository's own project identity - scanning them
- * into the parent project is wrong attribution for any codebase, so the
- * walkers skip these subtrees. Convention-free: this is git's own marker,
- * not a host/tool path layout. The scan ROOT is exempt by construction
- * (callers only test child directories).
- */
-export declare function isGitBoundary(dirPath: string): Promise<boolean>;
-/**
- * How many folders deep a project's scan walks. Discovery searches a project
- * for subprojects to the same depth, so a subproject the scan leaves out is
- * always found and scanned as its own project.
- */
-export declare const SCANNER_MAX_DEPTH = 10;
-/**
- * True when `dirPath` starts a subtree that is not this project's to index.
- * A file belongs to the project of the nearest `.mnemonik.json` above it, so:
- *  - a folder with its own identity file is a subproject, indexed as its own
- *    project, never also into this one. A file naming the enclosing project
- *    (`enclosingProjectId`, a copy) is the same project, and a
- *    configuration-only file (no `projectId`) names none: neither is a
- *    boundary. A file that cannot be read as an identity still is, and so is
- *    a copy in a full clone (its own `.git` DIRECTORY): a second checkout of
- *    the project, whose files would otherwise be indexed twice;
- *  - a linked worktree (a `.git` FILE whose git directory has a `commondir`,
- *    or is missing) is another checkout of a project, indexed from its main
- *    checkout.
- * A nested clone or a submodule without its own `.mnemonik.json` belongs to
- * this project and is indexed with it (its `.git` directory is ignored by the
- * built-in rules). The scan ROOT is exempt by construction (callers only test
- * child directories).
- */
-export declare function isProjectBoundary(dirPath: string, enclosingProjectId?: string): Promise<boolean>;
-/**
- * The project a scan root's own identity file names, or undefined: the
- * enclosing project for isProjectBoundary.
- */
-export declare function rootProjectId(rootPath: string): Promise<string | undefined>;
-/**
- * True when `dirPath` is the top of a linked git worktree: its `.git` is a
- * FILE pointing at a git directory that has a `commondir`, or at one that no
- * longer exists (a pruned or moved worktree, or one made on another machine):
- * nothing shows it is this project's own. A submodule's `.git` file points at
- * `.git/modules/<name>`, which exists and has no `commondir`.
- */
-export declare function isLinkedWorktreeCheckout(dirPath: string): Promise<boolean>;
 /**
  * Log which grammars this install ships - ONCE per process, at daemon start,
  * never per file.
@@ -256,115 +100,12 @@ export declare function isLinkedWorktreeCheckout(dirPath: string): Promise<boole
  * Cheap to call repeatedly: this latches, and the report instantiates nothing.
  */
 export declare function logAstCapabilityOnce(): Promise<void>;
-export declare class CodeScanner {
+export declare class CodeScanner extends FileSelector {
     private options;
-    private readonly protectedPaths;
-    /** Cumulative observations since this scanner started, including repeated walks. */
-    readonly skipReasons: {
-        symlink_skipped: number;
-    };
-    private skipSymlink;
-    /**
-     * `includeExtensions` folded to lowercase for matching. The gate used to
-     * compare `extname()` verbatim while `detectLanguage` lowercased, so a
-     * project spelling its files the canonical way - `.R` for R, `.SQL`/`.PS1`
-     * on Windows, `.C`/`.H` in older C trees - indexed zero of them and nothing
-     * said why.
-     */
-    private readonly includeExtensionSet;
     constructor(options?: ScanOptions);
-    private isProtected;
-    private isProtectedRead;
-    /**
-     * The chunkable-file gate, shared by every walker and by the explicit
-     * file-list path so all three agree on what exists. `relPath` is the path
-     * relative to the scan root (OS-native separators accepted).
-     */
-    private isChunkable;
-    /**
-     * Read `.gitignore` + `.mnemonikignore` + `.gitattributes` in `absDir` and
-     * compile them into one layer (the two ignore files are unioned -
-     * `.mnemonikignore` is just an additional gitignore-syntax exclusion list).
-     * Returns null when none of the three exists. FAIL-CLOSED: a non-ENOENT read
-     * error (EISDIR, EACCES, timeout) latches `walk.complete = false` so callers
-     * deriving *removals* from the walk treat it as untrustworthy rather than
-     * silently ignoring nothing.
-     */
-    private loadIgnoreLayer;
-    /**
-     * What the .gitignore / .mnemonikignore layers in `stack` say about
-     * `entryRel` (relative to the scan root). Tested deepest-first: the first
-     * layer that explicitly ignores OR re-includes (via a `!negation`) wins,
-     * matching git's rule that a deeper `.gitignore` overrides a shallower one.
-     * Directories are tested with a trailing slash so `foo/` dir-only rules
-     * match the directory itself. `'unignored'` means a negation matched this
-     * path itself; a re-included parent directory leaves its files `'unmatched'`.
-     */
-    private ignoreVerdict;
-    private ignoredByStack;
-    private static attributeLayers;
-    /**
-     * Skip this directory? User-ignored directories are skipped as before. A
-     * directory a soft default excludes (vendor/, generated/, ...) is pruned too -
-     * nothing under it can be indexed - UNLESS a rule above it could re-include
-     * something inside it: a `!pattern` or a `-linguist-*` attribute. Then the
-     * walk descends and judges each file, so the override works. Rule files
-     * INSIDE a pruned directory are never read: a vendored library's own
-     * .gitignore negations are not the project's intent.
-     */
-    private skipDirectory;
-    /**
-     * The index decision for a file from its path and the rule stack: `null`
-     * when a user ignore rule excludes it, otherwise the classifier's answer
-     * (precedence in indexClassifier.ts). Content rules are the caller's next
-     * step for an included path without an `override`.
-     */
-    private classifyEntry;
-    /**
-     * Reconstruct the root->parent ignore-layer stack for a single file, for the
-     * incremental `scanFiles` path (which has a flat file list, not a recursive
-     * walk). Layers are memoized per directory in `cache` across a batch.
-     */
-    private buildIgnoreStackForFile;
-    /**
-     * A predicate for walkers outside this class (the daemon's file watcher):
-     * true when the walk would descend into `absDir`, by the same rules
-     * `listFiles` applies - user ignore files and soft-default directories,
-     * with their overrides. Rule files are read once per directory for the life
-     * of the returned predicate; take a fresh one after a rule file changes.
-     * Directories outside `rootPath`, and the root itself, always pass.
-     */
-    directoryFilter(rootPath: string): (absDir: string) => Promise<boolean>;
-    /**
-     * True when any directory strictly between `rootPath` and `filePath`
-     * starts a subtree this project does not index (see isProjectBoundary). Paths that don't
-     * resolve under `rootPath` are not judged here (return false) - the
-     * server's path validation handles escapes.
-     */
-    private insideNestedGitBoundary;
-    /**
-     * Maximum directory depth for recursive scanning
-     * Prevents runaway recursion on deep/symlinked structures
-     */
-    private static readonly MAX_DEPTH;
-    private rootProjectIds;
-    /**
-     * isProjectBoundary, with the scan root's own project as the enclosing one.
-     * The root's file is read at most once a minute: a walk tests many folders,
-     * and a project relinked since is seen on the next scan.
-     */
-    private isBoundary;
-    private canonicalRoots;
-    private canonicalRoot;
-    static containsCanonical(candidate: string, root: string, paths?: {
-        sep: "/" | "\\";
-        resolve: (...paths: string[]) => string;
-    }, caseInsensitive?: boolean): boolean;
-    private confineSymlink;
-    readConfined(fullPath: string, canonicalRoot: string, enumerated?: Stats): Promise<string>;
     /**
      * Scan a directory recursively and extract code chunks
-     * Added max depth (10) to prevent infinite recursion
+     * No depth limit: symlinks are skipped and WalkState.ancestors ends any cycle.
      */
     scanDirectory(rootPath: string): Promise<CodeChunk[]>;
     /**
@@ -383,48 +124,6 @@ export declare class CodeScanner {
         /** Files a soft default excluded by their content (path exclusions are not listed). */
         excluded: IndexExcludedFile[];
     }>;
-    /**
-     * Enumerate scan-eligible relative file paths under `rootPath` without
-     * reading or chunking content. Same walk + ignorePatterns + extension
-     * filter as `scanDirectory`, but bounded to O(file count) directory ops
-     * - cheap enough to call on every periodic reconcile tick.
-     *
-     * Returns relative paths normalized against `rootPath`, matching the
-     * shape the server stores in `memories.metadata->>'filePath'`. Use this
-     * for the scanner reconciliation channel (`POST /api/v1/scan/reconcile`).
-     *
-     * Defensive: skips any path whose `relative()` result contains a `..`
-     * traversal segment (can happen when a symlink resolves under root but
-     * the readdir entry path doesn't normalize cleanly). The server's
-     * `safeScanPath` rejects such paths; filtering here keeps a single
-     * malformed entry from failing the entire reconcile push.
-     */
-    listFiles(rootPath: string): Promise<string[]>;
-    /**
-     * Completeness-aware variant of `listFiles`. `complete === false` means
-     * an fs error truncated part of the walk - the returned paths may be
-     * missing files that still exist on disk. The daemon's reconcile channel
-     * MUST NOT derive removedFiles from an incomplete inventory (a truncated
-     * walk otherwise reads as mass deletion and deprecates live memories).
-     */
-    listFilesWithStatus(rootPath: string): Promise<{
-        paths: string[];
-        complete: boolean;
-        /**
-         * Listed paths a project rule re-included (a `!pattern` or a
-         * `-linguist-*` attribute). Content rules do not apply to them; every
-         * other listed path still answers to the content rules when read.
-         */
-        overridden: Set<string>;
-    }>;
-    /**
-     * The rule files the last complete `listFilesWithStatus` walk of `rootPath`
-     * applied, by directory ('' = root). Null before the first complete walk.
-     * The daemon uploads these lines so the server judges paths as it did.
-     */
-    indexRuleFiles(rootPath: string): Promise<ReadonlyMap<string, IndexRuleFiles> | null>;
-    private readonly ruleFilesByRoot;
-    private traversePaths;
     /**
      * Scan specific files and extract code chunks.
      * Pass rootPath to compute proper relative file paths in chunk metadata.
@@ -457,15 +156,6 @@ export declare class CodeScanner {
      * Added depth parameter with max limit
      */
     private traverseDirectory;
-    /**
-     * Check if path should be ignored
-     * Fixed glob-to-regex conversion and substring matching.
-     * - Escape regex special chars before replacing * with .*
-     * - Replace ALL * occurrences (not just the first)
-     * - For non-glob patterns, match on path segments to avoid false positives
-     *   (e.g., '.env' should not match '.environment.ts')
-     */
-    private shouldIgnore;
     /**
      * Parse a file and extract code chunks.
      * Size limit is the shared `MAX_SCANNED_FILE_BYTES` ceiling - the same
@@ -569,6 +259,13 @@ export declare class CodeScanner {
             hash: string;
         }>;
         complete: boolean;
+        /** Entries a filesystem error or timeout left out. */
+        unreadable: number;
+        /** The first few unreadable entries, with the reason. */
+        unreadableSamples: Array<{
+            path: string;
+            reason: string;
+        }>;
     }>;
 }
 //# sourceMappingURL=codeScanner.d.ts.map

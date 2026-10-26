@@ -146,4 +146,44 @@ export declare function noteHookTraceProject(projectId: string | undefined): voi
  * so every exit path is covered.
  */
 export declare function startHookTrace(options: HookTraceOptions): HookTrace;
+/** The trace window a hook reports its recent misses over. */
+export declare const HOOK_MISS_WINDOW_MS: number;
+/** Sent on the main hook call: `<missed>/<total>` server calls over the window. */
+export declare const HOOK_MISSES_HEADER = "x-mnemonik-hook-misses";
+/**
+ * How many of this host's recent calls to the server did not get an answer
+ * in time: a timeout, a connection error, a gateway or server error, a call
+ * still pending at exit, or a whole run the editor killed at its own hook
+ * timeout. Each of these is silent where it happens (the hook fails open, by
+ * design), so the main hook call carries the count to the server, and
+ * machine health tells the agent when a machine is losing memory this way
+ * (limits audit #2-#3: the hook budget chain fails silently).
+ *
+ * Reads only the end of the trace file, and never throws.
+ */
+export declare function summarizeRecentHookCalls(host: HookTraceHost, options?: {
+    stateDir?: string;
+    now?: number;
+    windowMs?: number;
+}): Promise<{
+    missed: number;
+    total: number;
+}>;
+/**
+ * The header the main hook call carries, or none when nothing was called
+ * recently. Read once per hook process, without blocking it.
+ */
+export declare function hookMissesHeaders(host: HookTraceHost, options?: {
+    stateDir?: string;
+    now?: number;
+}): Promise<Record<string, string>>;
+/**
+ * The header if the read has finished, else none, and never a wait: the
+ * count only feeds machine health, so it must never delay a hook request
+ * (the hook starts the read when it loads, so it is normally ready).
+ */
+export declare function hookMissesHeadersIfReady(host: HookTraceHost, options?: {
+    stateDir?: string;
+    now?: number;
+}): Record<string, string>;
 //# sourceMappingURL=hookTrace.d.ts.map

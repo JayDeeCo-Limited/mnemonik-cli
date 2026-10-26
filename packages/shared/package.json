@@ -1,6 +1,6 @@
 {
   "name": "@mnemonik/shared",
-  "version": "7.154.3",
+  "version": "7.155.2",
   "description": "Shared constants and utilities for Mnemonik packages",
   "repository": {
     "type": "git",
@@ -26,6 +26,10 @@
     "./hook-runtime": {
       "import": "./dist/hookRuntime.js",
       "types": "./dist/hookRuntime.d.ts"
+    },
+    "./file-selection": {
+      "import": "./dist/fileSelection.js",
+      "types": "./dist/fileSelection.d.ts"
     },
     "./ambient-pointer": {
       "import": "./dist/ambientPointer.js",

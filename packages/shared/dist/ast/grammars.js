@@ -30,11 +30,13 @@
  * expression is correct for both the TS sources and the shipped build.
  */
 import { existsSync, readFileSync, statSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { dirname, extname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { gunzipSync } from 'node:zlib';
 import { Language, Parser, Query } from 'web-tree-sitter';
 import { warn } from '../logger.js';
+import { inVerifiedRuntime, RuntimeAssetError, verifyRuntimeAsset } from '../runtimeAssets.js';
 const AST_LANGUAGE_ID_LIST = [
     'typescript',
     'tsx',
@@ -289,8 +291,19 @@ let parserInit = null;
  * WebAssembly runtime here; calling it per file would dominate the scan.
  */
 function initParser() {
-    parserInit ??= Parser.init();
+    parserInit ??= Parser.init(
+    // In the packaged scanner, hand web-tree-sitter its runtime WebAssembly,
+    // checked against the embedded asset, rather than let it read the file
+    // from the extracted runtime itself (runtimeAssets.ts).
+    inVerifiedRuntime() ? { wasmBinary: verifiedParserRuntime() } : undefined);
     return parserInit;
+}
+function verifiedParserRuntime() {
+    const path = join(dirname(createRequire(import.meta.url).resolve('web-tree-sitter')), 'web-tree-sitter.wasm');
+    const bytes = readFileSync(path);
+    verifyRuntimeAsset(path, bytes);
+    // Copied out of the checked buffer, which nothing else holds.
+    return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
 }
 /**
  * Successes AND failures, keyed by artifact directory + id. Caching the failures
@@ -366,8 +379,9 @@ function resolveArtifacts(id, artifactDir) {
                 detail: `${id} needs the query chain [${QUERY_CHAIN[id].join(', ')}] but ${tagsPath} is missing or empty`,
             };
         }
+        let bytes;
         try {
-            source += `${readFileSync(tagsPath, 'utf8')}\n`;
+            bytes = readFileSync(tagsPath);
         }
         catch (err) {
             return {
@@ -375,6 +389,13 @@ function resolveArtifacts(id, artifactDir) {
                 detail: `${id}: could not read ${tagsPath}: ${describe(err)}`,
             };
         }
+        try {
+            verifyRuntimeAsset(tagsPath, bytes);
+        }
+        catch (err) {
+            return { unavailable: 'asset_integrity', detail: describe(err) };
+        }
+        source += `${bytes.toString('utf8')}\n`;
     }
     return { wasmPath, source };
 }
@@ -389,10 +410,31 @@ async function attemptLoad(id, artifactDir) {
     if ('unavailable' in artifacts)
         return artifacts;
     const { wasmPath, source } = artifacts;
+    let compressed;
+    try {
+        compressed = readFileSync(wasmPath);
+    }
+    catch (err) {
+        return { unavailable: 'wasm_missing', detail: `could not read ${wasmPath}: ${describe(err)}` };
+    }
+    try {
+        // The buffer checked is the buffer loaded (runtimeAssets.ts).
+        verifyRuntimeAsset(wasmPath, compressed);
+    }
+    catch (err) {
+        return { unavailable: 'asset_integrity', detail: describe(err) };
+    }
     let language;
     try {
         await initParser();
-        language = await Language.load(gunzipSync(readFileSync(wasmPath)));
+    }
+    catch (err) {
+        if (err instanceof RuntimeAssetError)
+            return { unavailable: 'asset_integrity', detail: describe(err) };
+        throw err;
+    }
+    try {
+        language = await Language.load(gunzipSync(compressed));
     }
     catch (err) {
         // Presence is not loadability: tree-sitter-dart ships a 741 KB .wasm that

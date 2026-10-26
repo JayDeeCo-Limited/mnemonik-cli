@@ -1,5 +1,4 @@
 import type { SFCDescriptor } from '@vue/compiler-sfc';
-import { MAX_AST_PARSE_BYTES } from './ast/astChunker.js';
 import { MAX_SCANNED_FILE_BYTES } from './codeScanner.js';
 
 /** A fallback scrub may repair syntax; it must never become graph evidence. */
@@ -11,18 +10,7 @@ export type VueTemplateNode = TemplateRoot | TemplateRoot['children'][number];
 type ParsedVueSource = {
   descriptor: SFCDescriptor;
   nodeTypes: typeof import('@vue/compiler-core').NodeTypes;
-  /** Set on the sanitation path only; the template walk throws past it. */
-  templateNodeLimit?: number;
 };
-
-/**
- * Sanitation runs on the API server's event loop (scan push, file push, documents), and
- * its edit loop costs the file's length per edit, so it keeps the 2 MiB and 200,000-node
- * bounds until it moves off that loop. Connected-code reads run in the parse pool and
- * take any file up to the product's 10 MB ceiling.
- */
-const SANITATION_MAX_BYTES = MAX_AST_PARSE_BYTES;
-const SANITATION_TEMPLATE_NODE_LIMIT = 200_000;
 export async function parseVueSource(
   source: string,
   forSanitation = false
@@ -30,10 +18,11 @@ export async function parseVueSource(
   // Sanitation still inspects marked bytes; graph extraction must continue to reject them.
   if (!forSanitation && source.includes(VUE_FIDELITY_MARKER))
     return { reason: 'vue_source_fidelity_unavailable' };
-  if (
-    Buffer.byteLength(source, 'utf8') >
-    (forSanitation ? SANITATION_MAX_BYTES : MAX_SCANNED_FILE_BYTES)
-  )
+  // One ceiling for sanitation and connected code: the product's 10 MB scan
+  // ceiling. Sanitation no longer stops at 2 MiB: its edits are applied in one
+  // pass (sourceRedaction.ts applySpanEdits), and on the API server components
+  // are scrubbed in a redaction child, off the event loop (sourceRedactionServer.ts).
+  if (Buffer.byteLength(source, 'utf8') > MAX_SCANNED_FILE_BYTES)
     return { reason: 'file_too_large' };
   let clearCache: (() => void) | undefined;
   try {
@@ -56,9 +45,7 @@ export async function parseVueSource(
       descriptor.customBlocks.length
     )
       return { reason: 'vue_preprocessor_or_custom_block_unsupported' };
-    return forSanitation
-      ? { descriptor, nodeTypes, templateNodeLimit: SANITATION_TEMPLATE_NODE_LIMIT }
-      : { descriptor, nodeTypes };
+    return { descriptor, nodeTypes };
   } catch {
     return { reason: 'vue_parse_failed' };
   } finally {
@@ -76,13 +63,11 @@ export function walkVueTemplate(
   const pending: Array<{ node: VueTemplateNode; scoped: boolean }> = descriptor.template?.ast
     ? [{ node: descriptor.template.ast, scoped: false }]
     : [];
-  // Iterative and linear in the template's nodes; only sanitation is bounded by count.
-  const limit = parsed.templateNodeLimit ?? Infinity;
-  let count = 0;
+  // Iterative and linear in the template's nodes, with no count limit: the
+  // 200,000-node bound guarded a scrubber that copied the file per edit.
   while (pending.length) {
     const item = pending.pop();
     if (!item) break;
-    if (++count > limit) throw new Error('vue_template_work_limit');
     const { node } = item;
     const scoped =
       item.scoped ||

@@ -2,7 +2,6 @@ import { parseVueSource, walkVueTemplate, VUE_FIDELITY_MARKER } from './vueSourc
 import { basename, extname } from 'node:path';
 import { Parser, type Node, type Tree } from 'web-tree-sitter';
 import { loadGrammar, objcppSyntaxIssue, type AstLanguageId } from './ast/grammars.js';
-import { MAX_AST_PARSE_BYTES } from './ast/astChunker.js';
 import { commandLineCredentialRanges, redactCredentials } from './redactCredentials.js';
 import {
   redactHighEntropyTokens,
@@ -15,8 +14,52 @@ function scrubPayload(text: string): string {
   return redactCredentials(scrubSecrets(text), { commandLineOnly: true }).text;
 }
 
+/**
+ * The largest source redacted with its syntax tree: the scanner's own file
+ * ceiling (MAX_SCANNED_FILE_BYTES, 10 MB; repeated here because codeScanner.ts
+ * imports this module). It was 2 MiB, sized from "the largest file in this
+ * repository", and above it every file took the text fallback: PowerShell,
+ * CMake, Groovy, Nix, Terraform and the bundled languages were stamped
+ * "source-fidelity-unavailable", so connected code refused every such file
+ * over 2 MiB, and other languages could keep structural [REDACTED] the
+ * extractors refuse (streams F1/F2, 25 October 2026). Memory for a large
+ * parse is bounded by running it in a child process sized from the file
+ * (installSourceRedactor below; sourceRedactionPool.ts), not by refusing it.
+ */
+export const MAX_SOURCE_REDACTION_BYTES = 10 * 1024 * 1024;
+
+/**
+ * Where a process sends source it should not parse in its own memory: the
+ * server sends Swift and every file of a megabyte or more to a Liftoff-only
+ * child sized from the file; the scanner sends large files to its own
+ * child. Unset (tests, small tools), everything is redacted in process.
+ */
+export interface SourceRedactionOptions {
+  /** 'interactive' when an agent is waiting on this file (file_push). */
+  priority?: 'interactive' | 'background';
+}
+export interface SourceRedactor {
+  routes(filePath: string, bytes: number): boolean;
+  redact(text: string, filePath: string, options?: SourceRedactionOptions): Promise<string>;
+}
+let outOfProcess: SourceRedactor | null = null;
+export function installSourceRedactor(redactor: SourceRedactor | null): void {
+  outOfProcess = redactor;
+}
+
 /** Source syntax stays executable; unsupported or incomplete input uses the conservative scrubber. */
-export async function scrubSourceSecrets(text: string, filePath: string): Promise<string> {
+export async function scrubSourceSecrets(
+  text: string,
+  filePath: string,
+  options?: SourceRedactionOptions
+): Promise<string> {
+  if (outOfProcess && text && outOfProcess.routes(filePath, Buffer.byteLength(text, 'utf8')))
+    return outOfProcess.redact(text, filePath, options);
+  return scrubSourceSecretsInProcess(text, filePath);
+}
+
+/** The redaction itself, in this process. The out-of-process worker calls this. */
+export async function scrubSourceSecretsInProcess(text: string, filePath: string): Promise<string> {
   const extension = extname(filePath).toLowerCase();
   if (extension === '.vue') return scrubVueSource(text);
   if (extension === '.svelte') return scrubSvelteSource(text);
@@ -136,7 +179,7 @@ export async function scrubSourceSecrets(text: string, filePath: string): Promis
       ? marker + clean
       : clean;
   };
-  if (!text || !language || Buffer.byteLength(text, 'utf8') > MAX_AST_PARSE_BYTES) {
+  if (!text || !language || Buffer.byteLength(text, 'utf8') > MAX_SOURCE_REDACTION_BYTES) {
     return fallback();
   }
   let parser: Parser | undefined;
@@ -1833,6 +1876,32 @@ function redactNode(node: Node, sensitive = false): string {
 }
 
 /** Sanitize parser-owned payload spans; no SFC boundary is inferred from text matching. */
+/**
+ * Apply replacement spans to `text` in one pass, or null when two overlap
+ * (or a span is malformed).
+ * The result equals applying them one at a time from the last start to the
+ * first (spans that start together: the one added later lands first), which
+ * is what the Vue scrubber did with a slice-and-concatenate per edit; that
+ * copied the whole file for every edit, about 40 s for a 1 MB component.
+ */
+export function applySpanEdits(
+  text: string,
+  edits: ReadonlyArray<{ start: number; end: number; clean: string }>
+): string | null {
+  // Stable sort, then reversed: ascending start, and among equal starts the
+  // later-added edit first, exactly as the one-at-a-time order placed them.
+  const ordered = [...edits].sort((a, b) => b.start - a.start).reverse();
+  const pieces: string[] = [];
+  let offset = 0;
+  for (const e of ordered) {
+    if (e.start < offset || e.end < e.start || e.end > text.length) return null;
+    pieces.push(text.slice(offset, e.start), e.clean);
+    offset = e.end;
+  }
+  pieces.push(text.slice(offset));
+  return pieces.join('');
+}
+
 async function scrubVueSource(text: string): Promise<string> {
   if (!text) return text;
   const parsed = await parseVueSource(text, true);
@@ -1973,14 +2042,8 @@ async function scrubVueSource(text: string): Promise<string> {
     const cleanTail = scrubPayload(tail);
     if (cleanTail !== tail) faithful = false;
     edit(gapStart, text.length, cleanTail);
-    edits.sort((a, b) => b.start - a.start);
-    let clean = text;
-    let boundary = text.length;
-    for (const e of edits) {
-      if (e.end > boundary) return fallback();
-      clean = clean.slice(0, e.start) + e.clean + clean.slice(e.end);
-      boundary = e.start;
-    }
+    const clean = applySpanEdits(text, edits);
+    if (clean === null) return fallback();
     if ('reason' in (await parseVueSource(clean))) faithful = false;
     return faithful || clean.startsWith(VUE_FIDELITY_MARKER) ? clean : VUE_FIDELITY_MARKER + clean;
   } catch {
@@ -1996,29 +2059,33 @@ async function scrubSvelteSource(text: string): Promise<string> {
   const fallback = (): string => (text.startsWith(marker) ? '' : marker) + scrubPayload(text);
   if (!text) return text;
   if (text.includes('mnemonik:svelte-source-fidelity-unavailable')) return fallback();
-  if (Buffer.byteLength(text, 'utf8') > MAX_AST_PARSE_BYTES) return fallback();
+  if (Buffer.byteLength(text, 'utf8') > MAX_SOURCE_REDACTION_BYTES) return fallback();
   let parser: Parser | undefined;
   try {
-    const deadline = performance.now() + 4_000;
+    // No clock and no node count decide this file: both refused large
+    // components outright (a 4 s deadline and 200,000 nodes). Memory is
+    // bounded by the process the parse runs in (installSourceRedactor).
     const { parse } = await import('svelte/compiler');
     const ast = parse(text, { modern: true });
     const edits: Array<{ start: number; end: number; clean: string }> = [];
     let faithful = true;
-    parser = new Parser();
+    // Grammars first: loading one initializes tree-sitter, and a Parser
+    // constructed before that throws. In a fresh process (a redaction child,
+    // or a scanner whose first file is a component) that made every Svelte
+    // file take the unfaithful fallback.
     const js = await loadGrammar('javascript');
     const ts = await loadGrammar('typescript');
     if ('unavailable' in js || 'unavailable' in ts) return fallback();
+    parser = new Parser();
     parser.setLanguage(js.ok.language);
     const activeParser = parser;
     const syntax = (source: string, expression = false, sensitive = false): string => {
       const prefix = expression ? `const ${sensitive ? 'password' : '__mnemonik_svelte'} = (` : '';
       const suffix = expression ? '\n);' : '';
       const full = prefix + source + suffix;
-      const tree = activeParser.parse(full, null, {
-        progressCallback: () => performance.now() > deadline,
-      });
+      const tree = activeParser.parse(full);
       try {
-        if (!tree || tree.rootNode.hasError || tree.rootNode.descendantCount > 200_000) {
+        if (!tree || tree.rootNode.hasError) {
           faithful = false;
           return sensitive ? literalPayload(source, true) : scrubPayload(source);
         }
@@ -2062,9 +2129,7 @@ async function scrubSvelteSource(text: string): Promise<string> {
     const pending: Array<{ value: unknown; sensitive: boolean }> = [
       { value: ast.fragment, sensitive: false },
     ];
-    let count = 0;
     while (pending.length) {
-      if (++count > 200_000 || performance.now() > deadline) return fallback();
       const entry = pending.pop();
       if (!entry || !entry.value || typeof entry.value !== 'object') continue;
       if (Array.isArray(entry.value)) {

@@ -43,6 +43,12 @@ import {
   type ProjectExecutor,
 } from '../project.js';
 import { consentDraft, runScannerBoundaryPicker, type ScannerConsentDraft } from './picker.js';
+import {
+  countIndexableFiles,
+  onboardingEstimateLines,
+  type FolderCount,
+  type ServerEstimate,
+} from './estimate.js';
 
 export interface Consent {
   userId: string;
@@ -134,6 +140,8 @@ export interface EnableOptions extends ScannerServiceOptions {
   authorize?: (selection?: ScannerConsentDraft, installation?: string) => Promise<string>;
   projectExecutor?: ProjectExecutor;
   projectStateDir?: string;
+  /** Counts the files the scanner will index (tests replace the walk). */
+  countFiles?: (roots: readonly string[]) => Promise<FolderCount>;
 }
 export interface PreparedScanner {
   roots: string[];
@@ -147,6 +155,8 @@ export interface PreparedScanner {
   ): Promise<ReturnType<typeof serializeReadiness>>;
   rollback(journal: Journal): Promise<void>;
   complete(document: ReturnType<typeof serializeReadiness>): Promise<void>;
+  /** The server's time estimate for indexing this many files; null when it cannot say. */
+  estimate?(files: number): Promise<ServerEstimate | null>;
 }
 export async function enableScanner(
   options: EnableOptions
@@ -204,6 +214,17 @@ export async function enableScanner(
       }
     }
     prepared.roots.splice(0, prepared.roots.length, ...connected);
+    // Before the first scan: what will be indexed and roughly how long it
+    // will take. Informational only; nothing waits on it or fails because of it.
+    if (!options.nonInteractive && connected.length) {
+      const count: FolderCount = await (options.countFiles ?? countIndexableFiles)(connected).catch(
+        () => ({ files: 0, bytes: 0, partial: true })
+      );
+      const estimate = count.files
+        ? await (prepared.estimate?.(count.files) ?? Promise.resolve(null)).catch(() => null)
+        : null;
+      for (const line of onboardingEstimateLines(count, estimate)) options.output.line(line);
+    }
     const document = await prepared.apply(options.journal, connected);
     if (document.installation.state === 'READY') await prepared.complete(document);
     if (!options.nonInteractive) {
@@ -441,6 +462,13 @@ export async function prepareScanner<T>(
         rollback: async (journal) => {
           await restoreScannerInstall(journal, options);
         },
+        estimate: async (files) =>
+          (await request(
+            'GET',
+            `/api/v1/scan/ingest/estimate?files=${files}`,
+            undefined,
+            true
+          )) as ServerEstimate | null,
         apply: async (journal, roots = approvedRoots) => {
           const put = async (targetPath: string, content: Buffer) => {
             if (!journal) return atomicWrite(targetPath, content);

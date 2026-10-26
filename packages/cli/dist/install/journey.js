@@ -8,6 +8,7 @@ import { detectEditors, nodeVersionHelp, runPreflight } from '../preflight.js';
 import { createRealProjectRuntime, folderRefusalMessage, projectLimitMessage, repositoryFingerprint, } from '../project.js';
 import { classifyRepository } from '../scanner/discover.js';
 import { prepareScanner, restoreScannerInstall } from '../scanner/enable.js';
+import { countIndexableFiles, onboardingEstimateLines } from '../scanner/estimate.js';
 import { folderList } from '../scanner/picker.js';
 import { ScannerServiceLimited } from '../scanner/service.js';
 import { collectStatusDocument } from '../status.js';
@@ -552,6 +553,16 @@ export async function joinedInstall(flags, deps, output, authorize, management) 
                 if (!automatic && !flags.has('apply')) {
                     activeProgress?.stop();
                     activeProgress = undefined;
+                    // What indexing will do, before the person chooses to start it.
+                    if (scannerPlan?.roots.length) {
+                        const count = await countIndexableFiles(scannerPlan.roots).catch(() => null);
+                        const estimate = count?.files && scannerPlan.estimate
+                            ? await scannerPlan.estimate(count.files).catch(() => null)
+                            : null;
+                        if (count)
+                            for (const line of onboardingEstimateLines(count, estimate))
+                                output.line(`  ${line}`);
+                    }
                     for (;;) {
                         const applyLines = renderJourney('apply', output);
                         const choice = await answers?.choose(['Install and upload', 'Back', 'Cancel']);

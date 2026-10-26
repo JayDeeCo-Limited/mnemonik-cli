@@ -125,12 +125,14 @@ function inspectDirectory(root) {
   };
   visit(root);
 }
+// execFileSync's default 1 MiB output buffer is smaller than some packed files.
+const TAR_OUTPUT = { maxBuffer: 1024 * 1024 * 1024 };
 function inspectArchive(path) {
-  const entries = execFileSync('tar', ['-tzf', path], { encoding: 'utf8' })
+  const entries = execFileSync('tar', ['-tzf', path], { ...TAR_OUTPUT, encoding: 'utf8' })
     .split(/\r?\n/)
     .filter((entry) => entry && !entry.endsWith('/'));
   for (const entry of entries) {
-    const content = execFileSync('tar', ['-xOzf', path, entry]);
+    const content = execFileSync('tar', ['-xOzf', path, entry], TAR_OUTPUT);
     inspect(content.toString('utf8'), `${basename(path)}:${entry}`, packedExpressions);
   }
 }

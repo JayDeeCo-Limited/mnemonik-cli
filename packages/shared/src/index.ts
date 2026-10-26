@@ -20,7 +20,10 @@ export {
   isGitBoundary,
   isProjectBoundary,
   rootProjectId,
-  SCANNER_MAX_DEPTH,
+  SCRUB_VERSION,
+  fileOp,
+  statTuple,
+  type FileStatTuple,
   isLinkedWorktreeCheckout,
   FIXTURE_PATH_RE,
   isFixturePath,
@@ -97,7 +100,33 @@ export {
   scrubSecrets,
   redactHighEntropyTokens,
 } from './secretPatterns.js';
-export { scrubSourceSecrets } from './sourceRedaction.js';
+export {
+  scrubSourceSecrets,
+  scrubSourceSecretsInProcess,
+  installSourceRedactor,
+  MAX_SOURCE_REDACTION_BYTES,
+  type SourceRedactor,
+  type SourceRedactionOptions,
+} from './sourceRedaction.js';
+export {
+  SourceRedactionPool,
+  redactionWorkerThread,
+  STRIKE_REASONS,
+  type RedactionChild,
+  runSourceRedactionWorker,
+  redactionHeapMb,
+  cgroupMemory,
+  containerMemoryProbe,
+  scannerMemoryProbe,
+  processCpuSeconds,
+  CPU_CEILING_SECONDS,
+  SCANNER_TOTAL_MEMORY_MB,
+  type MemoryProbe,
+  type MemoryReading,
+  type RedactionPriority,
+  LARGE_FILE_BYTES as LARGE_SOURCE_REDACTION_BYTES,
+  type SourceRedactionPoolOptions,
+} from './sourceRedactionPool.js';
 export {
   redactCredentials,
   credentialValues,

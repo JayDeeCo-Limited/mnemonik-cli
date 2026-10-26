@@ -8,6 +8,7 @@ import { type ScannerServiceOptions } from './service.js';
 import { type Journal } from '../install/journal.js';
 import { type ProjectExecutor } from '../project.js';
 import { type ScannerConsentDraft } from './picker.js';
+import { type FolderCount, type ServerEstimate } from './estimate.js';
 export interface Consent {
     userId: string;
     roots: string[];
@@ -71,6 +72,8 @@ export interface EnableOptions extends ScannerServiceOptions {
     authorize?: (selection?: ScannerConsentDraft, installation?: string) => Promise<string>;
     projectExecutor?: ProjectExecutor;
     projectStateDir?: string;
+    /** Counts the files the scanner will index (tests replace the walk). */
+    countFiles?: (roots: readonly string[]) => Promise<FolderCount>;
 }
 export interface PreparedScanner {
     roots: string[];
@@ -81,6 +84,8 @@ export interface PreparedScanner {
     apply(journal?: Journal, roots?: readonly string[]): Promise<ReturnType<typeof serializeReadiness>>;
     rollback(journal: Journal): Promise<void>;
     complete(document: ReturnType<typeof serializeReadiness>): Promise<void>;
+    /** The server's time estimate for indexing this many files; null when it cannot say. */
+    estimate?(files: number): Promise<ServerEstimate | null>;
 }
 export declare function enableScanner(options: EnableOptions): Promise<ReturnType<typeof serializeReadiness>>;
 /** The scanner lease spans browser review, Apply and compensation. */

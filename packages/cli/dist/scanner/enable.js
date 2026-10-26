@@ -19,6 +19,7 @@ import { ABANDONED_PAUSE_RESUMED, controlScanner, resumeAbandonedPause, scannerR
 import { bytesAt, digest, withInstall } from '../install/journal.js';
 import { connectedProjectsMessage, createRealProjectRuntime, ensureProjectRoot, insideProjectLine, projectFolderFor, projectLimitMessage, } from '../project.js';
 import { consentDraft, runScannerBoundaryPicker } from './picker.js';
+import { countIndexableFiles, onboardingEstimateLines, } from './estimate.js';
 export const scannerStateBytes = (state) => Buffer.from(`${JSON.stringify(state, null, 2)}\n`);
 export const SCANNER_APPROVAL_WAIT = 'Waiting for approval in your browser, up to 10 minutes.';
 export async function updateScannerRoots(options) {
@@ -102,6 +103,16 @@ export async function enableScanner(options) {
             }
         }
         prepared.roots.splice(0, prepared.roots.length, ...connected);
+        // Before the first scan: what will be indexed and roughly how long it
+        // will take. Informational only; nothing waits on it or fails because of it.
+        if (!options.nonInteractive && connected.length) {
+            const count = await (options.countFiles ?? countIndexableFiles)(connected).catch(() => ({ files: 0, bytes: 0, partial: true }));
+            const estimate = count.files
+                ? await (prepared.estimate?.(count.files) ?? Promise.resolve(null)).catch(() => null)
+                : null;
+            for (const line of onboardingEstimateLines(count, estimate))
+                options.output.line(line);
+        }
         const document = await prepared.apply(options.journal, connected);
         if (document.installation.state === 'READY')
             await prepared.complete(document);
@@ -320,6 +331,7 @@ export async function prepareScanner(options, work) {
                 rollback: async (journal) => {
                     await restoreScannerInstall(journal, options);
                 },
+                estimate: async (files) => (await request('GET', `/api/v1/scan/ingest/estimate?files=${files}`, undefined, true)),
                 apply: async (journal, roots = approvedRoots) => {
                     const put = async (targetPath, content) => {
                         if (!journal)
