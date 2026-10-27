@@ -416,6 +416,8 @@ class RedactionProcess {
   private startCpu: number | null = null;
   private lastCpu: number | null = null;
   private stillPolls = 0;
+  /** When the file in hand was sent (performance.now()). */
+  private sentAt = 0;
   rssMb = 0;
   /** Memory the child last reported using (MB), or null where it cannot say. */
   usedMb: number | null = null;
@@ -470,7 +472,11 @@ class RedactionProcess {
       this.startCpu = null;
       this.lastCpu = null;
       this.stillPolls = 0;
-      void this.sampleCpu();
+      // No CPU reading now: the first poll takes it (sampleCpu). A server
+      // sends every source file and every chunk here, thousands per upload,
+      // and reading /proc as each one started was a third of what sending a
+      // file cost the parent's event loop (0.10 of 0.38 ms; 27 Oct 2026).
+      this.sentAt = performance.now();
       this.poll = setInterval(() => void this.sampleCpu(), this.timings.pollMs);
       this.poll.unref();
       try {
@@ -506,7 +512,12 @@ class RedactionProcess {
         : await this.timings.cpuSeconds(this.child.pid);
       if (cpu === null || this.current !== holding) return; // no CPU accounting: only an exit ends the file
       if (this.startCpu === null) {
-        this.startCpu = cpu;
+        // The first reading comes a poll after the file was sent. Its CPU
+        // before then is unknown, so the file is charged all the time it has
+        // been in hand: a parse uses no more CPU than the time it runs, so
+        // the ceiling ends a file no later than it did with a reading at
+        // the start.
+        this.startCpu = cpu - (performance.now() - this.sentAt) / 1000;
         this.lastCpu = cpu;
         return;
       }
