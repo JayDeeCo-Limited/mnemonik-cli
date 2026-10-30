@@ -8,9 +8,9 @@ export const REFLEX_NOTE_BUDGET_BYTES = {
     vscode: 6_000,
 };
 const JOINER = '\n\n';
-const NOT_REACHED_PREFIX = '... not reached: ';
+const NOT_REACHED_PREFIX = '... more to recall: ';
 function truncatedMemoryMarker(memoryId) {
-    return `... [truncated; memory_get ${memoryId} for the rest]`;
+    return `... [cut short; memory_get ${memoryId} recalls the rest]`;
 }
 function itemMemoryIds(item) {
     if (item.memoryIds && item.memoryIds.length > 0)

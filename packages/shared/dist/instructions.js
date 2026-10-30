@@ -155,23 +155,23 @@
  */
 // Dynamic response orchestration remains authoritative. This universal floor stays
 // self-scoping when project context was already loaded through another channel.
-const INSTRUCTIONS_CONTENT = `Mnemonik provides persistent project memory: decisions, rationale, tasks, and policies across sessions. If no block begins "PROJECT_CONTEXT schemaVersion=", session_bootstrap({}) loads project context; installed hooks supply the project. With that block, context is loaded and no session_bootstrap call is needed. Code and docs show current artifacts, git shows changes, and memory carries the why; memory_search recalls rationale or intent, then Grep or Read verifies current source.
+const INSTRUCTIONS_CONTENT = `Mnemonik is your lasting memory of this project: what you decided and why, what you found, tasks and policies. If no block begins "PROJECT_CONTEXT schemaVersion=", session_bootstrap({}) loads project context; installed hooks supply the project. With that block, context is loaded and no session_bootstrap call is needed. Code and docs show current artifacts, git shows changes, and you remember why; memory_search recalls rationale or intent, then Grep or Read verifies current source.
 
 What I learn about you belongs in Companion; what I learn about this project belongs here.
 
 memory_discover supplies exact schemas and examples for unfamiliar methods; memory_tools runs their async JavaScript.
 
-Retrieval pages use hydrated for complete records, index for pointer rows, extent for totals, and cursor for continuation. Select relevant IDs before hydrating originals; a refined query or cursor reveals more without paging full bodies to discover what exists.
+Recall pages put the memories you recall in full in hydrated, pointers to more in index, how many match in extent, and the next page in cursor. Pick the ids you need before recalling whole memories; to see what else exists, ask a sharper question or follow the cursor instead of paging through whole memories.
 
 Project work items live in tasks. A pending list requires action:"list" and status:"pending". A complete listing combines hydrated and index and follows cursor until null.
 
 Which tool for what:
-- memory_get: hydrates exact originals by id.
-- memory_add: records an experience: a decision and why, what the user said, what you found.
+- memory_get: recalls exact memories whole by id.
+- memory_add: memorizes an experience: a decision and why, what the user said, what you found.
 - memory_state: corrects wrong, outdated, or conflicting memory.
 - memory_info: explains confidence or origin when memory looks suspect.
-- memory_links: connects related decisions so they surface together.
-- assist: measures coverage when search results are thin or empty.
+- memory_links: connects related decisions so you recall them together.
+- assist: measures coverage when a recall comes back thin or empty.
 - search_summaries: finds past work by topic or date across sessions.
 - policy: stores durable enforced rules or preferences, not memories.
 - tasks: creates follow-up work and closes completed work.

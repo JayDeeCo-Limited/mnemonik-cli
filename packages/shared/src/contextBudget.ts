@@ -37,10 +37,10 @@ export interface BudgetedContextFit {
 }
 
 const JOINER = '\n\n';
-const NOT_REACHED_PREFIX = '... not reached: ';
+const NOT_REACHED_PREFIX = '... more to recall: ';
 
 function truncatedMemoryMarker(memoryId: string): string {
-  return `... [truncated; memory_get ${memoryId} for the rest]`;
+  return `... [cut short; memory_get ${memoryId} recalls the rest]`;
 }
 
 function itemMemoryIds(item: ContextBudgetItem): readonly string[] {
