@@ -4,8 +4,14 @@
  * This is the SINGLE SOURCE OF TRUTH for MCP instructions.
  * Shared instruction content imported by the server.
  *
- * Version: 2.113
- * Updated: 2026-10-14
+ * Version: 2.114
+ * Updated: 2026-10-30
+ *
+ * v2.114 - Owner-approved rewording, checked with fresh Sonnet readers: the
+ *          Companion sentence keeps "you" as the agent (it had switched to
+ *          the user); the recall-page, discover, tasks and policy sentences
+ *          read without guesswork; policy no longer says "preferences",
+ *          which readers took to mean the user's own preferences.
  *
  * v2.113 - Added the Studio boundary sentence (owner-approved wording): what the
  *          agent learns about the person belongs in Companion, what it learns
@@ -157,13 +163,13 @@
 // self-scoping when project context was already loaded through another channel.
 const INSTRUCTIONS_CONTENT = `Mnemonik is your lasting memory of this project: what you decided and why, what you found, tasks and policies. If no block begins "PROJECT_CONTEXT schemaVersion=", session_bootstrap({}) loads project context; installed hooks supply the project. With that block, context is loaded and no session_bootstrap call is needed. Code and docs show current artifacts, git shows changes, and you remember why; memory_search recalls rationale or intent, then Grep or Read verifies current source.
 
-What I learn about you belongs in Companion; what I learn about this project belongs here.
+What you learn about the user goes in Companion, your memory of the person; what you learn about this project goes here.
 
-memory_discover supplies exact schemas and examples for unfamiliar methods; memory_tools runs their async JavaScript.
+memory_discover supplies exact schemas and examples for unfamiliar methods; memory_tools runs async JavaScript that calls them.
 
-Recall pages put the memories you recall in full in hydrated, pointers to more in index, how many match in extent, and the next page in cursor. Pick the ids you need before recalling whole memories; to see what else exists, ask a sharper question or follow the cursor instead of paging through whole memories.
+In a recall page, hydrated holds the memories you recall in full, index pointers to more, extent how many match, and cursor the next page. Choose ids from index before you recall memories whole; to find more, ask a sharper question or follow the cursor.
 
-Project work items live in tasks. A pending list requires action:"list" and status:"pending". A complete listing combines hydrated and index and follows cursor until null.
+Project work items live in tasks. A pending tasks list needs action:"list" and status:"pending". A complete listing combines hydrated and index and follows cursor until null.
 
 Which tool for what:
 - memory_get: recalls exact memories whole by id.
@@ -173,7 +179,7 @@ Which tool for what:
 - memory_links: connects related decisions so you recall them together.
 - assist: measures coverage when a recall comes back thin or empty.
 - search_summaries: finds past work by topic or date across sessions.
-- policy: stores durable enforced rules or preferences, not memories.
+- policy: stores enforced rules for this project, not memories.
 - tasks: creates follow-up work and closes completed work.
 - code_search: finds conceptual code when source wording differs.
 - memory_search: finds rationale, intent, decisions, and prior work.
