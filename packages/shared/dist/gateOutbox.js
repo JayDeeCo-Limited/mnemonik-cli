@@ -6,9 +6,8 @@
  * Zealand to us-east-1) after the decision was already made, because the host
  * waits for the hook process to exit. Measured on 26 October 2026 it was about
  * 30% of a PreToolUse hook's process time on an idle machine, and one in three
- * hook requests the server received. The event is telemetry: who gated what,
- * how, and the action observation for credit capture. Nothing on the agent's
- * path waits for it.
+ * hook requests the server received. The event is telemetry: who gated what
+ * and how. Nothing on the agent's path waits for it.
  *
  * So the hook writes the event to a small per-session folder (synchronous, no
  * network) and the next injections request of the same session claims the
