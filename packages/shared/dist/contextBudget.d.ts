@@ -36,8 +36,12 @@ export declare function measureContext(text: string, units?: ContextBudgetUnits)
  * shed memory keeps a bounded head plus its retrieval marker; later shed items
  * share one trailing marker containing only their explicit retrieval routes.
  * Items without a route leave no agent-visible stub.
+ *
+ * Before anything is shed, the later-memory markers go (ambientPointer.ts
+ * RECALL_LATER_MARKER), the last item's first: a marker never costs a memory
+ * its place or any of its text.
  */
-export declare function fitContextItems(items: readonly ContextBudgetItem[], opts: {
+export declare function fitContextItems(givenItems: readonly ContextBudgetItem[], opts: {
     budget: number;
     units?: ContextBudgetUnits;
     reservedSuffix?: readonly ContextBudgetItem[];

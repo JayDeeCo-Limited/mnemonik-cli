@@ -1,4 +1,4 @@
-import { AMBIENT_ITEM_POINTER_SOURCE } from './ambientPointer.js';
+import { AMBIENT_ITEM_POINTER_SOURCE, stripRecallLaterMarkers } from './ambientPointer.js';
 export { AMBIENT_ITEM_POINTER_SOURCE } from './ambientPointer.js';
 export const REFLEX_NOTE_BUDGET_BYTES = {
     claude_code: 6_000,
@@ -59,18 +59,32 @@ export function measureContext(text, units = 'characters') {
  * shed memory keeps a bounded head plus its retrieval marker; later shed items
  * share one trailing marker containing only their explicit retrieval routes.
  * Items without a route leave no agent-visible stub.
+ *
+ * Before anything is shed, the later-memory markers go (ambientPointer.ts
+ * RECALL_LATER_MARKER), the last item's first: a marker never costs a memory
+ * its place or any of its text.
  */
-export function fitContextItems(items, opts) {
+export function fitContextItems(givenItems, opts) {
     const units = opts.units ?? 'characters';
     const suffix = opts.reservedSuffix ?? [];
-    const fullValue = [...items, ...suffix].map((item) => item.text).join(JOINER);
-    if (measureContext(fullValue, units) <= opts.budget) {
-        return {
-            value: fullValue,
-            fullyDeliveredItems: items.length,
-            partialItemIndex: null,
-            partialUnitsDelivered: 0,
-        };
+    const valueOf = (entries) => [...entries, ...suffix].map((item) => item.text).join(JOINER);
+    const items = [...givenItems];
+    for (let index = items.length;; index -= 1) {
+        const value = valueOf(items);
+        if (measureContext(value, units) <= opts.budget) {
+            return {
+                value,
+                fullyDeliveredItems: items.length,
+                partialItemIndex: null,
+                partialUnitsDelivered: 0,
+            };
+        }
+        const item = items[index - 1];
+        if (item === undefined)
+            break;
+        const text = stripRecallLaterMarkers(item.text);
+        if (text !== item.text)
+            items[index - 1] = { ...item, text };
     }
     const accepted = [];
     for (let index = 0; index < items.length; index += 1) {
