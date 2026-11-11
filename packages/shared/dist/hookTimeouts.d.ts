@@ -157,7 +157,26 @@ export declare const HOOK_BUDGET_HEADER = "x-mnemonik-hook-budget-ms";
  * old runtime failing open and recall stopping silently.
  */
 export declare const HOOK_VERSION_HEADER = "x-mnemonik-hook-version";
-/** `init` with the hook-version header added; the caller's headers are kept. */
+/**
+ * What this hook runtime can read of the server's replies, beyond what every
+ * runtime could when the header was introduced. The server writes a newer
+ * form only to a runtime that names it here; a runtime that does not send the
+ * header, or does not name the form, is sent what it was always sent. So a
+ * server may deploy ahead of the hooks that read its newest wording, which is
+ * the order every release ships in.
+ *
+ * - `later-glimpse`: the later-memory marker with the time between and the
+ *   later memory's opening (ambientPointer.ts RECALL_LATER_MARKER).
+ */
+export declare const HOOK_READS_HEADER = "x-mnemonik-hook-reads";
+export declare const HOOK_READS_LATER_GLIMPSE = "later-glimpse";
+export declare const HOOK_READS: readonly string[];
+/** Whether a request's headers say its hook runtime reads `form`. */
+export declare function hookReads(headers: Record<string, unknown> | undefined, form: string): boolean;
+/**
+ * `init` with the hook-version header added, and what the runtime reads
+ * ({@link HOOK_READS_HEADER}); the caller's headers are kept.
+ */
 export declare function withHookVersion<T extends {
     headers?: unknown;
 }>(init: T, runtime: string, version: string): T;

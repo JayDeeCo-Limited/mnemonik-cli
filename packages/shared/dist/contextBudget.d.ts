@@ -31,11 +31,20 @@ export interface BudgetedContextFit {
 /** Measure rendered context in the host's native budget unit. */
 export declare function measureContext(text: string, units?: ContextBudgetUnits): number;
 /**
+ * The items as one block reads them: no later-memory marker names a memory
+ * another item of the same block carries (ambientPointer.ts
+ * withoutMarkersNamingCarried). Items it leaves alone are the same objects.
+ */
+export declare function withoutCarriedMarkers(items: readonly ContextBudgetItem[], alongside?: readonly ContextBudgetItem[]): ContextBudgetItem[];
+/**
  * Compose ordered items within a fixed budget. Full items are emitted exactly;
  * the first item that does not fit and every later item are shed. The first
  * shed memory keeps a bounded head plus its retrieval marker; later shed items
  * share one trailing marker containing only their explicit retrieval routes.
  * Items without a route leave no agent-visible stub.
+ *
+ * First, a later-memory marker that names a memory another item carries is
+ * dropped ({@link withoutCarriedMarkers}): the block is where that can be seen.
  *
  * Before anything is shed, the later-memory markers go (ambientPointer.ts
  * RECALL_LATER_MARKER), the last item's first: a marker never costs a memory

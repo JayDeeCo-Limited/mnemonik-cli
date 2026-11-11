@@ -1,4 +1,8 @@
-import { AMBIENT_ITEM_POINTER_SOURCE, stripRecallLaterMarkers } from './ambientPointer.js';
+import {
+  AMBIENT_ITEM_POINTER_SOURCE,
+  stripRecallLaterMarkers,
+  withoutMarkersNamingCarried,
+} from './ambientPointer.js';
 
 export { AMBIENT_ITEM_POINTER_SOURCE } from './ambientPointer.js';
 
@@ -86,11 +90,33 @@ export function measureContext(text: string, units: ContextBudgetUnits = 'charac
 }
 
 /**
+ * The items as one block reads them: no later-memory marker names a memory
+ * another item of the same block carries (ambientPointer.ts
+ * withoutMarkersNamingCarried). Items it leaves alone are the same objects.
+ */
+export function withoutCarriedMarkers(
+  items: readonly ContextBudgetItem[],
+  alongside: readonly ContextBudgetItem[] = []
+): ContextBudgetItem[] {
+  const texts = withoutMarkersNamingCarried(
+    items.map((item) => item.text),
+    [...items, ...alongside].flatMap((item) => [...itemMemoryIds(item)])
+  );
+  return items.map((item, index) => {
+    const text = texts[index] ?? item.text;
+    return text === item.text ? item : { ...item, text };
+  });
+}
+
+/**
  * Compose ordered items within a fixed budget. Full items are emitted exactly;
  * the first item that does not fit and every later item are shed. The first
  * shed memory keeps a bounded head plus its retrieval marker; later shed items
  * share one trailing marker containing only their explicit retrieval routes.
  * Items without a route leave no agent-visible stub.
+ *
+ * First, a later-memory marker that names a memory another item carries is
+ * dropped ({@link withoutCarriedMarkers}): the block is where that can be seen.
  *
  * Before anything is shed, the later-memory markers go (ambientPointer.ts
  * RECALL_LATER_MARKER), the last item's first: a marker never costs a memory
@@ -108,7 +134,7 @@ export function fitContextItems(
   const suffix = opts.reservedSuffix ?? [];
   const valueOf = (entries: readonly ContextBudgetItem[]): string =>
     [...entries, ...suffix].map((item) => item.text).join(JOINER);
-  const items = [...givenItems];
+  const items = withoutCarriedMarkers(givenItems, suffix);
   for (let index = items.length; ; index -= 1) {
     const value = valueOf(items);
     if (measureContext(value, units) <= opts.budget) {

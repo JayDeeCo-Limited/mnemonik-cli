@@ -179,7 +179,36 @@ export const HOOK_BUDGET_HEADER = 'x-mnemonik-hook-budget-ms';
  */
 export const HOOK_VERSION_HEADER = 'x-mnemonik-hook-version';
 
-/** `init` with the hook-version header added; the caller's headers are kept. */
+/**
+ * What this hook runtime can read of the server's replies, beyond what every
+ * runtime could when the header was introduced. The server writes a newer
+ * form only to a runtime that names it here; a runtime that does not send the
+ * header, or does not name the form, is sent what it was always sent. So a
+ * server may deploy ahead of the hooks that read its newest wording, which is
+ * the order every release ships in.
+ *
+ * - `later-glimpse`: the later-memory marker with the time between and the
+ *   later memory's opening (ambientPointer.ts RECALL_LATER_MARKER).
+ */
+export const HOOK_READS_HEADER = 'x-mnemonik-hook-reads';
+export const HOOK_READS_LATER_GLIMPSE = 'later-glimpse';
+export const HOOK_READS: readonly string[] = [HOOK_READS_LATER_GLIMPSE];
+
+/** Whether a request's headers say its hook runtime reads `form`. */
+export function hookReads(headers: Record<string, unknown> | undefined, form: string): boolean {
+  const raw = headers?.[HOOK_READS_HEADER];
+  const value = Array.isArray(raw) ? raw.join(',') : raw;
+  if (typeof value !== 'string') return false;
+  return value
+    .split(',')
+    .map((part) => part.trim().toLowerCase())
+    .includes(form);
+}
+
+/**
+ * `init` with the hook-version header added, and what the runtime reads
+ * ({@link HOOK_READS_HEADER}); the caller's headers are kept.
+ */
 export function withHookVersion<T extends { headers?: unknown }>(
   init: T,
   runtime: string,
@@ -197,11 +226,16 @@ export function withHookVersion<T extends { headers?: unknown }>(
     for (const name of Object.keys(headers)) {
       if (name.toLowerCase() === HOOK_VERSION_HEADER) delete headers[name];
     }
+    for (const name of Object.keys(headers)) {
+      if (name.toLowerCase() === HOOK_READS_HEADER) delete headers[name];
+    }
     headers[HOOK_VERSION_HEADER] = `${runtime}/${version}`;
+    headers[HOOK_READS_HEADER] = HOOK_READS.join(',');
     return { ...init, headers };
   }
   const headers = new Headers(raw as ConstructorParameters<typeof Headers>[0]);
   headers.set(HOOK_VERSION_HEADER, `${runtime}/${version}`);
+  headers.set(HOOK_READS_HEADER, HOOK_READS.join(','));
   return { ...init, headers: Object.fromEntries(headers.entries()) };
 }
 
