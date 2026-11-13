@@ -8,6 +8,12 @@ export interface HookConversationInput {
     nativeSessionId: string;
     agentId?: string;
     acquire?: boolean;
+    /**
+     * What the hook has left before its host's timeout. An acquiring request
+     * with no handle waits for the lock only this long (less a round trip), so a
+     * held lock never costs the hook its answer; past it the request fails open.
+     */
+    timeLeftMs?: () => number;
 }
 export declare class HookConversation {
     private readonly input;
@@ -24,7 +30,14 @@ export declare class HookConversation {
     private readonly scope;
     constructor(input: HookConversationInput);
     get id(): string | undefined;
+    /**
+     * Re-reads the cache. Only a valid handle read from it replaces the one held:
+     * a hook's calls run side by side, and a read that started before another's
+     * save renamed the file (or one that fails) must not drop the handle, or the
+     * call reaches the server without it. forget() is the one way to drop it.
+     */
     load(): Promise<string | undefined>;
+    private read;
     private locked;
     private save;
     /** Existing authenticated response is the acquisition; no additional endpoint. */

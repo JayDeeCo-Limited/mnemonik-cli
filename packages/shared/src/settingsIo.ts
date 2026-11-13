@@ -13,6 +13,7 @@ import {
   stat,
   unlink,
 } from 'node:fs/promises';
+import { rmdirSync, unlinkSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
 
 const LOCK_STALE_MS = 120_000;
@@ -196,9 +197,22 @@ export async function withFileLock<T>(
   options?: FileLockOptions
 ): Promise<T> {
   const tokenPath = await acquireLock(lockPath, options);
+  // A process that exits inside the action (a hook answering at its deadline)
+  // releases the lock as it goes, so the next process need not wait for it to
+  // go stale. Only its own token: a successor's lock is never removed.
+  const releaseOnExit = () => {
+    try {
+      unlinkSync(tokenPath);
+      rmdirSync(lockPath);
+    } catch {
+      // Already released, or a successor holds it.
+    }
+  };
+  process.once('exit', releaseOnExit);
   try {
     return await action();
   } finally {
+    process.removeListener('exit', releaseOnExit);
     try {
       await unlink(tokenPath);
       await rmdir(lockPath);

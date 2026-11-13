@@ -7,6 +7,10 @@ import { HOOK_REQUEST_ID_HEADER } from './hookTimeouts.js';
 import { ensureWindowsPrivateDirectorySync } from './runtimeSigners.js';
 const RETENTION_MS = 24 * 60 * 60 * 1000;
 export const CONVERSATION_STATE_FILE = 'conversation.json';
+/** Below this, an acquiring request cannot complete a round trip anyway. */
+const LOCK_RESERVE_MS = 300;
+const LOCK_RETRY_MS = 20;
+const LOCK_RETRIES = 150;
 /** Organizer only. Signature/developer authority is checked by the server. */
 function boundedHandle(value) {
     return typeof value === 'string' && /^cv1\.[0-9a-f-]{36}\.[A-Za-z0-9_-]{43}$/.test(value);
@@ -39,8 +43,20 @@ export class HookConversation {
     get id() {
         return this.conversationId;
     }
+    /**
+     * Re-reads the cache. Only a valid handle read from it replaces the one held:
+     * a hook's calls run side by side, and a read that started before another's
+     * save renamed the file (or one that fails) must not drop the handle, or the
+     * call reaches the server without it. forget() is the one way to drop it.
+     */
     async load() {
-        this.conversationId = undefined;
+        const id = await this.read();
+        if (id)
+            this.conversationId = id;
+        return this.conversationId;
+    }
+    async read() {
+        let id;
         try {
             const directory = await lstat(dirname(this.input.stateFile));
             if (!directory.isDirectory() ||
@@ -62,16 +78,16 @@ export class HookConversation {
                     typeof cache.usedAt !== 'number' ||
                     Date.now() - stat.mtimeMs >= RETENTION_MS)
                     return;
-                this.conversationId = cache.conversationId;
+                id = cache.conversationId;
             }
             finally {
                 await file.close();
             }
             await utimes(this.input.stateFile, new Date(), new Date());
-            return this.conversationId;
+            return id;
         }
         catch {
-            return undefined;
+            return id;
         }
     }
     async locked(run) {
@@ -84,10 +100,13 @@ export class HookConversation {
                 ((process.getuid && stat.uid !== process.getuid()) || stat.mode & 0o077)))
             throw new Error('conversation cache unavailable');
         ensureWindowsPrivateDirectorySync(directory);
+        const left = this.input.timeLeftMs?.();
         return withFileLock(`${this.input.stateFile}.lock`, run, {
             staleMs: 10_000,
-            retries: 150,
-            retryMs: 20,
+            retries: left === undefined
+                ? LOCK_RETRIES
+                : Math.min(LOCK_RETRIES, Math.max(1, Math.floor((left - LOCK_RESERVE_MS) / LOCK_RETRY_MS))),
+            retryMs: LOCK_RETRY_MS,
         });
     }
     async save(id) {
@@ -156,7 +175,11 @@ export class HookConversation {
         };
         const callId = hookCallId(init.headers);
         let response;
-        if (!acquisition || (callId !== undefined && this.lockHeldFor === callId)) {
+        // The lock keeps two first events from minting two handles. A request
+        // that already holds a handle mints nothing, so it never waits for it.
+        if (!acquisition ||
+            this.conversationId !== undefined ||
+            (callId !== undefined && this.lockHeldFor === callId)) {
             response = await send();
         }
         else {
