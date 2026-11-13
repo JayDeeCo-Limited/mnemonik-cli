@@ -42,6 +42,8 @@ export declare class HookConversation {
     private save;
     /** Existing authenticated response is the acquisition; no additional endpoint. */
     request(url: string, init: HookFetchInit, post: (init: HookFetchInit) => Promise<Response>): Promise<Response>;
+    /** Drop a refused handle while this process holds the conversation lock. */
+    private dropHeld;
     private forget;
     /** Grok adopts only an authenticated explicit-bootstrap tool result. */
     adopt(result: unknown): Promise<void>;

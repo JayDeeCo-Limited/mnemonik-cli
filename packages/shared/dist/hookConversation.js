@@ -143,7 +143,7 @@ export class HookConversation {
                 (url.endsWith('/hooks/injections') &&
                     ['SessionStart', 'SubagentStart', 'UserPromptSubmit'].includes(String(body.event))));
         let rejected;
-        const send = async () => {
+        const send = async (holdsLock, retried = false) => {
             await this.load();
             const response = await post({
                 ...init,
@@ -159,6 +159,16 @@ export class HookConversation {
                     .catch(() => null))
                 : null;
             if (this.conversationId && result?.ok === false && result.reason === 'invalid_conversation') {
+                if (acquisition && holdsLock && !retried) {
+                    // An acquiring route refuses a handle before it does anything (the
+                    // check follows authentication), so sending the same call once
+                    // more without the handle is safe: the server mints a fresh one and
+                    // this call carries it to the tool, instead of the session losing a
+                    // call to the refusal (a handle signed for an identity that has
+                    // since changed, or a signing-secret rotation). Once, never more.
+                    await this.dropHeld(this.conversationId);
+                    return send(holdsLock, true);
+                }
                 rejected = this.conversationId;
                 return response;
             }
@@ -180,13 +190,32 @@ export class HookConversation {
         if (!acquisition ||
             this.conversationId !== undefined ||
             (callId !== undefined && this.lockHeldFor === callId)) {
-            response = await send();
+            response = await send(false);
         }
         else {
             response = await this.locked(async () => {
                 this.lockHeldFor = callId;
                 try {
-                    return await send();
+                    return await send(true);
+                }
+                finally {
+                    if (this.lockHeldFor === callId)
+                        this.lockHeldFor = undefined;
+                }
+            });
+        }
+        // An acquiring request sent without the lock (it already held a handle)
+        // and refused: drop the handle and send it once more under the lock, so
+        // only one event mints the replacement. If another event already
+        // replaced it, the resend carries that one.
+        if (rejected && acquisition && !(callId !== undefined && this.lockHeldFor === callId)) {
+            const refused = rejected;
+            rejected = undefined;
+            response = await this.locked(async () => {
+                this.lockHeldFor = callId;
+                try {
+                    await this.dropHeld(refused);
+                    return await send(true, true);
                 }
                 finally {
                     if (this.lockHeldFor === callId)
@@ -200,6 +229,14 @@ export class HookConversation {
         if (rejected)
             await this.forget(rejected);
         return response;
+    }
+    /** Drop a refused handle while this process holds the conversation lock. */
+    async dropHeld(id) {
+        await this.load();
+        if (this.conversationId !== id)
+            return;
+        await rm(this.input.stateFile, { force: true });
+        this.conversationId = undefined;
     }
     async forget(id) {
         await this.locked(async () => {
