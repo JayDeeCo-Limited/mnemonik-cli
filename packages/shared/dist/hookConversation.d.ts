@@ -45,7 +45,20 @@ export declare class HookConversation {
     /** Drop a refused handle while this process holds the conversation lock. */
     private dropHeld;
     private forget;
-    /** Grok adopts only an authenticated explicit-bootstrap tool result. */
+    /**
+     * Adopts the conversation an authenticated explicit-bootstrap tool result
+     * names (Grok learns its handle this way; every host calls it after the
+     * agent's own session_bootstrap).
+     *
+     * A result naming another conversation than the one held replaces it. That
+     * happens when the agent bootstrapped without the hook's handle: the hook's
+     * PreToolUse rewrite missed the host's timeout and the server minted a new
+     * conversation (14 Nov 2026), or the held handle was one the account no longer
+     * issues and the server replaced it. The agent's calls now carry the new
+     * handle, so keeping the old one would split the session: hook events
+     * serving one conversation, MCP calls the other. The server signs every
+     * handle for its account, so a result can only name one of the caller's own.
+     */
     adopt(result: unknown): Promise<void>;
 }
 export declare function configureHookConversation(input: HookConversationInput): Promise<void>;

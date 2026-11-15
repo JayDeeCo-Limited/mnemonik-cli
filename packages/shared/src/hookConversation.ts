@@ -296,17 +296,34 @@ export class HookConversation {
     }).catch(() => undefined);
   }
 
-  /** Grok adopts only an authenticated explicit-bootstrap tool result. */
+  /**
+   * Adopts the conversation an authenticated explicit-bootstrap tool result
+   * names (Grok learns its handle this way; every host calls it after the
+   * agent's own session_bootstrap).
+   *
+   * A result naming another conversation than the one held replaces it. That
+   * happens when the agent bootstrapped without the hook's handle: the hook's
+   * PreToolUse rewrite missed the host's timeout and the server minted a new
+   * conversation (14 Nov 2026), or the held handle was one the account no longer
+   * issues and the server replaced it. The agent's calls now carry the new
+   * handle, so keeping the old one would split the session: hook events
+   * serving one conversation, MCP calls the other. The server signs every
+   * handle for its account, so a result can only name one of the caller's own.
+   */
   async adopt(result: unknown): Promise<void> {
     const walk = (value: unknown, depth: number): string | undefined => {
       if (depth > 5 || !value) return;
       if (typeof value === 'string' && value.length < 65536) {
         // Explicit bootstrap can be projected by a host as native plain text.
         // Only the server's reserved marker is a carrier; arbitrary IDs in
-        // prose are never adopted.
-        const marker = value.match(
-          /(?:^|[\s>])mnemonik-conversation:\s*(cv1\.[0-9a-f-]{36}\.[A-Za-z0-9_-]{43})(?=$|[\s<])/
-        );
+        // prose are never adopted. The server appends its marker after the
+        // result's text (mcpEndpoint), so the last one is the carrier: a
+        // digest may quote earlier text that held one.
+        const marker = [
+          ...value.matchAll(
+            /(?:^|[\s>])mnemonik-conversation:\s*(cv1\.[0-9a-f-]{36}\.[A-Za-z0-9_-]{43})(?=$|[\s<])/g
+          ),
+        ].at(-1);
         if (marker && boundedHandle(marker[1])) return marker[1];
         try {
           return walk(JSON.parse(value), depth + 1);
@@ -315,6 +332,15 @@ export class HookConversation {
         }
       }
       if (typeof value !== 'object') return;
+      // Claude Code hands PostToolUse an MCP result's content blocks alone, a
+      // bare array; the server's marker is on the last text block.
+      if (Array.isArray(value)) {
+        for (const child of value.slice(-16).reverse()) {
+          const id = walk(child, depth + 1);
+          if (id) return id;
+        }
+        return;
+      }
       const object = value as Record<string, unknown>;
       if (boundedHandle(object.conversationId)) return object.conversationId;
       if (typeof object.text === 'string' && object.text.length < 65536) {
@@ -331,13 +357,7 @@ export class HookConversation {
       return;
     };
     const id = walk(result, 0);
-    if (id)
-      await this.locked(async () => {
-        await this.load();
-        if (this.conversationId && this.conversationId !== id)
-          throw new Error('conversation response mismatch');
-        await this.save(id);
-      });
+    if (id) await this.locked(() => this.save(id));
   }
 }
 
