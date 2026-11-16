@@ -120,7 +120,7 @@ export function hooksLine(tool, state, stepped) {
         case 'trust_pending':
             return `${tool} hooks: waiting for you to trust them in ${tool}.`;
         case 'not_authorized':
-            return `${tool} hooks: not authorized. Their authorization is missing from this computer or has expired.${step}`;
+            return `${tool} hooks: not authorized. Their authorization is missing from this computer, has expired, or was revoked.${step}`;
         case 'not_installed':
             return `${tool} hooks: not installed.${step}`;
         default:

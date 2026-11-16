@@ -970,6 +970,33 @@ it('reports a Codex connection turned off with an action a person can take', asy
   expect(result.text).not.toContain('codex mcp enable');
 }, 15_000);
 
+it('says a Codex config.toml that does not parse is not valid TOML, and where', async () => {
+  // CLI 8.4.0 repair left http_headers defined twice; status then said the
+  // connection was missing, which sent the person to reinstall.
+  vi.stubGlobal('fetch', async () => Response.json({}));
+  const { join } = await import('node:path');
+  const machine = await claudeCodeOnly();
+  await machine.put(
+    join(machine.home, '.codex/config.toml'),
+    '[mcp_servers.mnemonik]\nurl = "https://api.mnemonik.dev/mcp"\n' +
+      'http_headers = { "x-mnemonik-installation-id" = "11111111-1111-4111-8111-111111111111" }\n\n' +
+      '[mcp_servers.mnemonik.http_headers]\n' +
+      'x-mnemonik-installation-id = "11111111-1111-4111-8111-111111111111"\n'
+  );
+  await machine.put(join(machine.home, '.codex/hooks.json'), machine.hooksFile('codex'));
+  for (const command of ['status', 'doctor']) {
+    const result = await machine.invoke(command);
+    expect(result.code).toBe(1);
+    expect(result.text).toContain(
+      'Codex settings file ~/.codex/config.toml is not valid TOML (line 5, column 2): trying to redefine an already defined table or value.'
+    );
+    expect(result.text).toContain(
+      'Run mnemonik repair; if it cannot fix the file, correct that line by hand.'
+    );
+    expect(result.text).not.toContain('Codex connection is missing.');
+  }
+}, 20_000);
+
 it('reports Codex hooks that Codex has not trusted', async () => {
   const machine = await claudeCodeOnly();
   const result = await machine.invoke('status', {

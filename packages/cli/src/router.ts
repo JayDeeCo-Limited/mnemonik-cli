@@ -141,6 +141,8 @@ import {
   installedCodingTools,
   localEditorStatus,
   localInstallationConditions,
+  UNREADABLE_SETTINGS_ACTION,
+  unreadableSettingsConditions,
   mcpTurnOnAction,
   renderStatusSummaries,
   renderRefusals,
@@ -790,15 +792,29 @@ async function hostDependencies(
 
 async function updateHostDependencies(
   deps: CliDependencies,
-  state: string
+  state: string,
+  output: Output
 ): Promise<HostDependencies> {
   if (deps.hostManagement) return { ...deps.hostManagement, stateDir: state };
   const installation = JSON.parse(
     await readFile(join(state, 'installation.json'), 'utf8').catch(() => '{}')
   ) as { account?: unknown };
+  // The stored CLI sign-in, never a new one: update replaces a hook family the server
+  // revoked only when that needs no person (runHosts says plainly when it does). It
+  // often runs unattended, from a coding tool's session start.
+  const cliAuth = auth(deps, output, true);
   return {
     stateDir: state,
     account: typeof installation.account === 'string' ? installation.account : '',
+    getCliBearer: async () => {
+      const bearer = await cliAuth.getCliBearer();
+      if (typeof bearer !== 'string') throw new Error(bearer.reason);
+      return bearer;
+    },
+    authorizeInstallSession: async () => {
+      throw new Error('install_session_needs_person');
+    },
+    credentialFetch: deps.grantFetch,
   };
 }
 
@@ -932,7 +948,7 @@ async function runHostCommand(
     const managed =
       selections.length || (await interrupted(state)).length
         ? command === 'update'
-          ? await retryUpdateOnce(() => updateHostDependencies(deps, state))
+          ? await retryUpdateOnce(() => updateHostDependencies(deps, state, output))
           : await hostDependencies(deps, output, state)
         : undefined;
     const maintainHosts = (dependencies: HostDependencies) =>
@@ -1196,7 +1212,15 @@ async function runHostCommand(
           output.line(line);
     } else {
       for (const target of result.results)
-        output.line(target.status === 'READY' ? 'Done.' : humanReason(target.reason));
+        if (
+          target.status !== 'READY' &&
+          target.detail &&
+          /^(?:invalid_mcp_toml|mcp_toml_write_refused)$/u.test(target.reason)
+        ) {
+          // The settings file the tool cannot read is named, with the line, and left unchanged.
+          output.line(`${target.detail}.`);
+          if (target.action) output.line(target.action);
+        } else output.line(target.status === 'READY' ? 'Done.' : humanReason(target.reason));
       for (const report of result.reports) output.line(humanReport(report));
       if (remaining)
         renderStatusSummaries(remaining, output, { agent: !personPresent(parsed, deps) });
@@ -1722,6 +1746,10 @@ async function doctorCommand(
     transport: deps.projectTransport,
     scannerStatus: deps.scannerStatus,
     installationConditions: deps.installationConditions,
+    // A settings file the coding tool cannot read is named, with its line.
+    ...(deps.installationConditions
+      ? {}
+      : { pendingInstallationConditions: unreadableSettingsConditions(deps.home ?? homedir()) }),
     projectHookConditions: deps.projectHookConditions,
     configuredHosts: deps.configuredHosts ?? deps.install?.input.hosts,
     details: deps.statusDetails,
@@ -2711,18 +2739,22 @@ export async function runCli(args: string[], deps: CliDependencies = {}): Promis
       // A tool that could not be started at all still has its own instructions.
     }
     const reason =
-      editor?.mcp === 'disabled'
-        ? `${tool} MCP: turned off.`
-        : editor?.mcp === 'ready' && mcp
-          ? mcpLine(tool, host, mcp, false)
-          : `${tool} MCP: not set up on this computer.`;
+      editor?.mcp === 'invalid' && editor.unreadable
+        ? editor.unreadable
+        : editor?.mcp === 'disabled'
+          ? `${tool} MCP: turned off.`
+          : editor?.mcp === 'ready' && mcp
+            ? mcpLine(tool, host, mcp, false)
+            : `${tool} MCP: not set up on this computer.`;
     const actions =
       editor?.mcp === 'ready'
         ? editorAuthorizationRows([host])
         : [
-            editor?.mcp === 'disabled'
-              ? mcpTurnOnAction[host]
-              : 'Run mnemonik install to set it up again.',
+            editor?.mcp === 'invalid'
+              ? UNREADABLE_SETTINGS_ACTION
+              : editor?.mcp === 'disabled'
+                ? mcpTurnOnAction[host]
+                : 'Run mnemonik install to set it up again.',
           ];
     if (json) output.json({ status: 'ACTION_REQUIRED', reason, actions, ...(mcp ? { mcp } : {}) });
     else {

@@ -15,6 +15,8 @@ export declare function createCliCredentials(options?: CredentialAdapterOptions)
     waitForCliLease: () => Promise<void>;
     putFamily: (componentKind: import("@mnemonik/credentials").ComponentKind, response: import("@mnemonik/credentials").ComponentCredentialResponse) => Promise<import("@mnemonik/credentials").FamilyCredential>;
     readFamily: (familyId: string) => Promise<import("@mnemonik/credentials").FamilyCredential | null>;
+    readRefusal: (familyId: string) => Promise<import("@mnemonik/credentials").FamilyRefusal | null>;
+    recordRefusal: (familyId: string, reason: string) => Promise<void>;
     rotateFamily: (familyId: string, transport: import("@mnemonik/credentials").CredentialTransport) => Promise<import("@mnemonik/credentials").RotationResult>;
     withCredential: <T>(familyId: string, transport: import("@mnemonik/credentials").CredentialTransport, work: (accessToken: string) => Promise<import("@mnemonik/credentials").WorkResponse<T>>) => Promise<import("@mnemonik/credentials").WorkResponse<T> | import("@mnemonik/credentials").ActionRequired | import("@mnemonik/credentials").RetryLater>;
     revokeFamily: (familyId: string, transport: import("@mnemonik/credentials").CredentialTransport) => Promise<import("@mnemonik/credentials").ActionRequired | import("@mnemonik/credentials").RetryLater | {

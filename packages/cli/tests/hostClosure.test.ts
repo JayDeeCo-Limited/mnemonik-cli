@@ -121,6 +121,7 @@ describe('release-pinned host closures', () => {
         'nanoid',
         'picocolors',
         'ignore',
+        'smol-toml',
         'svelte',
         '@jridgewell/remapping',
         '@jridgewell/gen-mapping',

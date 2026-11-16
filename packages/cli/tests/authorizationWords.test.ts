@@ -278,10 +278,10 @@ describe('the hooks, scanner and CLI lines', () => {
       'Codex hooks: waiting for you to trust them in Codex.'
     );
     expect(hooksLine('Cursor', 'not_authorized', true)).toBe(
-      'Cursor hooks: not authorized. Their authorization is missing from this computer or has expired.'
+      'Cursor hooks: not authorized. Their authorization is missing from this computer, has expired, or was revoked.'
     );
     expect(hooksLine('Cursor', 'not_authorized', false)).toBe(
-      'Cursor hooks: not authorized. Their authorization is missing from this computer or has expired. Run mnemonik repair.'
+      'Cursor hooks: not authorized. Their authorization is missing from this computer, has expired, or was revoked. Run mnemonik repair.'
     );
     expect(hooksLine('Codex', 'not_installed', false)).toBe(
       'Codex hooks: not installed. Run mnemonik repair.'

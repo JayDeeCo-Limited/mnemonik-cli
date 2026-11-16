@@ -34,6 +34,7 @@ export async function packedHosts() {
       (name) => resolve('../../node_modules', name)
     ),
     resolve('../../node_modules/ignore'),
+    resolve('../../node_modules/smol-toml'),
     resolve('../../node_modules/web-tree-sitter'),
     // npm may hoist PostCSS; resolve it from the compiler that uses it.
     dirname(

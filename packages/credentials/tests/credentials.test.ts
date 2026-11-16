@@ -22,6 +22,7 @@ import {
   createCredentialAdapter,
   credentialPaths,
   fetchWithHookCredential,
+  hookCredentialRefused,
   osSecretStore,
   stateDirectory,
   windowsCurrentUserAcl,
@@ -1534,8 +1535,13 @@ describe('fetchWithHookCredential: an unavailable credential says whether it is 
       sleep: async () => undefined,
       now: () => Date.now() + 2 * 86_400_000,
     });
-    return { familyId, server, credentials, unavailable: false } as unknown as HookCredential;
+    const handle = { familyId, server, credentials, unavailable: false };
+    stateDirs.set(handle, f.stateDir);
+    return handle as unknown as HookCredential;
   }
+  const stateDirs = new WeakMap<object, string>();
+  const expiredHookFamilyDir = async (credential: HookCredential) =>
+    stateDirs.get(credential as object);
 
   function stubRotation(rotate: () => Promise<Response>) {
     const fetchMock = vi.fn(async (url: unknown) =>
@@ -1586,6 +1592,55 @@ describe('fetchWithHookCredential: an unavailable credential says whether it is 
     const second = await post(credential);
     expect(second.status).toBe(403);
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  // 2026-11-15: every hook process on a machine whose family the server had revoked
+  // rotated, got invalid_grant and said nothing, on every call, for a day.
+  it('a refusal is kept on disk: the next hook process sends nothing and knows the credential is refused', async () => {
+    vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const credential = await expiredHookFamily();
+    const fetchMock = stubRotation(
+      async () => new Response('{"error":"invalid_grant"}', { status: 400 })
+    );
+    expect(await hookCredentialRefused(credential)).toBe(false);
+    expect((await post(credential)).status).toBe(403);
+    expect(await hookCredentialRefused(credential)).toBe(true);
+    // A new process: a new handle and adapter over the same state directory.
+    const next = { ...(credential as object), unavailable: false } as Record<string, unknown>;
+    delete next.refusal;
+    next.credentials = createCredentialAdapter({
+      stateDir: (await expiredHookFamilyDir(credential)) as string,
+      retryLimit: 0,
+      now: () => Date.now() + 2 * 86_400_000,
+    });
+    const nextHandle = next as unknown as HookCredential;
+    expect(await hookCredentialRefused(nextHandle)).toBe(true);
+    const response = await post(nextHandle);
+    expect(response.status).toBe(403);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('a family written again after its refusal (a repair, a reissue) is tried again', async () => {
+    vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const credential = await expiredHookFamily();
+    const fetchMock = stubRotation(
+      async () => new Response('{"error":"invalid_grant"}', { status: 400 })
+    );
+    await post(credential);
+    const stateDir = (await expiredHookFamilyDir(credential)) as string;
+    await createCredentialAdapter({ stateDir, now: () => Date.now() + 60_000 }).putFamily(
+      'hook',
+      pair('reissued')
+    );
+    const next = {
+      familyId,
+      server,
+      unavailable: false,
+      credentials: createCredentialAdapter({ stateDir, retryLimit: 0 }),
+    } as unknown as HookCredential;
+    expect(await hookCredentialRefused(next)).toBe(false);
+    expect((await post(next)).status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it("the caller's timeout covers a rotation waiting on another holder's lease", async () => {

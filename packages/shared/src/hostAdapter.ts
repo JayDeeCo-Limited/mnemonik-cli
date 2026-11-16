@@ -9,6 +9,7 @@ import { execFile } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { isAbsolute } from 'node:path';
 import { isDeepStrictEqual, promisify, stripVTControlCharacters } from 'node:util';
+import { parse as parseToml, TomlError } from 'smol-toml';
 
 export type HostName = 'claude-code' | 'codex' | 'cursor' | 'grok' | 'vscode-copilot';
 export interface Target {
@@ -167,6 +168,224 @@ function ensureCodexFileMcpCredentials(raw: string): string {
     next.push(setting);
   }
   return next.join('');
+}
+
+const INSTALLATION_HEADER = 'x-mnemonik-installation-id';
+const CODEX_MNEMONIK_SECTION =
+  /^\s*\[\s*(?:mcp_servers|"mcp_servers"|'mcp_servers')\s*\.\s*(?:mnemonik|"mnemonik"|'mnemonik')((?:\s*\.\s*[^\]\s.]+)*)\s*\]\s*(?:#.*)?$/;
+const INSTALLATION_PAIR =
+  /(?:["']x-mnemonik-installation-id["']|x-mnemonik-installation-id)\s*=\s*["']([^"']*)["']/;
+const INSTALLATION_KEY_LINE =
+  /^\s*(?:"x-mnemonik-installation-id"|'x-mnemonik-installation-id'|x-mnemonik-installation-id)\s*=/;
+
+type TomlParse = { value: Record<string, unknown> } | { error: unknown };
+function tryParseToml(text: string): TomlParse {
+  try {
+    return { value: parseToml(text) as Record<string, unknown> };
+  } catch (error) {
+    return { error };
+  }
+}
+/** Where and why a TOML file does not parse, in words a person can act on. */
+function tomlProblem(file: string, error: unknown): string {
+  if (error instanceof TomlError) {
+    const reason = error.message
+      .split('\n')[0]
+      ?.replace(/^Invalid TOML document:\s*/u, '')
+      .trim();
+    return `${file} is not valid TOML (line ${error.line}, column ${error.column})${reason ? `: ${reason}` : ''}`;
+  }
+  return `${file} is not valid TOML: ${error instanceof Error ? error.message : String(error)}`;
+}
+const record = (value: unknown): Record<string, unknown> | undefined =>
+  value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+/** The Mnemonik declaration as Codex will read it, or undefined when absent. */
+function codexDeclaration(config: Record<string, unknown>) {
+  return record(record(config.mcp_servers)?.mnemonik);
+}
+
+/**
+ * Codex reads `http_headers` as either an inline table under `url` or a
+ * `[mcp_servers.mnemonik.http_headers]` sub-table. Defining both is invalid
+ * TOML that Codex refuses to load, so an existing sub-table is updated in place
+ * (an inline definition beside it is folded into it), an inline table is
+ * updated in place, and only a declaration with neither gains the inline form.
+ * Every proposal is parsed before it is returned: a file that cannot be made
+ * valid by this edit is refused, never written.
+ */
+function writeCodexMcpToml(input: {
+  file: string;
+  raw: string;
+  url: string;
+  headerKey: string;
+  installationId?: string;
+  install: boolean;
+  ownedTarget: boolean;
+}): string | undefined {
+  const { file, raw, url, headerKey, installationId, install } = input;
+  const before = tryParseToml(raw);
+  const newline = raw.includes('\r\n') ? '\r\n' : '\n';
+  const lines = raw.match(/[^\n]*\n|[^\n]+$/g) ?? [];
+  const isHeader = (line: string) => /^\s*\[/.test(line.trimEnd());
+  type Section = { start: number; stop: number; path: string };
+  const sections: Section[] = [];
+  lines.forEach((line, index) => {
+    const match = isHeader(line) ? CODEX_MNEMONIK_SECTION.exec(line.trimEnd()) : null;
+    if (!match) return;
+    const end = lines.findIndex((next, at) => at > index && isHeader(next));
+    sections.push({
+      start: index,
+      stop: end < 0 ? lines.length : end,
+      path: (match[1] ?? '').replace(/[\s"']/gu, ''),
+    });
+  });
+  const main = sections.find((section) => section.path === '');
+  const headerTable = sections.find((section) => section.path === `.${headerKey}`);
+  const keyLine = (line: string, key: string) => new RegExp(`^\\s*${key}\\s*=`).test(line);
+  const mainLines = main ? lines.slice(main.start + 1, main.stop) : [];
+  const urlLine = mainLines.find((line) => /^\s*url\s*=/.test(line));
+  const connected =
+    urlLine?.trimEnd().match(/^\s*url\s*=\s*["']([^"']+)["']\s*(?:#.*)?$/)?.[1] === url;
+  if (!install && !sections.length) return undefined;
+  if (main && !connected && !input.ownedTarget) throw new Error('mcp_name_conflict');
+  if (mainLines.some((line) => new RegExp(`^\\s*${headerKey}\\s*\\.`).test(line)))
+    throw new Error('unsupported_mcp_toml_layout');
+
+  const next = [...lines];
+  const drop = new Set<number>();
+  const insertAfter = new Map<number, string[]>();
+  const append: string[] = [];
+  const queue = (index: number, line: string) =>
+    insertAfter.set(index, [...(insertAfter.get(index) ?? []), line]);
+  if (!install)
+    for (const section of sections)
+      for (let at = section.start; at < section.stop; at++) drop.add(at);
+  else {
+    const idLine = (id: string) => `${INSTALLATION_HEADER} = ${JSON.stringify(id)}${newline}`;
+    // The url, in place or right under the table name.
+    if (main) {
+      const at = lines.findIndex(
+        (line, index) => index > main.start && index < main.stop && /^\s*url\s*=/.test(line)
+      );
+      if (at >= 0) next[at] = `url = "${url}"${newline}`;
+      else queue(main.start, `url = "${url}"${newline}`);
+    }
+    const inlineAt = main
+      ? lines.findIndex(
+          (line, index) => index > main.start && index < main.stop && keyLine(line, headerKey)
+        )
+      : -1;
+    const inline = inlineAt >= 0 ? (lines[inlineAt] ?? '') : undefined;
+    if (inline !== undefined && !/^\s*\w+\s*=\s*\{.*\}\s*(?:#.*)?$/u.test(inline.trimEnd()))
+      throw new Error('unsupported_mcp_toml_layout');
+    if (headerTable) {
+      // The sub-table is the one definition; fold any inline headers into it.
+      const body = lines.slice(headerTable.start + 1, headerTable.stop);
+      const tableKeys = tryParseToml(body.join(''));
+      if (!('value' in tableKeys)) throw new Error('unsupported_mcp_toml_layout');
+      if (inline !== undefined) {
+        const parsedInline = tryParseToml(inline.trimEnd());
+        const pairs = 'value' in parsedInline ? record(parsedInline.value[headerKey]) : undefined;
+        if (!pairs) throw new Error('unsupported_mcp_toml_layout');
+        drop.add(inlineAt);
+        for (const [key, value] of Object.entries(pairs)) {
+          if (key === INSTALLATION_HEADER || Object.hasOwn(tableKeys.value, key)) continue;
+          if (typeof value !== 'string') throw new Error('unsupported_mcp_toml_layout');
+          const name = /^[A-Za-z0-9_-]+$/u.test(key) ? key : JSON.stringify(key);
+          queue(lastKeyLine(lines, headerTable), `${name} = ${JSON.stringify(value)}${newline}`);
+        }
+      }
+      const idAt = lines.findIndex(
+        (line, index) =>
+          index > headerTable.start && index < headerTable.stop && INSTALLATION_KEY_LINE.test(line)
+      );
+      if (installationId) {
+        if (idAt >= 0)
+          next[idAt] = (lines[idAt] ?? '').replace(INSTALLATION_PAIR, (pair) =>
+            pair.replace(/["']([^"']*)["']\s*$/u, JSON.stringify(installationId))
+          );
+        else {
+          const at = lastKeyLine(lines, headerTable);
+          insertAfter.set(at, [idLine(installationId), ...(insertAfter.get(at) ?? [])]);
+        }
+      } else if (idAt >= 0) drop.add(idAt);
+    } else if (inline !== undefined) {
+      if (installationId)
+        next[inlineAt] = INSTALLATION_PAIR.test(inline)
+          ? inline.replace(INSTALLATION_PAIR, (pair) =>
+              pair.replace(/["']([^"']*)["']\s*$/u, JSON.stringify(installationId))
+            )
+          : inline.replace(
+              /(\{\s*)?\}(\s*(?:#.*)?\r?\n?)$/u,
+              (_suffix, empty: string | undefined, ending: string) =>
+                `${empty ? '{ ' : ', '}"${INSTALLATION_HEADER}" = ${JSON.stringify(installationId)} }${ending}`
+            );
+      else if (INSTALLATION_PAIR.test(inline))
+        next[inlineAt] = inline
+          .replace(
+            /(?:,\s*)?(?:["']x-mnemonik-installation-id["']|x-mnemonik-installation-id)\s*=\s*["'][^"']*["']\s*,?/u,
+            ''
+          )
+          .replace(/\{\s*,/u, '{')
+          .replace(/,\s*\}/u, ' }');
+    }
+    const inlineHeader = installationId
+      ? `${headerKey} = { "${INSTALLATION_HEADER}" = ${JSON.stringify(installationId)} }${newline}`
+      : undefined;
+    if (!main) {
+      append.push(`[mcp_servers.mnemonik]${newline}`, `url = "${url}"${newline}`);
+      if (!headerTable && inlineHeader) append.push(inlineHeader);
+    } else if (!headerTable && inline === undefined && inlineHeader) {
+      const urlAt = lines.findIndex(
+        (line, index) => index > main.start && index < main.stop && /^\s*url\s*=/.test(line)
+      );
+      // A missing url was queued under the table name; the header follows it.
+      queue(urlAt >= 0 ? urlAt : main.start, inlineHeader);
+    }
+  }
+  const out: string[] = [];
+  next.forEach((line, index) => {
+    if (!drop.has(index)) out.push(line);
+    out.push(...(insertAfter.get(index) ?? []));
+  });
+  let content = out.join('');
+  if (append.length)
+    content = `${content}${content && !content.endsWith('\n') ? newline : ''}${append.join('')}`;
+
+  const after = tryParseToml(content);
+  if (!('value' in after)) {
+    // A file that was already broken elsewhere stays the person's to fix.
+    if (!('value' in before))
+      throw new Error('invalid_mcp_toml', { cause: new Error(tomlProblem(file, before.error)) });
+    throw new Error('mcp_toml_write_refused', {
+      cause: new Error(
+        `Mnemonik's change would leave ${tomlProblem(file, after.error).replace(` is not`, ' not')}; ${file} was left unchanged`
+      ),
+    });
+  }
+  const declared = codexDeclaration(after.value);
+  const headers = record(declared?.[headerKey]);
+  const holds = install
+    ? declared?.url === url &&
+      (installationId
+        ? headers?.[INSTALLATION_HEADER] === installationId
+        : !headers || !Object.hasOwn(headers, INSTALLATION_HEADER))
+    : declared === undefined;
+  if (!holds)
+    throw new Error('mcp_toml_write_refused', {
+      cause: new Error(
+        `Mnemonik could not ${install ? 'declare' : 'remove'} its connection in ${file}; the file was left unchanged`
+      ),
+    });
+  return content;
+}
+/** The last key line of a section, so additions land before its trailing blank lines. */
+function lastKeyLine(lines: string[], section: { start: number; stop: number }): number {
+  for (let index = section.stop - 1; index > section.start; index--)
+    if (/\S/u.test(lines[index] ?? '') && !/^\s*#/u.test(lines[index] ?? '')) return index;
+  return section.start;
 }
 
 /** Common read/propose/stage lifecycle; the host's installer still owns its bytes. */
@@ -360,83 +579,30 @@ export function createFileHostAdapter(
         /^\s*\[\[\s*["']?mcp_servers/m.test(tomlRaw)
       )
         throw new Error('unsupported_mcp_toml_layout');
-      const table =
-        /^\s*\[\s*(?:mcp_servers|"mcp_servers"|'mcp_servers')\s*\.\s*(?:mnemonik|"mnemonik"|'mnemonik')(?:\s*\.[^\]]+)?\s*\]\s*(?:#.*)?$/;
-      const newline = tomlRaw.includes('\r\n') ? '\r\n' : '\n';
-      const lines = tomlRaw.match(/[^\n]*\n|[^\n]+$/g) ?? [];
-      const start = lines.findIndex((line) => table.test(line.trimEnd()));
-      const end =
-        start < 0
-          ? -1
-          : lines.findIndex((line, index) => index > start && /^\s*\[/.test(line.trimEnd()));
-      const stop = end < 0 ? lines.length : end;
-      const section = start < 0 ? [] : lines.slice(start, stop);
-      const urlIndex = section.findIndex((line) => /^\s*url\s*=/.test(line));
-      const connected =
-        urlIndex >= 0 &&
-        section[urlIndex]?.trimEnd().match(/^\s*url\s*=\s*["']([^"']+)["']\s*(?:#.*)?$/)?.[1] ===
-          url;
       const headerKey = host.mcp.headerKey ?? 'http_headers';
-      const headerIndex = section.findIndex((line) =>
-        new RegExp(`^\\s*${headerKey}\\s*=`).test(line)
-      );
-      const installationPattern =
-        /(?:["']x-mnemonik-installation-id["']|x-mnemonik-installation-id)\s*=\s*["']([^"']*)["']/;
-      const installedId =
-        headerIndex >= 0 ? section[headerIndex]?.match(installationPattern)?.[1] : undefined;
-      const exact =
-        connected &&
-        (installationHeader ? installedId === target.installationId : installedId === undefined);
-      if (install === undefined) return exact ? [{ path: file, content: Buffer.from(raw) }] : [];
-      if (!install && start < 0) return [];
-      if (start >= 0 && !connected && !ownedTarget) throw new Error('mcp_name_conflict');
-      if (!install) content = [...lines.slice(0, start), ...lines.slice(stop)].join('');
-      else {
-        const next =
-          start < 0
-            ? [`[mcp_servers.mnemonik]${newline}`, `url = "${url}"${newline}`]
-            : [...section];
-        const nextUrl = next.findIndex((line) => /^\s*url\s*=/.test(line));
-        if (nextUrl >= 0) next[nextUrl] = `url = "${url}"${newline}`;
-        const nextHeader = next.findIndex((line) =>
-          new RegExp(`^\\s*${headerKey}\\s*=`).test(line)
-        );
-        if (nextHeader >= 0) {
-          const line = next[nextHeader] ?? '';
-          if (!/^\s*\w+\s*=\s*\{.*\}\s*(?:#.*)?$/u.test(line.trimEnd()))
-            throw new Error('unsupported_mcp_toml_layout');
-          if (installationHeader) {
-            next[nextHeader] = installationPattern.test(line)
-              ? line.replace(installationPattern, (pair) =>
-                  pair.replace(/["']([^"']*)["']\s*$/u, JSON.stringify(target.installationId))
-                )
-              : line.replace(
-                  /\}(\s*(?:#.*)?\r?\n?)$/u,
-                  (suffix, ending) =>
-                    `, "x-mnemonik-installation-id" = ${JSON.stringify(target.installationId)} }${ending}`
-                );
-          } else if (installationPattern.test(line)) {
-            next[nextHeader] = line
-              .replace(
-                /(?:,\s*)?(?:["']x-mnemonik-installation-id["']|x-mnemonik-installation-id)\s*=\s*["'][^"']*["']\s*,?/u,
-                ''
-              )
-              .replace(/\{\s*,/u, '{')
-              .replace(/,\s*\}/u, ' }');
-          }
-        } else if (installationHeader) {
-          const insert = Math.max(1, next.findIndex((line) => /^\s*url\s*=/.test(line)) + 1);
-          next.splice(
-            insert,
-            0,
-            `${headerKey} = { "x-mnemonik-installation-id" = ${JSON.stringify(target.installationId)} }${newline}`
-          );
-        }
-        content =
-          start < 0
-            ? `${tomlRaw}${tomlRaw && !tomlRaw.endsWith('\n') ? newline : ''}${next.join('')}`
-            : [...lines.slice(0, start), ...next, ...lines.slice(stop)].join('');
+      if (install === undefined) {
+        // Present only as Codex will read it: a file that does not parse declares nothing.
+        const parsed = tryParseToml(raw);
+        const declared = 'value' in parsed ? codexDeclaration(parsed.value) : undefined;
+        const headers = record(declared?.[headerKey]);
+        const exact =
+          declared?.url === url &&
+          (installationHeader
+            ? headers?.[INSTALLATION_HEADER] === target.installationId
+            : !headers || !Object.hasOwn(headers, INSTALLATION_HEADER));
+        return exact ? [{ path: file, content: Buffer.from(raw) }] : [];
       }
+      const written = writeCodexMcpToml({
+        file,
+        raw: tomlRaw,
+        url,
+        headerKey,
+        ...(installationHeader ? { installationId: target.installationId } : {}),
+        install,
+        ownedTarget,
+      });
+      if (written === undefined) return [];
+      content = written;
     }
     return [{ path: file, content: Buffer.from(content) }];
   };

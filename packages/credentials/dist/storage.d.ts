@@ -28,8 +28,11 @@ export declare function credentialPaths(stateDir?: string, familyId?: string): {
     rootSecret: string;
     familyRecords: string;
     familySecrets: string;
+    refusals: string;
     record: string;
     secret: string;
+    /** Not a secret: the issuer's lasting refusal of the family's record as last written. */
+    refusal: string;
 };
 /**
  * Symlink policy (the credential store design: "reject symlinks, wrong ownership, weak permissions"): the

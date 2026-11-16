@@ -48,6 +48,15 @@ type FamilyRecord = Omit<FamilyCredential, 'store' | 'accessToken' | 'refreshTok
   SecretLocator & { schemaVersion: 1; kind: 'component' };
 type RootRecord = SecretLocator & { schemaVersion: 1; kind: 'root-binding' };
 type FamilySecret = { accessToken: string; refreshToken: string };
+/** The issuer's lasting refusal of a family, as recorded by whoever was refused. */
+export interface FamilyRefusal {
+  schemaVersion: 1;
+  familyId: string;
+  reason: string;
+  refusedAt: string;
+  /** The refused record's lastRotationTime: a record written since is not refused. */
+  lastRotationTime: string;
+}
 interface CredentialBackend {
   readonly store: CredentialStoreKind;
   isAvailable(): Promise<boolean>;
@@ -387,6 +396,40 @@ export function createCredentialAdapter(options: CredentialAdapterOptions = {}) 
     );
   }
 
+  /**
+   * The issuer refused this family for good (invalid_grant: revoked, reused or expired).
+   * Kept beside the record, with the record's lastRotationTime, so every later process can
+   * tell without asking the issuer again, until the record is written anew.
+   */
+  async function recordRefusal(familyId: string, reason: string): Promise<void> {
+    const familyPaths = credentialPaths(files.stateDir, familyId);
+    const record = await readRecord<FamilyRecord>(familyPaths.record, 'component');
+    if (!record) return;
+    const refusal: FamilyRefusal = {
+      schemaVersion: 1,
+      familyId,
+      reason,
+      refusedAt: new Date(now()).toISOString(),
+      lastRotationTime: record.lastRotationTime,
+    };
+    await files.write(familyPaths.refusal, Buffer.from(JSON.stringify(refusal)), 'record');
+  }
+
+  /** The family's refusal, while its record is still the one refused; null otherwise. */
+  async function readRefusal(familyId: string): Promise<FamilyRefusal | null> {
+    const familyPaths = credentialPaths(files.stateDir, familyId);
+    const bytes = await files.read(familyPaths.refusal);
+    if (!bytes) return null;
+    const refusal = JSON.parse(bytes.toString()) as Partial<FamilyRefusal>;
+    const record = await readRecord<FamilyRecord>(familyPaths.record, 'component');
+    return record &&
+      refusal.familyId === familyId &&
+      typeof refusal.reason === 'string' &&
+      refusal.lastRotationTime === record.lastRotationTime
+      ? (refusal as FamilyRefusal)
+      : null;
+  }
+
   async function readFamily(familyId: string): Promise<FamilyCredential | null> {
     const familyPaths = credentialPaths(files.stateDir, familyId);
     const record = await readRecord<FamilyRecord>(familyPaths.record, 'component');
@@ -574,7 +617,11 @@ export function createCredentialAdapter(options: CredentialAdapterOptions = {}) 
   function rotateFamily(familyId: string, transport: CredentialTransport): Promise<RotationResult> {
     const active = rotations.get(familyId);
     if (active) return active as Promise<RotationResult>;
-    const rotation = rotateLocked(familyId, transport);
+    const rotation = rotateLocked(familyId, transport).then(async (result) => {
+      if (isFailure(result) && result.reason === 'invalid_grant')
+        await recordRefusal(familyId, result.reason).catch(() => undefined);
+      return result;
+    });
     rotations.set(familyId, rotation);
     const clear = () => {
       if (rotations.get(familyId) === rotation) rotations.delete(familyId);
@@ -764,6 +811,7 @@ export function createCredentialAdapter(options: CredentialAdapterOptions = {}) 
   async function removeFamily(familyId: string): Promise<void> {
     const familyPaths = credentialPaths(files.stateDir, familyId);
     await removeStored<FamilyRecord>(familyPaths.record, 'component', familyPaths.secret);
+    await files.remove(familyPaths.refusal).catch(() => undefined);
   }
 
   /**
@@ -964,7 +1012,11 @@ export function createCredentialAdapter(options: CredentialAdapterOptions = {}) 
     const cli = await forgetEntry<CliRecord>(paths.cliRecord, 'cli-oauth', paths.cliSecret);
     await forgetCliOsOrphan();
     await forgetEntry<RootRecord>(paths.rootRecord, 'root-binding', paths.rootSecret);
+    // Refusals hold no secret; with their families gone they describe nothing.
+    for (const name of await files.list(paths.refusals))
+      await files.remove(join(paths.refusals, name));
     await files.removeEmptyDirectories([
+      paths.refusals,
       paths.familySecrets,
       paths.familyRecords,
       paths.secrets,
@@ -990,6 +1042,8 @@ export function createCredentialAdapter(options: CredentialAdapterOptions = {}) 
     waitForCliLease,
     putFamily,
     readFamily,
+    readRefusal,
+    recordRefusal,
     rotateFamily,
     withCredential,
     revokeFamily,
@@ -1012,8 +1066,31 @@ type HookFamily = {
   credentials: ReturnType<typeof createCredentialAdapter>;
   unavailable: boolean;
   diagnosed?: boolean;
+  /** Whether the issuer has refused this family for good, read once per process. */
+  refusal?: Promise<boolean>;
 };
 export type HookCredential = string | HookFamily;
+
+/**
+ * The one sentence a hook gives the agent when its credential is refused for good. Without
+ * it the hooks go silent: every call fails open and nothing reaches the agent (2026-11-15).
+ */
+export const HOOK_CREDENTIAL_REFUSED_NOTICE =
+  "Mnemonik's hooks on this machine have lost their sign-in and are not working; run mnemonik repair to restore them.";
+
+/**
+ * Whether this hook family is refused for good: by the issuer in this process, or in an
+ * earlier one that recorded the refusal and the family record has not been written since.
+ * A refused family sends nothing more; only a new record (repair, update) retries it.
+ */
+export function hookCredentialRefused(credential: HookCredential | null): Promise<boolean> {
+  if (!credential || typeof credential === 'string') return Promise.resolve(false);
+  credential.refusal ??= credential.credentials
+    .readRefusal(credential.familyId)
+    .then((refusal) => refusal !== null)
+    .catch(() => false);
+  return credential.refusal;
+}
 const hookFamilies = new Map<string, HookFamily>();
 
 /** Family handles contain no tokens. Legacy keys are considered only without a family. */
@@ -1107,6 +1184,10 @@ export async function fetchWithHookCredential(
       }
     );
   if (!credential || credential.unavailable) return unavailable();
+  if (await hookCredentialRefused(credential)) {
+    credential.unavailable = true;
+    return unavailable();
+  }
   let transient = false;
   try {
     const result = await untilAborted(init.signal, () =>
@@ -1141,7 +1222,10 @@ export async function fetchWithHookCredential(
       )
     );
     if (typeof result.status === 'number' && 'body' in result) return result.body;
-    credential.unavailable ||= result.reason === 'invalid_grant';
+    if (result.reason === 'invalid_grant') {
+      credential.unavailable = true;
+      credential.refusal = Promise.resolve(true);
+    }
     transient =
       result.status === 'RETRY_LATER' ||
       (result.status === 'ACTION_REQUIRED' && TRANSIENT_ACTION_REASONS.has(result.reason));

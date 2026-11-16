@@ -45,7 +45,7 @@ import { folderList, renderScannerStatus } from './scanner/picker.js';
 import { abandonInterrupted, closeUntouchedScannerRun, interrupted } from './install/journal.js';
 import { installFailureReason, runInstall, } from './install/transaction.js';
 import { chooseHostProfile, simulatedInstall, terminalInstallUI } from './install/ui.js';
-import { CODEX_TRUST_MESSAGE, authorizationEntries, codingToolStatuses, collectStatusDocument, hookAuthorizations, installedCodingTools, localEditorStatus, localInstallationConditions, mcpTurnOnAction, renderStatusSummaries, renderRefusals, REPORT_NOT_SENT, renderScannerFailure, scannerAuthorization, statusExitCode, withCodingTools, } from './status.js';
+import { CODEX_TRUST_MESSAGE, authorizationEntries, codingToolStatuses, collectStatusDocument, hookAuthorizations, installedCodingTools, localEditorStatus, localInstallationConditions, UNREADABLE_SETTINGS_ACTION, unreadableSettingsConditions, mcpTurnOnAction, renderStatusSummaries, renderRefusals, REPORT_NOT_SENT, renderScannerFailure, scannerAuthorization, statusExitCode, withCodingTools, } from './status.js';
 import { editorAuthorizationRows } from './screens/journey.js';
 import { DiagnosticsError, previewDiagnostics, sendDiagnostics, } from './diagnostics.js';
 export const connectFolderPrompt = (name) => `Connect ${name} to Mnemonik? [Y/n]`;
@@ -532,13 +532,27 @@ async function hostDependencies(deps, output, state) {
         credentialFetch: deps.grantFetch,
     };
 }
-async function updateHostDependencies(deps, state) {
+async function updateHostDependencies(deps, state, output) {
     if (deps.hostManagement)
         return { ...deps.hostManagement, stateDir: state };
     const installation = JSON.parse(await readFile(join(state, 'installation.json'), 'utf8').catch(() => '{}'));
+    // The stored CLI sign-in, never a new one: update replaces a hook family the server
+    // revoked only when that needs no person (runHosts says plainly when it does). It
+    // often runs unattended, from a coding tool's session start.
+    const cliAuth = auth(deps, output, true);
     return {
         stateDir: state,
         account: typeof installation.account === 'string' ? installation.account : '',
+        getCliBearer: async () => {
+            const bearer = await cliAuth.getCliBearer();
+            if (typeof bearer !== 'string')
+                throw new Error(bearer.reason);
+            return bearer;
+        },
+        authorizeInstallSession: async () => {
+            throw new Error('install_session_needs_person');
+        },
+        credentialFetch: deps.grantFetch,
     };
 }
 async function packageVersion() {
@@ -641,7 +655,7 @@ async function runHostCommand(command, parsed, deps, output, scannerSelected = f
             : undefined;
         const managed = selections.length || (await interrupted(state)).length
             ? command === 'update'
-                ? await retryUpdateOnce(() => updateHostDependencies(deps, state))
+                ? await retryUpdateOnce(() => updateHostDependencies(deps, state, output))
                 : await hostDependencies(deps, output, state)
             : undefined;
         const maintainHosts = (dependencies) => runHosts(command, selections, {
@@ -862,7 +876,16 @@ async function runHostCommand(command, parsed, deps, output, scannerSelected = f
         }
         else {
             for (const target of result.results)
-                output.line(target.status === 'READY' ? 'Done.' : humanReason(target.reason));
+                if (target.status !== 'READY' &&
+                    target.detail &&
+                    /^(?:invalid_mcp_toml|mcp_toml_write_refused)$/u.test(target.reason)) {
+                    // The settings file the tool cannot read is named, with the line, and left unchanged.
+                    output.line(`${target.detail}.`);
+                    if (target.action)
+                        output.line(target.action);
+                }
+                else
+                    output.line(target.status === 'READY' ? 'Done.' : humanReason(target.reason));
             for (const report of result.reports)
                 output.line(humanReport(report));
             if (remaining)
@@ -1304,6 +1327,10 @@ async function doctorCommand(parsed, deps, output) {
         transport: deps.projectTransport,
         scannerStatus: deps.scannerStatus,
         installationConditions: deps.installationConditions,
+        // A settings file the coding tool cannot read is named, with its line.
+        ...(deps.installationConditions
+            ? {}
+            : { pendingInstallationConditions: unreadableSettingsConditions(deps.home ?? homedir()) }),
         projectHookConditions: deps.projectHookConditions,
         configuredHosts: deps.configuredHosts ?? deps.install?.input.hosts,
         details: deps.statusDetails,
@@ -2154,17 +2181,21 @@ export async function runCli(args, deps = {}) {
             }
             // A tool that could not be started at all still has its own instructions.
         }
-        const reason = editor?.mcp === 'disabled'
-            ? `${tool} MCP: turned off.`
-            : editor?.mcp === 'ready' && mcp
-                ? mcpLine(tool, host, mcp, false)
-                : `${tool} MCP: not set up on this computer.`;
+        const reason = editor?.mcp === 'invalid' && editor.unreadable
+            ? editor.unreadable
+            : editor?.mcp === 'disabled'
+                ? `${tool} MCP: turned off.`
+                : editor?.mcp === 'ready' && mcp
+                    ? mcpLine(tool, host, mcp, false)
+                    : `${tool} MCP: not set up on this computer.`;
         const actions = editor?.mcp === 'ready'
             ? editorAuthorizationRows([host])
             : [
-                editor?.mcp === 'disabled'
-                    ? mcpTurnOnAction[host]
-                    : 'Run mnemonik install to set it up again.',
+                editor?.mcp === 'invalid'
+                    ? UNREADABLE_SETTINGS_ACTION
+                    : editor?.mcp === 'disabled'
+                        ? mcpTurnOnAction[host]
+                        : 'Run mnemonik install to set it up again.',
             ];
         if (json)
             output.json({ status: 'ACTION_REQUIRED', reason, actions, ...(mcp ? { mcp } : {}) });

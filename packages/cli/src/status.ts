@@ -45,7 +45,7 @@ import {
 import { readFile, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { parse as parseToml } from 'smol-toml';
+import { parse as parseToml, TomlError } from 'smol-toml';
 import { devReadiness, expectedScannerDisclosureVersion } from './runtime/releaseSource.js';
 import { pendingProjectSetup } from '@mnemonik/shared/hook-runtime';
 import { basename, isAbsolute, relative, resolve } from 'node:path';
@@ -132,6 +132,8 @@ export async function localEditorStatus(home: string) {
           )
         ).every(Boolean);
       let declaration: unknown;
+      // A settings file the tool cannot read is not a missing connection: say so, and where.
+      let unreadable: string | undefined;
       try {
         const config = host === 'codex' ? parseToml(mcpRaw ?? '') : JSON.parse(mcpRaw ?? '{}');
         declaration = object(config.mcp_servers)
@@ -139,8 +141,16 @@ export async function localEditorStatus(home: string) {
           : object(config.mcpServers)
             ? config.mcpServers.mnemonik
             : undefined;
-      } catch {
-        /* Report the connection as missing below. */
+      } catch (error) {
+        if (host === 'codex' && error instanceof TomlError) {
+          const reason = error.message
+            .split('\n')[0]
+            ?.replace(/^Invalid TOML document:\s*/u, '')
+            .trim()
+            .replace(/\.?$/u, '.');
+          unreadable = `${name} settings file ~/${mcpFile} is not valid TOML (line ${error.line}, column ${error.column}): ${reason}`;
+        }
+        /* Otherwise report the connection as missing below. */
       }
       // The authorization the hooks use, when their command names it.
       const credentialFamily = commands
@@ -151,14 +161,20 @@ export async function localEditorStatus(home: string) {
         name,
         // Only a Mnemonik mark in the editor's own settings counts. The mere
         // presence of ~/.codex or a project-local .cursor is not a choice.
-        marked: commands.length > 0 || object(declaration),
+        marked:
+          commands.length > 0 ||
+          object(declaration) ||
+          (!!unreadable && /mcp_servers\s*\.\s*["']?mnemonik/u.test(mcpRaw ?? '')),
         hooks,
         ...(credentialFamily ? { credentialFamily } : {}),
-        mcp: !object(declaration)
-          ? 'missing'
-          : declaration.enabled === false || declaration.disabled === true
-            ? 'disabled'
-            : 'ready',
+        ...(unreadable ? { unreadable } : {}),
+        mcp: unreadable
+          ? ('invalid' as const)
+          : !object(declaration)
+            ? ('missing' as const)
+            : declaration.enabled === false || declaration.disabled === true
+              ? ('disabled' as const)
+              : ('ready' as const),
       };
     })
   );
@@ -170,6 +186,29 @@ export const mcpTurnOnAction: Record<(typeof editorFiles)[number][0], string> = 
   codex: 'Open ~/.codex/config.toml, find mnemonik and set enabled = true.',
   cursor: 'Open Cursor Settings, Customize, MCPs, then turn on mnemonik.',
 };
+
+/** What a person does about a settings file the coding tool cannot read. */
+export const UNREADABLE_SETTINGS_ACTION =
+  'Run mnemonik repair; if it cannot fix the file, correct that line by hand.';
+
+/**
+ * Settings files that hold a Mnemonik declaration but do not parse, for doctor:
+ * the file, the line and the reason, never "connection is missing".
+ */
+export async function unreadableSettingsConditions(home: string): Promise<ReadinessCondition[]> {
+  return (await localEditorStatus(home)).flatMap((editor) =>
+    editor.marked && editor.unreadable
+      ? [
+          {
+            kind: 'selected_component_failed' as const,
+            reason: editor.unreadable,
+            action: UNREADABLE_SETTINGS_ACTION,
+            component: editor.host,
+          },
+        ]
+      : []
+  );
+}
 
 export async function localInstallationConditions(
   home: string,
@@ -202,7 +241,9 @@ export async function localInstallationConditions(
         'Run mnemonik install to set them up again.',
         editor.host
       );
-    if (editor.mcp !== 'ready')
+    if (editor.mcp === 'invalid' && editor.unreadable)
+      issue(editor.unreadable, UNREADABLE_SETTINGS_ACTION, editor.host);
+    else if (editor.mcp !== 'ready')
       issue(
         `${editor.name} connection is ${editor.mcp === 'disabled' ? 'turned off' : 'missing'}.`,
         editor.mcp === 'missing'
@@ -1027,8 +1068,8 @@ export type HookCredentialState = 'authorized' | 'not_authorized' | 'unchecked';
 
 /**
  * Each tool's hooks' own authorization: the credential the installer recorded
- * for them (or their command names), stored here and inside its refresh
- * window. Hooks that name none sign in some other way, which is not read here.
+ * for them (or their command names), stored here, inside its refresh window,
+ * and not refused by the server to a hook since it was written. Hooks that name none sign in some other way, which is not read here.
  */
 export async function hookAuthorizations(
   stateDir: string,
@@ -1045,9 +1086,13 @@ export async function hookAuthorizations(
             ?.credentialFamily || editor.credentialFamily;
         if (!id) return [editor.host, 'unchecked'] as const;
         const family = await credentials.readFamily(id).catch(() => null);
+        // A hook the server refused records it; the stored family is then not working.
+        const refused = await credentials.readRefusal(id).catch(() => null);
         return [
           editor.host,
-          family && Date.parse(family.refreshExpiresAt) > now ? 'authorized' : 'not_authorized',
+          family && !refused && Date.parse(family.refreshExpiresAt) > now
+            ? 'authorized'
+            : 'not_authorized',
         ] as const;
       })
     )

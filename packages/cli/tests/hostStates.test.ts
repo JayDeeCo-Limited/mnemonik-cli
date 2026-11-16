@@ -153,7 +153,12 @@ describe('hook credential convergence', () => {
   it('installs all editors with one hook component family', async () => {
     const f = await fixture();
     let issued = 0;
-    f.deps.credentialFetch = vi.fn(async () => Response.json(hookFamily(`family-${++issued}`)));
+    // Issuance is a POST; the later editors ask whether the issued family is live.
+    f.deps.credentialFetch = vi.fn(async (_input: unknown, init?: Parameters<typeof fetch>[1]) =>
+      init?.method === 'POST'
+        ? Response.json(hookFamily(`family-${++issued}`))
+        : Response.json({ id: `family-${issued}`, component_kind: 'hook', state: 'active' })
+    );
 
     await runHosts(
       'install',
@@ -241,8 +246,11 @@ describe('hook credential convergence', () => {
       file.hash = createHash('sha256').update(contents).digest('hex');
     }
     await writeFile(ownershipPath(f.deps.stateDir), JSON.stringify(ownership, null, 2) + '\n');
-    f.deps.credentialFetch = vi.fn(async () => {
-      throw new Error('automatic update must not issue a component family');
+    f.deps.credentialFetch = vi.fn(async (_input: unknown, init?: Parameters<typeof fetch>[1]) => {
+      if (init?.method === 'POST')
+        throw new Error('automatic update must not issue a component family');
+      // A server that cannot say: never a reason to replace a family.
+      return new Response(null, { status: 503 });
     });
 
     await runHosts('update', ownership.targets, f.deps);
@@ -251,8 +259,105 @@ describe('hook credential convergence', () => {
     expect(updated.map(({ credentialFamily }) => credentialFamily)).toEqual(
       editors.map(() => 'cursor-family')
     );
-    expect(f.deps.credentialFetch).not.toHaveBeenCalled();
+    expect(
+      vi.mocked(f.deps.credentialFetch!).mock.calls.filter(([, init]) => init?.method === 'POST')
+    ).toHaveLength(0);
     for (const target of updated) expect(await installedFamily(target)).toBe('cursor-family');
+  }, 180_000);
+});
+
+// 2026-11-15: the server revoked this machine's hook family; repair kept it and update never
+// replaced it, so every hook was refused for a day with no way back short of a reinstall.
+describe('a hook family the server no longer accepts', () => {
+  const editors = ['claude-code', 'cursor'] as const;
+  const selectedEditors = (f: Awaited<ReturnType<typeof fixture>>) =>
+    targets(f, 'hooks').filter(({ host }) => editors.includes(host as (typeof editors)[number]));
+  /** The server: issues `next`, and reports each family by `states`. */
+  function server(states: Record<string, string>, next = 'replacement-family') {
+    return vi.fn(async (input: unknown, init?: Parameters<typeof fetch>[1]) => {
+      const path = new URL(String(input)).pathname;
+      if (init?.method === 'POST' && path === '/api/v1/component-credentials')
+        return Response.json(hookFamily(next));
+      const id = decodeURIComponent(path.split('/').at(-1) ?? '');
+      return states[id]
+        ? Response.json({ id, component_kind: 'hook', state: states[id] })
+        : Response.json({ error: 'family_not_found' }, { status: 404 });
+    });
+  }
+  const issued = (fetchMock: ReturnType<typeof server>) =>
+    fetchMock.mock.calls.filter(([, init]) => init?.method === 'POST').length;
+
+  it('repair replaces a family a hook recorded as refused, and rewrites every hook', async () => {
+    const f = await fixture();
+    f.deps.credentialFetch = vi.fn(async () => Response.json(hookFamily('revoked-family')));
+    await runHosts('install', selectedEditors(f), f.deps);
+    await createCredentialAdapter({ stateDir: f.deps.stateDir }).recordRefusal(
+      'revoked-family',
+      'invalid_grant'
+    );
+    const fetchMock = server({ 'revoked-family': 'active', 'replacement-family': 'active' });
+    f.deps.credentialFetch = fetchMock;
+
+    const outcome = await runHosts(
+      'repair',
+      (await readOwnership(f.deps.stateDir)).targets,
+      f.deps
+    );
+
+    expect(outcome.results.map(({ status }) => status)).toEqual(['READY', 'READY']);
+    expect(issued(fetchMock)).toBe(1);
+    const owned = (await readOwnership(f.deps.stateDir)).targets;
+    expect(owned.map(({ credentialFamily }) => credentialFamily)).toEqual([
+      'replacement-family',
+      'replacement-family',
+    ]);
+    for (const target of owned) expect(await installedFamily(target)).toBe('replacement-family');
+    expect(outcome.reports.join('\n')).toContain("the hooks' sign-in was no longer valid");
+  }, 180_000);
+
+  it('update replaces a family the server reports revoked', async () => {
+    const f = await fixture();
+    f.deps.credentialFetch = vi.fn(async () => Response.json(hookFamily('revoked-family')));
+    await runHosts('install', selectedEditors(f), f.deps);
+    const fetchMock = server({ 'revoked-family': 'revoked', 'replacement-family': 'active' });
+    f.deps.credentialFetch = fetchMock;
+
+    await runHosts('update', (await readOwnership(f.deps.stateDir)).targets, f.deps);
+
+    expect(issued(fetchMock)).toBe(1);
+    for (const target of (await readOwnership(f.deps.stateDir)).targets)
+      expect(await installedFamily(target)).toBe('replacement-family');
+  }, 180_000);
+
+  it('update that cannot issue without a person keeps its work and says so plainly', async () => {
+    const f = await fixture();
+    f.deps.credentialFetch = vi.fn(async () => Response.json(hookFamily('revoked-family')));
+    await runHosts('install', selectedEditors(f), f.deps);
+    await createCredentialAdapter({ stateDir: f.deps.stateDir }).recordRefusal(
+      'revoked-family',
+      'invalid_grant'
+    );
+    // This machine's CLI is signed out: nothing can be issued without a person.
+    f.deps.getCliBearer = async () => undefined as unknown as string;
+
+    const outcome = await runHosts(
+      'update',
+      (await readOwnership(f.deps.stateDir)).targets,
+      f.deps
+    );
+
+    expect(outcome.results.map(({ status, reason }) => [status, reason])).toEqual([
+      ['ACTION_REQUIRED', 'hook_credential_refused'],
+      ['ACTION_REQUIRED', 'hook_credential_refused'],
+    ]);
+    expect(outcome.results[0]?.action).toBe(
+      'A person must approve a new sign-in: run `mnemonik auth login --reopen-install`, approve it in the browser, then run `mnemonik repair`.'
+    );
+    expect(outcome.reports.join('\n')).toContain(
+      "claude-code: Mnemonik's hooks have lost their sign-in and are not working. A person must approve a new sign-in"
+    );
+    for (const target of (await readOwnership(f.deps.stateDir)).targets)
+      expect(await installedFamily(target)).toBe('revoked-family');
   }, 180_000);
 });
 
@@ -484,6 +589,18 @@ describe('host rulings', () => {
     );
 
     await runHosts('repair', [claude], f.deps);
+    // A hook the server refused recorded it: doctor names the problem and its fix.
+    await createCredentialAdapter({ stateDir: f.deps.stateDir }).recordRefusal(
+      claude.credentialFamily!,
+      'invalid_grant'
+    );
+    conditions = await hookStatusConditions(f.deps, hosts);
+    expect(conditions.find(({ component }) => component === 'claude-code')).toEqual({
+      kind: 'hooks_missing',
+      component: 'claude-code',
+      reason: 'claude-code hook sign-in was refused by Mnemonik, so the hooks are not working.',
+      action: 'mnemonik repair --host claude-code --component hooks',
+    });
     await createCredentialAdapter({ stateDir: f.deps.stateDir }).forget();
     conditions = await hookStatusConditions(f.deps, hosts);
     expect(conditions.find(({ component }) => component === 'claude-code')?.reason).toBe(
@@ -1089,7 +1206,10 @@ describe('host state matrix', () => {
     await expect(readFile(join(f.home, '.grok', 'config.toml'))).rejects.toMatchObject({
       code: 'ENOENT',
     });
-    expect(f.deps.credentialFetch).toHaveBeenCalledOnce();
+    // One family issued for every editor; the later editors only ask whether it is live.
+    expect(
+      vi.mocked(f.deps.credentialFetch!).mock.calls.filter(([, init]) => init?.method === 'POST')
+    ).toHaveLength(1);
   }, 300_000);
 
   it('records the editor that already holds a grant, so the install stops asking it', async () => {

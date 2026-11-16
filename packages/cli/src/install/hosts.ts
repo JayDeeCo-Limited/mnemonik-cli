@@ -168,6 +168,10 @@ function actionFor(
     return 'Review Codex [features] hooks = false, then rerun repair with --apply to re-enable it.';
   if (reason === 'mcp_name_conflict')
     return `Resolve the existing Mnemonik MCP declaration in ${selection.host}, then retry.`;
+  if (reason === 'invalid_mcp_toml')
+    return `Correct the line named above in ${selection.host}'s settings file, then run mnemonik repair --host ${selection.host}.`;
+  if (reason === 'mcp_toml_write_refused')
+    return `Nothing was written. Check ${selection.host}'s settings file by hand, then retry.`;
   if (reason === 'project_shared_declaration_conflict')
     return 'Ask the collaborator who owns the project declaration to reconcile it, then retry.';
   if (reason === 'hooks_missing' || reason === 'mcp_declaration_missing')
@@ -176,7 +180,115 @@ function actionFor(
   if (reason === 'digest_mismatch') return 'mnemonik repair';
   if (reason === 'hook_credential_authorization_required')
     return 'Run `mnemonik auth login --reopen-install` to start a new install session';
+  if (reason === 'hook_credential_refused') return HOOK_CREDENTIAL_FIX;
   return undefined;
+}
+
+/** A person's step: issuing hook credentials needs this machine's CLI signed in and approved. */
+const HOOK_CREDENTIAL_FIX =
+  'A person must approve a new sign-in: run `mnemonik auth login --reopen-install`, approve it in the browser, then run `mnemonik repair`.';
+const HOOK_CREDENTIAL_NEEDS_PERSON = `Mnemonik's hooks have lost their sign-in and are not working. ${HOOK_CREDENTIAL_FIX}`;
+
+type ServerFamilyState = 'active' | 'revoked' | 'superseded' | 'not_found' | 'unknown';
+type CliCredentials = ReturnType<typeof createCliCredentials>;
+
+/**
+ * The server's record of a component family of this installation. Anything it cannot answer
+ * (no CLI sign-in here, unreachable, a server without the route) is `unknown`, never a reason
+ * to replace a family.
+ */
+async function serverFamilyState(
+  id: string,
+  deps: Pick<HostDependencies, 'getCliBearer' | 'credentialFetch'>
+): Promise<ServerFamilyState> {
+  const bearer = await deps.getCliBearer?.().catch(() => undefined);
+  if (typeof bearer !== 'string' || !bearer) return 'unknown';
+  const response = await (deps.credentialFetch ?? fetch)(
+    `${apiOrigin()}/api/v1/component-credentials/${encodeURIComponent(id)}`,
+    { headers: { authorization: `Bearer ${bearer}` }, signal: AbortSignal.timeout(5_000) }
+  ).catch(() => undefined);
+  if (!response) return 'unknown';
+  const body = (await response.json().catch(() => ({}))) as { error?: unknown; state?: unknown };
+  if (response.status === 404 && body.error === 'family_not_found') return 'not_found';
+  if (!response.ok) return 'unknown';
+  return body.state === 'active' || body.state === 'revoked' || body.state === 'superseded'
+    ? body.state
+    : 'unknown';
+}
+
+/**
+ * The first candidate hook family that is still live: held here, inside its refresh window,
+ * not refused by the server to a hook (the refusal a hook records), and not reported revoked,
+ * superseded or unknown by the server.
+ */
+async function liveHookFamily(
+  candidates: readonly string[],
+  credentials: CliCredentials,
+  deps: Pick<HostDependencies, 'getCliBearer' | 'credentialFetch'>,
+  states: Map<string, Promise<ServerFamilyState>>
+): Promise<string | undefined> {
+  for (const id of candidates) {
+    const family = await credentials.readFamily(id).catch(() => null);
+    if (!family || !(Date.parse(family.refreshExpiresAt) > Date.now())) continue;
+    if (await credentials.readRefusal(id).catch(() => null)) continue;
+    let state = states.get(id);
+    if (!state) states.set(id, (state = serverFamilyState(id, deps)));
+    const known = await state;
+    if (known === 'active' || known === 'unknown') return id;
+  }
+  return undefined;
+}
+
+/** Issues this machine's hook family through the CLI sign-in and its install session. */
+async function issueHookFamily(
+  deps: HostDependencies,
+  credentials: CliCredentials,
+  journal: Journal
+): Promise<string> {
+  let bearer = await deps.getCliBearer?.();
+  if (!bearer) throw new Error('hook_credential_authorization_required');
+  const issue = () =>
+    (deps.credentialFetch ?? fetch)(`${apiOrigin()}/api/v1/component-credentials`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${bearer}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ component_kind: 'hook' }),
+      signal: AbortSignal.timeout(10_000),
+    });
+  let response = await issue();
+  const body =
+    response.status === 403
+      ? ((await response.json().catch(() => ({}))) as { error?: string })
+      : undefined;
+  if (body?.error === 'install_session_required') {
+    const installation = await readInstallation(deps.stateDir);
+    if (!installation) throw new Error('hook_credential_authorization_required');
+    try {
+      bearer = await ensureInstallSession({
+        stateDir: deps.stateDir,
+        bearer,
+        deviceInstallationId: installation,
+        credentials,
+        fetch: deps.credentialFetch,
+        print: deps.instruction,
+        noBrowser: deps.noBrowser,
+        ...(deps.authorizeInstallSession ? { authorize: deps.authorizeInstallSession } : {}),
+      });
+    } catch (error) {
+      throw new Error('hook_credential_authorization_required', { cause: error });
+    }
+    response = await issue();
+  }
+  if (!response.ok) throw new Error('hook_credential_authorization_required');
+  const family = (await response.json()) as ComponentCredentialResponse;
+  if (!/^[A-Za-z0-9_-]+$/.test(family.id)) throw new Error('invalid_credential_family');
+  // Journal only the reference, before storing any credential value.
+  journal.data.credentials.push({ reference: family.id, kind: 'component' });
+  await journal.save();
+  await credentials.putFamily('hook', family);
+  return family.id;
 }
 
 async function codexHooksDisabled(changes: FileChange[]): Promise<boolean> {
@@ -356,6 +468,8 @@ export async function runHosts(
           recovery: { ...request, selections: retry },
         };
       }
+      // Each recorded hook family is asked about once per run.
+      const familyStates = new Map<string, Promise<ServerFamilyState>>();
       for (const selection of selections) {
         const now = deps.now ?? Date.now;
         const startedAt = now();
@@ -378,6 +492,7 @@ export async function runHosts(
         journal.data.hostRuns.push(run);
         await journal.save();
         let freshRuntimeVersion: string | undefined;
+        let hookCredentialRefused = false;
         let codexCommandMigration = false;
         let runtimeChanged = false;
         try {
@@ -442,66 +557,44 @@ export async function runHosts(
             throw new Error('integration_scope_required');
           if (target.component === 'hooks') {
             const credentials = createCliCredentials({ stateDir: deps.stateDir });
-            target.credentialFamily =
-              record.targets
-                .filter(
-                  (candidate) =>
-                    candidate.component === 'hooks' && launchHosts.includes(candidate.host as never)
+            const recorded = record.targets
+              .filter(
+                (candidate) =>
+                  candidate.component === 'hooks' && launchHosts.includes(candidate.host as never)
+              )
+              .map((candidate) => candidate.credentialFamily);
+            // The last recorded family first, as before; the others only when it is not live.
+            const candidates = [
+              ...new Set(
+                [recorded.at(-1), ...recorded.slice(0, -1).reverse(), old?.credentialFamily].filter(
+                  (id): id is string => !!id
                 )
-                .at(-1)?.credentialFamily ??
-              old?.credentialFamily ??
-              '';
-            if (
-              command !== 'update' &&
-              command !== 'uninstall' &&
-              (!target.credentialFamily || !(await credentials.readFamily(target.credentialFamily)))
-            ) {
-              let bearer = await deps.getCliBearer?.();
-              if (!bearer) throw new Error('hook_credential_authorization_required');
-              const issue = () =>
-                (deps.credentialFetch ?? fetch)(`${apiOrigin()}/api/v1/component-credentials`, {
-                  method: 'POST',
-                  headers: {
-                    authorization: `Bearer ${bearer}`,
-                    'content-type': 'application/json',
-                  },
-                  body: JSON.stringify({ component_kind: 'hook' }),
-                  signal: AbortSignal.timeout(10_000),
-                });
-              let response = await issue();
-              const body =
-                response.status === 403
-                  ? ((await response.json().catch(() => ({}))) as { error?: string })
-                  : undefined;
-              if (body?.error === 'install_session_required') {
-                const installation = await readInstallation(deps.stateDir);
-                if (!installation) throw new Error('hook_credential_authorization_required');
-                try {
-                  bearer = await ensureInstallSession({
-                    stateDir: deps.stateDir,
-                    bearer,
-                    deviceInstallationId: installation,
-                    credentials,
-                    fetch: deps.credentialFetch,
-                    print: deps.instruction,
-                    noBrowser: deps.noBrowser,
-                    ...(deps.authorizeInstallSession
-                      ? { authorize: deps.authorizeInstallSession }
-                      : {}),
-                  });
-                } catch (error) {
-                  throw new Error('hook_credential_authorization_required', { cause: error });
-                }
-                response = await issue();
+              ),
+            ];
+            target.credentialFamily = candidates[0] ?? '';
+            // A family the server revoked, or that this machine no longer holds, is replaced
+            // (2026-11-15: a revoked family stayed recorded and every hook was refused for a
+            // day). update replaces only a recorded family; it never adds one where none was.
+            const live =
+              command === 'uninstall'
+                ? target.credentialFamily
+                : await liveHookFamily(candidates, credentials, deps, familyStates);
+            const replace =
+              command !== 'uninstall' && !live && (command !== 'update' || candidates.length > 0);
+            if (live) target.credentialFamily = live;
+            if (replace) {
+              try {
+                target.credentialFamily = await issueHookFamily(deps, credentials, journal);
+                if (candidates.length)
+                  journal.data.reports.push(
+                    `${selection.host}: the hooks' sign-in was no longer valid; issued a new one.`
+                  );
+              } catch (error) {
+                // update keeps the rest of its work: the hooks are already refused, and saying
+                // so (below) is all it can do without a person.
+                if (command !== 'update') throw error;
+                hookCredentialRefused = true;
               }
-              if (!response.ok) throw new Error('hook_credential_authorization_required');
-              const family = (await response.json()) as ComponentCredentialResponse;
-              if (!/^[A-Za-z0-9_-]+$/.test(family.id)) throw new Error('invalid_credential_family');
-              // Journal only the reference, before storing any credential value.
-              journal.data.credentials.push({ reference: family.id, kind: 'component' });
-              await journal.save();
-              await credentials.putFamily('hook', family);
-              target.credentialFamily = family.id;
             }
             if (target.credentialFamily && command !== 'uninstall') {
               const reference = await journal.plan(
@@ -716,6 +809,12 @@ export async function runHosts(
                 }
               : {}),
           };
+          if (hookCredentialRefused) {
+            result.status = 'ACTION_REQUIRED';
+            result.reason = 'hook_credential_refused';
+            result.action = actionFor(result.reason, selection);
+            journal.data.reports.push(`${selection.host}: ${HOOK_CREDENTIAL_NEEDS_PERSON}`);
+          }
           results.push(result);
           if (command === 'install' && deps.afterHosts && inspection?.trustPending)
             completionChecks.push(async () => {
@@ -927,11 +1026,17 @@ export async function hookStatusConditions(
     const family = record.credentialFamily
       ? await credentials.readFamily(record.credentialFamily).catch(() => null)
       : null;
+    const refused =
+      record.credentialFamily && family
+        ? await credentials.readRefusal(record.credentialFamily).catch(() => null)
+        : null;
     const missing = !inspection.declarationPresent
       ? `${host} hook declaration is missing.`
       : !family || !(Date.parse(family.refreshExpiresAt) > Date.now())
         ? `${host} hook sign-in is missing or revoked.`
-        : undefined;
+        : refused
+          ? `${host} hook sign-in was refused by Mnemonik, so the hooks are not working.`
+          : undefined;
     if (missing)
       conditions.push({
         kind: 'hooks_missing',

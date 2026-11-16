@@ -65,8 +65,11 @@ export function credentialPaths(stateDir = stateDirectory(), familyId?: string) 
     rootSecret: join(root, 'secrets', 'root-binding.key'),
     familyRecords: join(root, 'records', 'families'),
     familySecrets: join(root, 'secrets', 'families'),
+    refusals: join(root, 'refusals'),
     record: join(root, 'records', 'families', `${familyName}.json`),
     secret: join(root, 'secrets', 'families', `${familyName}.json`),
+    /** Not a secret: the issuer's lasting refusal of the family's record as last written. */
+    refusal: join(root, 'refusals', `${familyName}.json`),
   };
 }
 

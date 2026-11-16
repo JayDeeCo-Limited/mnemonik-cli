@@ -420,7 +420,32 @@ describe('hooks and scanner authorizations of their own', () => {
         'Claude Code hooks are not authorized on this computer.',
         'Run mnemonik repair.',
         'Claude Code MCP: authorized.',
-        'Claude Code hooks: not authorized. Their authorization is missing from this computer or has expired.',
+        'Claude Code hooks: not authorized. Their authorization is missing from this computer, has expired, or was revoked.',
+        'Scanner: not set up on this computer.',
+        'CLI: signed in as sam@acme.test.',
+        '',
+      ].join('\n')
+    );
+  }, 30_000);
+
+  // 2026-11-15: status said READY and hooks "authorized" for a day while the server had
+  // revoked the hooks' family and every hook was refused.
+  it('hooks whose family Mnemonik refused: not working, named, with the repair step', async () => {
+    const m = await machine(['claude-code']);
+    await m.store.claude({ accessToken: 'a-never-shown' });
+    await createCredentialAdapter({ stateDir: m.stateDir }).recordRefusal(
+      HOOK_FAMILY,
+      'invalid_grant'
+    );
+    const result = await m.invoke({ grants: [grant('claude-code')] });
+    expect(result.code).toBe(3);
+    expect(result.text).toBe(
+      [
+        'Installation: Needs attention.',
+        'Claude Code hooks are not authorized on this computer.',
+        'Run mnemonik repair.',
+        'Claude Code MCP: authorized.',
+        'Claude Code hooks: not authorized. Their authorization is missing from this computer, has expired, or was revoked.',
         'Scanner: not set up on this computer.',
         'CLI: signed in as sam@acme.test.',
         '',

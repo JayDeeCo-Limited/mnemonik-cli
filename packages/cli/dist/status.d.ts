@@ -18,10 +18,18 @@ export declare function localEditorStatus(home: string): Promise<{
     marked: boolean;
     hooks: boolean;
     credentialFamily?: string | undefined;
-    mcp: string;
+    unreadable?: string | undefined;
+    mcp: "disabled" | "invalid" | "missing" | "ready";
 }[]>;
 /** What a person can really do to switch a declared connection back on. */
 export declare const mcpTurnOnAction: Record<(typeof editorFiles)[number][0], string>;
+/** What a person does about a settings file the coding tool cannot read. */
+export declare const UNREADABLE_SETTINGS_ACTION = "Run mnemonik repair; if it cannot fix the file, correct that line by hand.";
+/**
+ * Settings files that hold a Mnemonik declaration but do not parse, for doctor:
+ * the file, the line and the reason, never "connection is missing".
+ */
+export declare function unreadableSettingsConditions(home: string): Promise<ReadinessCondition[]>;
 export declare function localInstallationConditions(home: string, stateDir: string, launcherOptions?: LauncherOptions): Promise<ReadinessCondition[]>;
 export interface ProjectStatusResult {
     resolvedRoot: string;
@@ -168,14 +176,15 @@ export declare function installedCodingTools(home: string, stateDir: string): Pr
     marked: boolean;
     hooks: boolean;
     credentialFamily?: string | undefined;
-    mcp: string;
+    unreadable?: string | undefined;
+    mcp: "disabled" | "invalid" | "missing" | "ready";
 }[]>;
 /** The hooks' own authorization, as hookAuthorizations reads it. */
 export type HookCredentialState = 'authorized' | 'not_authorized' | 'unchecked';
 /**
  * Each tool's hooks' own authorization: the credential the installer recorded
- * for them (or their command names), stored here and inside its refresh
- * window. Hooks that name none sign in some other way, which is not read here.
+ * for them (or their command names), stored here, inside its refresh window,
+ * and not refused by the server to a hook since it was written. Hooks that name none sign in some other way, which is not read here.
  */
 export declare function hookAuthorizations(stateDir: string, editors: ReadonlyArray<{
     host: string;
