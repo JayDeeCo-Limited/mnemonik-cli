@@ -1,10 +1,10 @@
 {
   "schemaVersion": 1,
-  "version": "8.5.1",
+  "version": "8.5.2",
   "packages": {
     "@mnemonik/cli": {
-      "version": "8.5.1",
-      "integrity": "sha512-Gf+SKBAkOx9jh4YzJN56iQx2DddAVKynZWqdMHI+MPiVwi/KAYMqhnDZHuuLkNXaYhrOqaVGeQDEzbuikOMdGg=="
+      "version": "8.5.2",
+      "integrity": "sha512-wJZElHIihQK1B+3nIFijcLosPPrRabNU3hw770MbqnkeM8jr9ZihOv0AVdslE+LPaoyeEZ2KgoH61OvYai9osg=="
     },
     "@mnemonik/claude-code-hooks": {
       "version": "0.9.454",
