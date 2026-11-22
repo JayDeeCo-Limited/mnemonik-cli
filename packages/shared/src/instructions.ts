@@ -173,7 +173,7 @@ In a recall page, hydrated holds the memories you recall in full, index pointers
 Project work items live in tasks. A pending tasks list needs action:"list" and status:"pending". A complete listing combines hydrated and index and follows cursor until null.
 
 Which tool for what:
-- memory_get: recalls exact memories whole by id.
+- memory_get: recalls exact memories whole by id or its first 8 characters.
 - memory_add: memorizes an experience: a decision and why, what the user said, what you found.
 - memory_state: corrects wrong, outdated, or conflicting memory.
 - memory_info: explains confidence or origin when memory looks suspect.
@@ -184,7 +184,7 @@ Which tool for what:
 - tasks: creates follow-up work and closes completed work.
 - code_search: finds conceptual code when source wording differs.
 - memory_search: finds rationale, intent, decisions, and prior work.
-- memory_ingest: brings the project's docs and code comments into memory when asked.`;
+- memory_ingest: brings project docs and code comments into memory when asked.`;
 
 /**
  * Get MCP instructions, respecting MNEMONIK_INSTRUCTIONS_ENABLED env var.
